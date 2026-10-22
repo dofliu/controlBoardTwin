@@ -45,6 +45,19 @@
       notes: ['輸出電壓約等於 VCC × 亮度比例；不同模組方向可能相反，請以實物確認。'],
       kind: 'input'
     },
+    US: {
+      type: 'US', prefix: 'US', name: '超音波測距', model: 'HC-SR04 類超音波測距模組',
+      // 模組直立、兩個探頭朝前（本地 −Z），四支排針在下緣：VCC、TRIG、ECHO、GND
+      terminals: [T('VCC', 'VCC', -0.381, 0.6, 'vcc'), T('TRIG', 'TRIG 觸發輸入', -0.127, 0.6, 'trig_in'), T('ECHO', 'ECHO 回波輸出', 0.127, 0.6, 'echo_out'), T('GND', 'GND', 0.381, 0.6, 'gnd')],
+      params: {
+        model: { label: '型號', type: 'select', options: { 'HC-SR04': 'HC-SR04（只能 5 V 供電）', 'HC-SR04P': 'HC-SR04P 類（3.3–5 V 皆可）' }, default: 'HC-SR04' }
+      },
+      footprint: { w: 4.6, d: 1.6 },
+      bb: { holes: { VCC: [[-1.5, 0]], TRIG: [[-0.5, 0]], ECHO: [[0.5, 0]], GND: [[1.5, 0]] } },   // 直立，四支排針插進同一列相鄰四孔
+      range: { min: 2, max: 400 },   // 公分；超出量程或沒有回波時，程式一律當成 400 cm
+      notes: ['TRIG 收到 10 µs 的高電位脈衝後送出超音波；ECHO 的高電位寬度等於聲波來回的時間（約 58 µs／cm）。', 'ECHO 的高電位約等於 VCC：HC-SR04 接 5 V 時會輸出 5 V，不能直接接到 3.3 V 的 ESP32 或樹莓派。', '量測間隔至少 60 ms；兩顆模組同時量測可能互相干擾。'],
+      kind: 'input'
+    },
     SERVO: {
       type: 'SERVO', prefix: 'SERVO', name: '伺服馬達', model: 'SG90 類三線伺服（無位置回授）',
       terminals: [T('GND', 'GND（棕）', -0.254, 2.6, 'gnd'), T('VCC', 'VCC（紅）', 0, 2.6, 'vcc'), T('SIG', 'SIG 訊號（橘）', 0.254, 2.6, 'pwm_in')],

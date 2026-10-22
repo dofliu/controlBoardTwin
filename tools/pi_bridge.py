@@ -22,6 +22,9 @@ DofLab — Raspberry Pi GPIO 閘道（協定 v2）
   → {"op":"write","id":"c1-5","pin":17,"value":1}    ← {"op":"ack","id":"c1-5","pin":17,"value":1,"kind":"digital"}
   → {"op":"servo","id":"c1-6","pin":18,"angle":90}   ← {"op":"ack","id":"c1-6","pin":18,"value":90,"kind":"servo"}
   → {"op":"revoke"}      → {"op":"ping","t":...}  ← {"op":"pong","t":...}
+  → {"op":"sonar","sensors":[{"trig":5,"echo":6}]}   超音波（唯讀）：每 100 ms 回報一次距離
+  ← {"op":"distance","trig":5,"cm":37,"seq":13,"t":...}   cm 為整數；沒有回波或超出 4 m 時為 400
+     TRIG 是量距離必須的觸發輸出，只能接到超音波模組；ECHO 必須是 3.3 V（HC-SR04P 類或加分壓）
 
 部署（把 DofLab 產生的 Python 程式放到樹莓派上執行，相當於 Arduino 的「上傳」）：
   → {"op":"deploy","id":"d1","code":"...","pins":[17,27],"confirm":true}
@@ -73,6 +76,8 @@ class Session:
         self.outputs = {}      # pin -> (kind, device)
         self.acks = OrderedDict()
         self.seq = 0
+        self.sonars = {}       # trig -> (echo, DistanceSensor 或 None（模擬）)
+        self.sonar_task = None
 
     async def send(self, obj):
         if not self.ws.closed:
@@ -92,6 +97,8 @@ class Session:
             pin = int(item["pin"])
             if pin in self.outputs:
                 raise ValueError(f"GPIO{pin} 已授權為輸出，不能同時當輸入")
+            if pin in self.sonar_pins():
+                raise ValueError(f"GPIO{pin} 正在給超音波模組使用")
             if pin in self.inputs:
                 self.push_input(pin)
                 continue
@@ -102,12 +109,49 @@ class Session:
             self.inputs[pin] = dev
             self.push_input(pin)
 
+    def sonar_pins(self):
+        return {p for trig, (echo, dev) in self.sonars.items() for p in (trig, echo)}
+
+    def sonar(self, sensors):
+        """超音波：建立 DistanceSensor（模擬腳位時改用 hub.mock_cm 的值），之後每 100 ms 回報一次"""
+        for item in sensors:
+            trig, echo = int(item["trig"]), int(item["echo"])
+            if trig == echo:
+                raise ValueError("TRIG 與 ECHO 不能是同一個腳位")
+            if trig in self.sonars:
+                continue
+            for pin in (trig, echo):
+                if pin in self.outputs or pin in self.inputs or pin in self.sonar_pins():
+                    raise ValueError(f"GPIO{pin} 已經被其他用途使用")
+            self.hub.claim(trig, self); self.hub.claim(echo, self)
+            dev = None if self.hub.mock else self.hub.Distance(echo=echo, trigger=trig, max_distance=4, queue_len=3)
+            self.sonars[trig] = (echo, dev)
+        if self.sonars and not self.sonar_task:
+            self.sonar_task = asyncio.ensure_future(self._sonar_loop())
+
+    def read_cm(self, trig):
+        echo, dev = self.sonars[trig]
+        if dev is None:
+            return int(self.hub.mock_cm.get(trig, 100))
+        d = dev.distance
+        cm = 400 if d is None else int(d * 100)
+        return 400 if cm >= 400 else cm
+
+    async def _sonar_loop(self):
+        while self.sonars and not self.ws.closed:
+            for trig in list(self.sonars):
+                self.seq += 1
+                await self.send({"op": "distance", "trig": trig, "cm": self.read_cm(trig), "seq": self.seq, "t": int(time.time() * 1000)})
+            await asyncio.sleep(0.1)
+
     def authorize(self, outputs):
         granted = []
         for o in outputs:
             pin, kind = int(o["pin"]), o.get("kind", "digital")
             if pin in self.inputs:
                 raise ValueError(f"GPIO{pin} 正在當輸入，不能授權為輸出")
+            if pin in self.sonar_pins():
+                raise ValueError(f"GPIO{pin} 正在給超音波模組使用，不能授權為輸出")
             if pin in self.outputs:
                 granted.append({"pin": pin, "kind": self.outputs[pin][0]})
                 continue
@@ -161,6 +205,13 @@ class Session:
 
     def close(self):
         self.revoke()
+        if self.sonar_task:
+            self.sonar_task.cancel(); self.sonar_task = None
+        for trig, (echo, dev) in list(self.sonars.items()):
+            if dev is not None:
+                dev.close()
+            self.hub.release(trig, self); self.hub.release(echo, self)
+        self.sonars.clear()
         for pin, dev in list(self.inputs.items()):
             dev.close()
             self.hub.release(pin, self)
@@ -179,11 +230,12 @@ class Deployed:
 
 class Hub:
     def __init__(self, loop, mock, deploy_dir=None):
-        from gpiozero import Device, DigitalInputDevice, DigitalOutputDevice, AngularServo
+        from gpiozero import Device, DigitalInputDevice, DigitalOutputDevice, AngularServo, DistanceSensor
         if mock:
             from gpiozero.pins.mock import MockFactory, MockPWMPin
             Device.pin_factory = MockFactory(pin_class=MockPWMPin)
-        self.Device, self.In, self.Out, self.Servo = Device, DigitalInputDevice, DigitalOutputDevice, AngularServo
+        self.Device, self.In, self.Out, self.Servo, self.Distance = Device, DigitalInputDevice, DigitalOutputDevice, AngularServo, DistanceSensor
+        self.mock_cm = {}      # 模擬腳位時的超音波距離（測試用，trig -> cm）
         self.loop, self.mock = loop, mock
         self.owner = {}
         self.deploy_dir = pathlib.Path(deploy_dir or (pathlib.Path.home() / "doflab-deploy"))
@@ -296,6 +348,8 @@ async def ws_handler(request):
                     await s.send({"op": "pong", "t": m.get("t")})
                 elif op == "watch":
                     s.watch(m.get("pins", []))
+                elif op == "sonar":
+                    s.sonar(m.get("sensors", []))
                 elif op == "authorize":
                     await s.send({"op": "authorized", "outputs": s.authorize(m.get("outputs", []))})
                 elif op in ("write", "servo"):
@@ -314,6 +368,9 @@ async def ws_handler(request):
                         await s.send({"op": "proc_exit", "code": None, "reason": "not_running"})
                 elif op == "status":
                     await s.send({"op": "status", "running": hub.running.info() if hub.running else None})
+                elif op == "mock_distance" and hub.mock:
+                    # 測試用：模擬超音波前方物體的距離（cm）
+                    hub.mock_cm[int(m["trig"])] = max(0, min(400, int(m["cm"])))
                 elif op == "mock_level" and hub.mock:
                     # 測試用：模擬實體按鈕。value 0 = 低電位（上拉時表示按下）
                     pin = hub.Device.pin_factory.pin(int(m["pin"]))

@@ -171,7 +171,7 @@
       for (const b of body) this.pick.push(b);
       // 端子：小色點＋加大點選範圍（麵包板的孔另外處理；插在麵包板上的元件請接到同一條導通條的其他孔）
       for (const t of def && c.type !== 'BB' && !mount ? def.terminals : []) {
-        const color = { anode: '#d8332a', cathode: '#333', gnd: '#333', vcc: '#d8332a', pwm_in: '#e07a1f', analog_out: '#2f8f8a', psu_pos: '#d8332a', psu_gnd: '#333' }[t.role] || '#c9a64b';
+        const color = { anode: '#d8332a', cathode: '#333', gnd: '#333', vcc: '#d8332a', pwm_in: '#e07a1f', analog_out: '#2f8f8a', psu_pos: '#d8332a', psu_gnd: '#333', trig_in: '#e07a1f', echo_out: '#2f8f8a' }[t.role] || '#c9a64b';
         const s = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 8), this.mat(color, { metalness: 0.4 })); s.position.set(t.x, 0.07, t.z);
         const hit = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6), new THREE.MeshBasicMaterial({ visible: false })); hit.position.copy(s.position);
         s.userData = hit.userData = { kind: 'ep', ep: { comp: c.id, term: t.id }, term: t };
@@ -292,6 +292,13 @@
         if (ref.cap) ref.cap.position.y = v.pressed ? 0.39 : 0.45;
         if (ref.horn) ref.horn.rotation.y = ((v.angle === null || v.angle === undefined ? 90 : v.angle) - 90) * Math.PI / 180;
         if (ref.ldr) { const l = v.light === undefined ? 50 : v.light; ref.ldr.emissive = new THREE.Color(0xffc060); ref.ldr.emissiveIntensity = l / 160; }
+        if (ref.obstacle) {   // 超音波前方的物體：沒有數值或沒有回波時不畫
+          const o = ref.obstacle; const d = v.dist; const show = d !== null && d !== undefined && d < 400;
+          // 畫面上的距離經過壓縮（示意）：2 cm → 1.5、15 cm → 4.6、100 cm → 8.5、200 cm → 10；實際數值看標籤
+          o.group.visible = show; const shown = show ? 1.5 * Math.log2(1 + Math.max(0, d) / 2) : 0; const z = o.front - shown;
+          if (show) { o.group.position.z = z; o.mat.opacity = d <= 60 ? 0.6 : 0.3; }
+          o.beams.forEach((b, i) => { const zz = o.front - 0.3 - i * 0.75; b.visible = show && zz > z + 0.2; b.position.z = zz; });
+        }
         const isSel = sel && sel.kind === 'comp' && sel.id === id;
         if (g.userData.wasSel !== !!isSel) { g.userData.wasSel = !!isSel; this.outline(g, isSel); }
       }

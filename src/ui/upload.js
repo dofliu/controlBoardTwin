@@ -128,7 +128,7 @@
   /* ---------- 樹莓派部署 ---------- */
   P.piDeploy = function (code) {
     const up = this.up; const url = ($('upWs') && $('upWs').value.trim()) || this.upWsUrl();
-    const pins = Object.values(this.analysis.bindings).map(b => b.num).filter(n => n != null);
+    const pins = Object.values(this.analysis.bindings).flatMap(b => [b.num, b.echoNum]).filter(n => n != null);   // 超音波有 TRIG 與 ECHO 兩個腳位
     return new Promise((resolve, reject) => {
       let ws; try { ws = new WebSocket(url); } catch (e) { reject(new Error('閘道網址不正確：' + e.message)); return; }
       const t = setTimeout(() => { try { ws.close(); } catch (e) { } reject(new Error(`連不到樹莓派閘道 ${url}`)); }, 6000);

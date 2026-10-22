@@ -24,10 +24,14 @@
       { type: 'dl_rule_start', message0: '程式開始時', message1: '執行一次 %1', args1: [{ type: 'input_statement', name: 'DO', check: 'DLAction' }], colour: RULE },
       { type: 'dl_cond_pressed', message0: '%1 被按住', args0: [compField('BTN')], output: 'DLCond', colour: COND },
       { type: 'dl_cond_light', message0: '%1 亮度 %2 %3 %%', args0: [compField('LDR'), { type: 'field_dropdown', name: 'OP', options: [['低於', 'lt'], ['高於', 'gt']] }, { type: 'field_number', name: 'VALUE', value: 30, min: 0, max: 100, precision: 1 }], output: 'DLCond', colour: COND },
+      { type: 'dl_cond_distance', message0: '%1 量到的距離 %2 %3 cm', args0: [compField('US'), { type: 'field_dropdown', name: 'OP', options: [['小於', 'lt'], ['大於', 'gt']] }, { type: 'field_number', name: 'VALUE', value: 20, min: 2, max: 400, precision: 1 }], output: 'DLCond', colour: COND, tooltip: '超音波每 60 ms 量一次；沒有回波或超出量程時當成 400 cm。' },
       { type: 'dl_act_led', message0: '%1 %2', args0: [compField('LED'), { type: 'field_dropdown', name: 'STATE', options: [['亮', 'on'], ['熄滅', 'off']] }], previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT },
       { type: 'dl_act_toggle', message0: '切換 %1（亮↔滅）', args0: [compField('LED')], previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT, tooltip: '單次動作，只能放在事件或開始規則。' },
       { type: 'dl_act_blink', message0: '%1 閃爍：亮 %2 ms、暗 %3 ms', args0: [compField('LED'), { type: 'field_number', name: 'ON', value: 500, min: 10, max: 60000, precision: 1 }, { type: 'field_number', name: 'OFF', value: 500, min: 10, max: 60000, precision: 1 }], previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT, tooltip: '只能放在「持續成立時」規則裡；不阻塞，等待期間仍能讀按鈕。' },
-      { type: 'dl_act_servo', message0: '%1 命令轉到 %2 °', args0: [compField('SERVO'), { type: 'field_number', name: 'ANGLE', value: 90, min: 0, max: 180, precision: 1 }], previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT, tooltip: '送出的是命令角度；SG90 沒有回授。' }
+      { type: 'dl_act_servo', message0: '%1 命令轉到 %2 °', args0: [compField('SERVO'), { type: 'field_number', name: 'ANGLE', value: 90, min: 0, max: 180, precision: 1 }], previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT, tooltip: '送出的是命令角度；SG90 沒有回授。' },
+      { type: 'dl_act_servomap', message0: '%1 角度跟著 %2 的距離', args0: [compField('SERVO'), compField('US', 'SRC')],
+        message1: '%1 cm → %2 °、%3 cm → %4 °', args1: [{ type: 'field_number', name: 'IN_MIN', value: 5, min: 2, max: 400, precision: 1 }, { type: 'field_number', name: 'OUT_MIN', value: 180, min: 0, max: 180, precision: 1 }, { type: 'field_number', name: 'IN_MAX', value: 50, min: 2, max: 400, precision: 1 }, { type: 'field_number', name: 'OUT_MAX', value: 0, min: 0, max: 180, precision: 1 }],
+        previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT, tooltip: '只能放在「持續成立時」規則裡；中間線性換算（與 Arduino 的 map() 相同），超出範圍取端點。' }
     ]);
   }
 
@@ -35,8 +39,8 @@
     kind: 'categoryToolbox',
     contents: [
       { kind: 'category', name: '規則', colour: '24', contents: [{ kind: 'block', type: 'dl_rule_while' }, { kind: 'block', type: 'dl_rule_event' }, { kind: 'block', type: 'dl_rule_start' }] },
-      { kind: 'category', name: '條件', colour: '168', contents: [{ kind: 'block', type: 'dl_cond_pressed' }, { kind: 'block', type: 'dl_cond_light' }] },
-      { kind: 'category', name: '動作', colour: '212', contents: [{ kind: 'block', type: 'dl_act_blink' }, { kind: 'block', type: 'dl_act_led' }, { kind: 'block', type: 'dl_act_toggle' }, { kind: 'block', type: 'dl_act_servo' }] }
+      { kind: 'category', name: '條件', colour: '168', contents: [{ kind: 'block', type: 'dl_cond_pressed' }, { kind: 'block', type: 'dl_cond_light' }, { kind: 'block', type: 'dl_cond_distance' }] },
+      { kind: 'category', name: '動作', colour: '212', contents: [{ kind: 'block', type: 'dl_act_blink' }, { kind: 'block', type: 'dl_act_led' }, { kind: 'block', type: 'dl_act_toggle' }, { kind: 'block', type: 'dl_act_servo' }, { kind: 'block', type: 'dl_act_servomap' }] }
     ]
   };
 
@@ -118,6 +122,7 @@
   function condOf(b) {
     if (b.type === 'dl_cond_pressed') return { type: 'pressed', comp: b.getFieldValue('COMP') || null };
     if (b.type === 'dl_cond_light') return { type: 'light', comp: b.getFieldValue('COMP') || null, op: b.getFieldValue('OP'), value: Number(b.getFieldValue('VALUE')) };
+    if (b.type === 'dl_cond_distance') return { type: 'distance', comp: b.getFieldValue('COMP') || null, op: b.getFieldValue('OP'), value: Math.round(Number(b.getFieldValue('VALUE'))) };
     return null;
   }
   function actionOf(b) {
@@ -126,6 +131,7 @@
     if (b.type === 'dl_act_toggle') return { type: 'toggle', comp };
     if (b.type === 'dl_act_blink') return { type: 'blink', comp, onMs: Math.round(Number(b.getFieldValue('ON'))), offMs: Math.round(Number(b.getFieldValue('OFF'))) };
     if (b.type === 'dl_act_servo') return { type: 'servo', comp, angle: Number(b.getFieldValue('ANGLE')) };
+    if (b.type === 'dl_act_servomap') { const n = k => Math.round(Number(b.getFieldValue(k))); return { type: 'servoMap', comp, src: b.getFieldValue('SRC') || null, inMin: n('IN_MIN'), inMax: n('IN_MAX'), outMin: n('OUT_MIN'), outMax: n('OUT_MAX') }; }
     return null;
   }
 
@@ -137,7 +143,8 @@
         const blk = a.type === 'led' ? { type: 'dl_act_led', fields: { COMP: a.comp, STATE: a.on ? 'on' : 'off' } }
           : a.type === 'toggle' ? { type: 'dl_act_toggle', fields: { COMP: a.comp } }
             : a.type === 'blink' ? { type: 'dl_act_blink', fields: { COMP: a.comp, ON: a.onMs, OFF: a.offMs } }
-              : { type: 'dl_act_servo', fields: { COMP: a.comp, ANGLE: a.angle } };
+              : a.type === 'servoMap' ? { type: 'dl_act_servomap', fields: { COMP: a.comp, SRC: a.src, IN_MIN: a.inMin, OUT_MIN: a.outMin, IN_MAX: a.inMax, OUT_MAX: a.outMax } }
+                : { type: 'dl_act_servo', fields: { COMP: a.comp, ANGLE: a.angle } };
         if (!head) head = cur = blk; else { cur.next = { block: blk }; cur = blk; }
       }
       return head;
@@ -147,7 +154,7 @@
       let b;
       if (r.type === 'while') {
         b = { type: 'dl_rule_while', x: 20, y, fields: { END: r.onEnd, RESTART: r.restart }, inputs: {} };
-        if (r.cond) b.inputs.COND = { block: r.cond.type === 'pressed' ? { type: 'dl_cond_pressed', fields: { COMP: r.cond.comp } } : { type: 'dl_cond_light', fields: { COMP: r.cond.comp, OP: r.cond.op, VALUE: r.cond.value } } };
+        if (r.cond) b.inputs.COND = { block: r.cond.type === 'pressed' ? { type: 'dl_cond_pressed', fields: { COMP: r.cond.comp } } : { type: r.cond.type === 'distance' ? 'dl_cond_distance' : 'dl_cond_light', fields: { COMP: r.cond.comp, OP: r.cond.op, VALUE: r.cond.value } } };
       } else if (r.type === 'event') b = { type: 'dl_rule_event', x: 20, y, fields: { COMP: r.comp, EVENT: r.event }, inputs: {} };
       else b = { type: 'dl_rule_start', x: 20, y, inputs: {} };
       const c = chain(r.actions); if (c) b.inputs.DO = { block: c };

@@ -1,4 +1,4 @@
-# DofLab V2.4 原型
+# DofLab V2.5 原型
 
 從電路配置、行為設計、模擬測試，到真實設備同步的教學與開發平台。本版依《DofLab 規劃文件 v0.1》重新開發。
 
@@ -40,7 +40,7 @@ python3 pi_bridge.py --mock       # 沒有樹莓派時，用模擬腳位測試�
 
 ## 引導實驗
 
-「開始／實驗」列出 10 個現成實驗，每個都鎖定元件與行為，學生只負責接線，完成後依任務清單逐項打勾。
+「開始／實驗」列出 15 個現成實驗，每個都鎖定元件與行為，學生只負責接線，完成後依任務清單逐項打勾。
 
 | 實驗 | 元件 | 行為 | 板型 |
 |---|---|---|---|
@@ -54,9 +54,27 @@ python3 pi_bridge.py --mock       # 沒有樹莓派時，用模擬腳位測試�
 | **太亮警示**（V2.4） | 光敏模組、電阻、黃 LED | 亮度超過 70 % 時快速閃爍 | Uno／ESP32 |
 | **光控遮陽板**（V2.4） | 光敏模組、伺服 | 亮度超過 60 % 時伺服轉到 150°，否則回到 30° | Uno／ESP32 |
 | **雙按鈕雙燈（麵包板）**（V2.4） | 2 按鈕、2 電阻、2 LED，插在麵包板 | 兩組各自切換；練習電源排共地 | Uno／ESP32／Pi |
+| **距離警示燈**（V2.5） | 超音波、電阻、LED | 物體近於 20 cm 時 LED 亮 | Uno／ESP32／Pi |
+| **感應垃圾桶蓋**（V2.5） | 超音波、SG90 | 手近於 15 cm 時伺服轉到 100°（開蓋），離開回到 10° | Uno／ESP32／Pi |
+| **停車場柵欄**（V2.5） | 超音波、SG90、電阻、綠 LED | 車子近於 10 cm 時柵欄抬到 90°、綠燈亮 | Uno／ESP32／Pi |
+| **超音波距離指針**（V2.5） | 超音波、SG90 | 60 cm 內伺服角度跟著距離（5 cm → 180°、50 cm → 0°），離開時停在最後位置 | Uno／ESP32／Pi |
+| **倒車雷達（麵包板）**（V2.5） | 超音波、2 電阻、黃紅 LED，插在麵包板 | 近於 40 cm 黃燈閃爍，近於 15 cm 紅燈也亮 | Uno／ESP32／Pi |
 
 - Raspberry Pi 沒有類比輸入（ADC），用到光敏模組的實驗不提供 Pi 版。
 - 伺服角度是送出的命令，SG90 類伺服沒有位置回授，畫面的量測欄會標示「無回授」。
+
+### 超音波測距模組
+
+- 元件清單的「超音波測距」有兩種型號：**HC-SR04**（只能 5 V 供電）與 **HC-SR04P 類**（3.3–5 V 皆可）。ECHO 的高電位等於模組的 VCC，所以：
+  - Uno：HC-SR04 接 5V 即可。
+  - ESP32、樹莓派（3.3 V 邏輯）：用 HC-SR04P 類模組接 3V3。HC-SR04 接 5V 會被判定為錯誤（ECHO 5 V 會損壞腳位）；接分壓電阻的做法本版不分析。
+- 3D 畫面中，HC-SR04 是藍色電路板，3.3 V 版（HC-SR04P 類）是綠色電路板。
+- 接線：VCC、GND、TRIG（要能輸出）、ECHO（只能輸入的腳位也可以，例如 ESP32 的 GPIO34–39）。教師模式可以分別指定 TRIG 與 ECHO 腳位。
+- 時序：每 60 ms 量一次，規則使用「上一次量到」的距離，所以反應會慢 60–120 ms；沒有回波或超過 4 m 一律當成 400 cm。
+- 產生的 Arduino 程式不用 `pulseIn`（它會讓整個程式停住最多數十毫秒），而是每一輪迴圈看一次 ECHO，所以閃爍、按鈕與伺服照常運作；精度取決於迴圈速度（Uno 上約 1 cm）。樹莓派版使用 gpiozero 的 `DistanceSensor`。
+- 新積木：條件「量到的距離小於／大於 … cm」，動作「伺服角度跟著距離」（線性換算，與 Arduino 的 `map()` 相同）。
+- 觀測頁用拉桿移動前方的物體（3D 畫面的橘色板，距離經過壓縮，只是示意），也可以按「移走物體」模擬沒有回波。
+- 真機同步：Uno／ESP32 需要 **DofLabFirmata 1.1** 以上（觀測頁按「上傳 DofLabFirmata」即可）；StandardFirmata 沒有超音波功能，距離會顯示「不支援」。唯讀時韌體會每 60 ms 送一次 10 µs 的 TRIG 觸發脈衝，這是量距離必須的輸出。樹莓派經 `pi_bridge.py` 回報。
 
 ## 教師模式
 
@@ -109,7 +127,7 @@ python3 pi_bridge.py --mock       # 沒有樹莓派時，用模擬腳位測試�
 src/core/      與介面無關的核心（Node 與瀏覽器共用同一份檔案）
   boards.js        板型能力資料：Uno R3、ESP32-DevKitC V4、Pi 4B
   breadboard.js    麵包板：孔位、導通條、插入與拔出
-  components.js    元件型錄：LED、電阻、按鈕、光敏模組、SG90 類伺服、外部 5V 電源
+  components.js    元件型錄：LED、電阻、按鈕、光敏模組、超音波測距模組、SG90 類伺服、外部 5V 電源
   project.js       專案格式 v2、場景座標與網表、保存／載入／升級、輸入雜湊
   netlist.js       網表分析與電路驗證
   behavior.js      行為 IR、驗證、行為摘要
@@ -133,9 +151,9 @@ e2e/           Playwright 端到端測試
 ## 測試
 
 ```bash
-node --test --test-concurrency=1 tests/*.test.js     # 79 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
-python3 -m unittest discover -s tests -p "test_*.py" # 14 項（上傳端到端需要 avrdude 與 socat）
-python3 e2e/e2e.py                                   # 124 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py breadboard experiments）
+node --test --test-concurrency=1 tests/*.test.js     # 90 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
+python3 -m unittest discover -s tests -p "test_*.py" # 16 項（上傳端到端需要 avrdude 與 socat）
+python3 e2e/e2e.py                                   # 136 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic）
 ```
 
 ### 示範影片

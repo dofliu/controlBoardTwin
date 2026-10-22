@@ -23,7 +23,7 @@ class Compile(unittest.TestCase):
     def tearDownClass(cls): cls.proc.terminate(); cls.proc.wait(5)
 
     def test_uno_generated_sketches_compile(self):
-        for exp in ["hold-blink", "servo-cmd", "night-light", "toggle-led", "ped-light", "bright-alarm", "sun-shade", "bb-two-toggles"]:
+        for exp in ["hold-blink", "servo-cmd", "night-light", "toggle-led", "ped-light", "bright-alarm", "sun-shade", "bb-two-toggles", "dist-alarm", "smart-bin", "parking-gate", "dist-gauge", "parking-radar"]:
             r = post(self.port, "uno", gen(exp, "uno"))
             self.assertTrue(r["ok"], exp + "\n" + r["raw"][-1500:])
             self.assertEqual(r["toolchain"]["fqbn"], "arduino:avr:uno"); self.assertTrue(r["size"]["bytes"] > 0)
@@ -37,7 +37,7 @@ class Compile(unittest.TestCase):
         self.assertIn("digitalWrit", r["raw"])
 
     def test_pi_py_compile(self):
-        for exp in ["hold-blink", "servo-cmd", "toggle-led", "ped-light", "bb-two-toggles"]:
+        for exp in ["hold-blink", "servo-cmd", "toggle-led", "ped-light", "bb-two-toggles", "dist-alarm", "smart-bin", "parking-gate", "dist-gauge", "parking-radar"]:
             r = post(self.port, "pi4b", gen(exp, "pi4b")); self.assertTrue(r["ok"], exp + " " + r["raw"])
         r = post(self.port, "pi4b", "def main(:\n    pass\n"); self.assertFalse(r["ok"]); self.assertEqual(r["diagnostics"][0]["line"], 1)
 
@@ -46,7 +46,7 @@ class Compile(unittest.TestCase):
         r = post(self.port, "esp32", gen("hold-blink", "esp32"))
         if not r["ok"] and ("not found" in r["raw"] or "not installed" in r["raw"]):
             self.assertNotEqual(r["exitCode"], 0); self.skipTest("這台機器沒有 ESP32 core（已確認服務如實回報失敗）")
-        for exp in ["hold-blink", "servo-cmd", "night-light", "toggle-led", "ped-light", "bright-alarm", "sun-shade", "bb-two-toggles"]:
+        for exp in ["hold-blink", "servo-cmd", "night-light", "toggle-led", "ped-light", "bright-alarm", "sun-shade", "bb-two-toggles", "dist-alarm", "smart-bin", "parking-gate", "dist-gauge", "parking-radar"]:
             r = post(self.port, "esp32", gen(exp, "esp32"))
             self.assertTrue(r["ok"], exp + "\n" + r["raw"][-1500:]); self.assertEqual(r["toolchain"]["fqbn"], "esp32:esp32:esp32")
 

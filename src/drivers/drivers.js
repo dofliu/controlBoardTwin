@@ -13,7 +13,13 @@
 
   /* ======================= Arduino：Firmata over Web Serial ======================= */
   class FirmataDriver {
-    constructor(twin, hooks, boardId) { this.twin = twin; this.hooks = hooks || {}; this.board = DL.boards[boardId || 'uno']; this.kind = 'firmata'; this.buf = []; this.sysex = null; this.version = null; this.caps = null; this.firmware = null; this.analogMap = null; this.seq = 0; this.pinSignals = {}; this.outPins = {}; this.lastCmdByPin = {}; }
+    constructor(twin, hooks, boardId) { this.twin = twin; this.hooks = hooks || {}; this.board = DL.boards[boardId || 'uno']; this.kind = 'firmata'; this.buf = []; this.sysex = null; this.version = null; this.caps = null; this.firmware = null; this.fwVersion = null; this.analogMap = null; this.seq = 0; this.pinSignals = {}; this.sonarSignals = {}; this.outPins = {}; this.lastCmdByPin = {}; }
+    // 超音波需要 DofLabFirmata 1.1 以上（StandardFirmata 沒有這個功能）
+    sonarSupport() {
+      if (this.firmware !== 'DofLabFirmata') return { ok: false, msg: `${this.firmware || '目前的韌體'} 不支援超音波測距：請在「觀測」頁按「上傳 DofLabFirmata」，再重新連線。超音波的距離會一直顯示「未知」。` };
+      const v = this.fwVersion || [1, 0]; if (v[0] < 1 || (v[0] === 1 && v[1] < 1)) return { ok: false, msg: `DofLabFirmata ${v.join('.')} 太舊，1.1 起才支援超音波：請重新上傳 DofLabFirmata。` };
+      return { ok: true };
+    }
     static available() { return typeof navigator !== 'undefined' && 'serial' in navigator; }
     async connect() {
       if (!FirmataDriver.available()) throw new Error('這個瀏覽器不支援 Web Serial：請用電腦版 Chrome 或 Edge，並從 https 或 http://localhost 開啟本頁。');
@@ -75,7 +81,9 @@
         if (id) { delete this.lastCmdByPin[pin]; const o = this.outPins[pin]; this.twin.ack(id, o && o.kind === 'servo' ? state : state ? 1 : 0); }
       } else if (cmd === 0x79) { // REPORT_FIRMWARE：主次版本＋名稱（每字 2 個 7 位元）
         let name = ''; for (let i = 3; i + 1 < d.length; i += 2) name += String.fromCharCode(d[i] | (d[i + 1] << 7));
-        this.firmware = name.replace(/\.ino$/, '') || null;
+        this.firmware = name.replace(/\.ino$/, '') || null; this.fwVersion = [d[1], d[2]];
+      } else if (cmd === 0x63) { // DofLab 擴充：超音波距離（trig、cm 兩個 7 位元）
+        const s = this.sonarSignals[d[1]]; if (s) { this.twin.measure(s, d[2] | (d[3] << 7), { seq: ++this.seq }); this.twin.heard(); }
       } else if (cmd === 0x6A) { // ANALOG_MAPPING_RESPONSE：每個腳位對應的類比通道（0x7F = 無）
         this.analogMap = {}; for (let i = 1; i < d.length; i++) if (d[i] !== 0x7F) this.analogMap[i - 1] = d[i];
       }
@@ -83,10 +91,16 @@
     send(bytes) { if (!this.writer) return Promise.resolve(); return this.writer.write(new Uint8Array(bytes)).catch(e => this.log('寫入失敗：' + e.message, 'e')); }
     // 唯讀：只設定輸入腳位（上拉／類比）並開啟回報
     async watch(inputs) {
+      let res = {};
+      for (const i of inputs.filter(x => x.kind === 'sonar')) {
+        const ok = this.sonarSupport(); if (!ok.ok) { res.sonarUnsupported = ok.msg; continue; }
+        this.sonarSignals[i.num] = i.signal; await this.send([0xF0, 0x62, i.num, i.echo, 0xF7]);
+      }
       for (const i of inputs) {
         if (i.kind === 'button') { this.pinSignals[i.num] = { kind: 'button', name: i.signal }; await this.send([0xF4, i.num, 0x0B]); await this.send([0xD0 | (i.num >> 3), 1]); }
         if (i.kind === 'analog') { const ch = this.analogMap && i.num in this.analogMap ? this.analogMap[i.num] : i.num - 14; this.pinSignals[i.num] = { kind: 'analog', name: i.signal, ch }; await this.send([0xF4, i.num, 0x02]); await this.send([0xC0 | ch, 1]); }
       }
+      return res;
     }
     async authorize(outputs) {
       for (const o of outputs) { this.outPins[o.num] = o; await this.send([0xF4, o.num, o.kind === 'servo' ? 0x04 : 0x01]); }
@@ -105,7 +119,7 @@
     }
     async disconnect(silent) {
       this.closing = true; clearInterval(this.hb);
-      try { if (!silent) { await this.revoke(); await sleep(150); } } catch (e) { }   // 撤銷後稍等，讓設備處理完再關閉連接埠
+      try { if (!silent) { if (Object.keys(this.sonarSignals).length) await this.send([0xF0, 0x62, 0x7F, 0xF7]); await this.revoke(); await sleep(150); } } catch (e) { }   // 先停止超音波（TRIG 回到輸入）   // 撤銷後稍等，讓設備處理完再關閉連接埠
       if (this.reader) { try { await this.reader.cancel(); } catch (e) { } }   // 必須 await，否則 reader 已釋放時的拒絕會變成未處理錯誤
       try { this.writer && this.writer.releaseLock(); } catch (e) { }
       if (this.port) { try { await this.port.close(); } catch (e) { } }
@@ -137,7 +151,8 @@
             resolve({ deviceId: 'pi:' + (m.host || url), info: m.model, identity });
           } else if (m.op === 'input') {
             const s = this.pinSignals[m.pin]; if (s) this.twin.measure(s.name, m.value === 0, { seq: m.seq, src: 'pi:' + (hello && hello.host) });
-          } else if (m.op === 'pong') this.twin.heard();
+          } else if (m.op === 'distance') { const s = this.sonarSignals && this.sonarSignals[m.trig]; if (s) this.twin.measure(s, m.cm, { seq: m.seq, src: 'pi:' + (hello && hello.host) }); }
+          else if (m.op === 'pong') this.twin.heard();
           else if (m.op === 'ack') this.twin.ack(m.id, m.kind === 'servo' ? m.value : m.value ? 1 : 0);
           else if (m.op === 'authorized') this.log(`樹莓派已允許寫入：${m.outputs.map(o => 'GPIO' + o.pin).join('、')}`, 's');
           else if (m.op === 'error') this.log('樹莓派：' + m.message, 'e');
@@ -145,7 +160,13 @@
       });
     }
     send(o) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(o)); }
-    async watch(inputs) { for (const i of inputs) this.pinSignals[i.num] = { kind: i.kind, name: i.signal }; this.send({ op: 'watch', pins: inputs.filter(i => i.kind === 'button').map(i => ({ pin: i.num, pull: 'up' })) }); }
+    async watch(inputs) {
+      this.sonarSignals = {};
+      for (const i of inputs) { if (i.kind === 'sonar') this.sonarSignals[i.num] = i.signal; else this.pinSignals[i.num] = { kind: i.kind, name: i.signal }; }
+      this.send({ op: 'watch', pins: inputs.filter(i => i.kind === 'button').map(i => ({ pin: i.num, pull: 'up' })) });
+      const so = inputs.filter(i => i.kind === 'sonar'); if (so.length) this.send({ op: 'sonar', sensors: so.map(i => ({ trig: i.num, echo: i.echo })) });
+      return {};
+    }
     async authorize(outputs) { for (const o of outputs) this.outPins[o.num] = o; this.send({ op: 'authorize', outputs: outputs.map(o => ({ pin: o.num, kind: o.kind })) }); }
     async write(cmd, out) {
       if (!this.outPins[out.num]) { this.log(`${cmd.name} 的腳位沒有授權，命令未送出。`, 'e'); return; }

@@ -2,7 +2,7 @@
 const test = require('node:test'); const assert = require('node:assert');
 const { DL } = require('./helpers');
 const P = DL.project; const AW = DL.autowire;
-const bind = p => { const a = DL.netlist.analyze(p); return Object.fromEntries(Object.entries(a.bindings).map(([k, b]) => [k, b.pin])); };
+const bind = p => { const a = DL.netlist.analyze(p); return Object.fromEntries(Object.entries(a.bindings).flatMap(([k, b]) => b.role === 'ultrasonic' ? [[k, b.trig], [k + '.ECHO', b.echo]] : [[k, b.pin]])); };
 const errors = p => DL.netlist.analyze(p).issues.filter(i => i.level === 'error').map(i => i.msg);
 
 test('所有引導實驗 × 三種板型：從沒有接線自動完成，檢查沒有錯誤，腳位與實驗建議相同', () => {

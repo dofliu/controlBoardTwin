@@ -45,7 +45,11 @@
       return;
     }
     card.querySelector('h3').firstChild.textContent = '接線助手 ';
-    const pinRows = Object.entries(pl.pins).map(([id, pin]) => { const c = DL.project.findComp(this.p, id); return `<li><span class="mono">${esc(id)}</span><span>${esc(board.pinLabel(board.pinById[pin]))}</span><span class="muted">${c && c.prefPin ? '老師指定' : this.analysis.bindings[id] ? '已接好' : '自動選擇'}</span></li>`; }).join('');
+    const pinRows = Object.entries(pl.pins).map(([id, pin]) => {
+      const echo = /\.ECHO$/.test(id); const cid = id.replace(/\.ECHO$/, ''); const c = DL.project.findComp(this.p, cid);
+      const name = c && c.type === 'US' ? `${cid} ${echo ? 'ECHO' : 'TRIG'}` : id; const pref = c && (echo ? c.prefPinEcho : c.prefPin);
+      return `<li><span class="mono">${esc(name)}</span><span>${esc(board.pinLabel(board.pinById[pin]))}</span><span class="muted">${pref ? '老師指定' : this.analysis.bindings[cid] ? '已接好' : '自動選擇'}</span></li>`;
+    }).join('');
     const custom = this.p.origin.kind !== 'guided';
     $('assistBody').innerHTML = nextHtml
       + (iss ? `<ul class="issues">${iss}</ul>` : '')
@@ -74,14 +78,17 @@
   // 選取元件時：老師可以指定腳位
   P.prefPinHtml = function (c) {
     if (!this.teacher || !this.teacher.on) return '';
-    const need = { LED: ['dout'], BTN: ['din', 'pullup'], LDR: ['adc'], SERVO: ['servo'] }[c.type]; if (!need) return '';
+    const need = { LED: ['dout'], BTN: ['din', 'pullup'], LDR: ['adc'], SERVO: ['servo'], US: ['dout'] }[c.type]; if (!need) return '';
     const board = DL.boards[this.p.board.type];
-    const opts = board.pins.filter(x => x.kind === 'gpio' && need.every(k => x.caps.includes(k)));
-    return `<label class="field"><span>指定腳位（教師模式；自動接線會照這個腳位）</span><select class="inp" id="prefPin"><option value="">自動選擇</option>${opts.map(x => `<option value="${x.id}" ${c.prefPin === x.id ? 'selected' : ''}>${esc(board.pinLabel(x))}${x.notes.some(n => n.level === 'warn') ? '（注意）' : ''}</option>`).join('')}</select></label>`;
+    const sel = (id, key, caps, label) => { const opts = board.pins.filter(x => x.kind === 'gpio' && caps.every(k => x.caps.includes(k))); return `<label class="field"><span>${label}</span><select class="inp" id="${id}"><option value="">自動選擇</option>${opts.map(x => `<option value="${x.id}" ${c[key] === x.id ? 'selected' : ''}>${esc(board.pinLabel(x))}${x.notes.some(n => n.level === 'warn') ? '（注意）' : ''}</option>`).join('')}</select></label>`; };
+    if (c.type === 'US') return sel('prefPin', 'prefPin', ['dout'], '指定 TRIG 腳位（教師模式；要能輸出）') + sel('prefPinEcho', 'prefPinEcho', ['din'], '指定 ECHO 腳位（只能輸入的腳位也可以）');
+    return sel('prefPin', 'prefPin', need, '指定腳位（教師模式；自動接線會照這個腳位）');
   };
   P.bindPrefPin = function (c) {
-    const s = $('prefPin'); if (!s) return;
-    s.onchange = () => { if (s.value) c.prefPin = s.value; else delete c.prefPin; this.renderAssist(); this.renderHeader(); this.toast(s.value ? `${c.id} 指定為 ${s.options[s.selectedIndex].text}` : `${c.id} 改回自動選擇腳位`); };
+    for (const [id, key, what] of [['prefPin', 'prefPin', c.type === 'US' ? ' TRIG' : ''], ['prefPinEcho', 'prefPinEcho', ' ECHO']]) {
+      const s = $(id); if (!s) continue;
+      s.onchange = () => { if (s.value) c[key] = s.value; else delete c[key]; this.renderAssist(); this.renderHeader(); this.toast(s.value ? `${c.id}${what} 指定為 ${s.options[s.selectedIndex].text}` : `${c.id}${what} 改回自動選擇腳位`); };
+    }
   };
 
   /* ---------- 存成引導實驗 ---------- */

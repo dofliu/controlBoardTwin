@@ -34,6 +34,7 @@ class VirtualUno {
     if (opts.bootloader) loadHex(opts.bootloader, this.flash);
     this.onSerial = null; this.rxQueue = []; this.pinWatchers = []; this.inputs = {}; this.analog = {};
     this.millisAddr = opts.millisAddr || null;
+    this.sched = []; this.sonars = [];
     this.resets = []; this.spmBuf = new Uint16Array(64).fill(0xffff); this.spmLog = { erase: 0, write: 0 };
     this.boot(RESET.PORF);
   }
@@ -79,6 +80,7 @@ class VirtualUno {
       if (this.bootloader && cpu.progMem[cpu.pc] === 0x95e8) this.spm(); else avr.avrInstruction(cpu);
       cpu.tick(); left -= cpu.cycles - c0;
       if (this.pendingReset) { const f = this.pendingReset; this.pendingReset = 0; this.cycleBase = (this.cycleBase || 0) + this.cpu.cycles; this.boot(f); }
+      if (this.sched.length) { const now = (this.cycleBase || 0) + this.cpu.cycles; while (this.sched.length && this.sched[0].at <= now) this.sched.shift().fn(); }
       if (this.rxQueue.length && (++k & 63) === 0) this.feed();
     }
     this.feed();
@@ -88,6 +90,27 @@ class VirtualUno {
   setInput(pin, high) { this.inputs[pin] = !!high; const [p, b] = PIN(pin); this.port[p].setPin(b, !!high); }
   pinState(pin) { const [p, b] = PIN(pin); return this.port[p].pinState(b); }
   isHigh(pin) { return this.pinState(pin) === avr.PinState.High; }
+  // 外部電路：在指定的 CPU 週期執行（例如超音波模組的回波）
+  at(cycle, fn) { this.sched.push({ at: cycle, fn }); this.sched.sort((x, y) => x.at - y.at); }
+  get cycle() { return (this.cycleBase || 0) + this.cpu.cycles; }
+  // 超音波模組（HC-SR04 的時序）：TRIG 高電位 ≥ 10 µs 後拉低 → 460 µs 後 ECHO 變高，寬度 = 距離 × 58 µs；
+  // cm 為 null 表示沒有回波（ECHO 維持高電位 38 ms，和常見模組一樣）。回傳物件可隨時改 cm。
+  attachSonar(trig, echo, cm) {
+    const s = { trig, echo, cm: cm === undefined ? 100 : cm, hi: null, pulses: 0, short: 0 };
+    const us = n => Math.round(n * FREQ / 1e6);
+    this.setInput(echo, false);
+    let last = this.isHigh(trig);
+    this.pinWatchers.push(() => {
+      const h = this.isHigh(trig); if (h === last) return; last = h;
+      if (h) { s.hi = this.cycle; return; }
+      if (s.hi === null) return;
+      if (this.cycle - s.hi < us(10)) { s.short++; return; }   // 觸發脈衝太短：模組不會動作
+      s.pulses++;
+      const rise = this.cycle + us(460); const width = s.cm === null ? 38000 : s.cm * 58 + 29;
+      this.at(rise, () => this.setInput(echo, true)); this.at(rise + us(width), () => this.setInput(echo, false));
+    });
+    this.sonars.push(s); return s;
+  }
   setAnalog(ch, volts) { this.analog[ch] = volts; this.adc.channelValues[ch] = volts; }
   millis() { if (this.millisAddr == null) return null; const d = this.cpu.data, a = this.millisAddr; return (d[a] | d[a + 1] << 8 | d[a + 2] << 16 | d[a + 3] << 24) >>> 0; }
 

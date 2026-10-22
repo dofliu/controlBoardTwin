@@ -17,7 +17,7 @@
       this.ui = { tab: 'config', selected: null, mode: 'idle', placingType: null, wiringFrom: null, confirm: null };
       this.twin = DL.createTwin();
       this.events = [];
-      this.sim = { running: false, time: 0, speed: 1, engine: null, held: {}, holdStart: {}, maxHoldMs: 0, minLight: 101, maxLight: -1, presses: 0, last: null };
+      this.sim = { running: false, time: 0, speed: 1, engine: null, held: {}, holdStart: {}, maxHoldMs: 0, minLight: 101, maxLight: -1, presses: 0, last: null, dist: {}, minDist: 999, nearMin: 999, nearMax: -1, farAfterNear: false };
       this.hw = { driver: null, identity: null, checks: {}, sawChange: {}, busy: false };
       this.trace = [];
       this.saved = null;
@@ -60,7 +60,7 @@
       this.ui.selected = null; this.cancelModes();
       this.twin.reset(); this.events = []; this.trace = [];
       this.hw.checks = {}; this.hw.sawChange = {};
-      this.sim.maxHoldMs = 0; this.sim.minLight = 101; this.sim.maxLight = -1; this.sim.presses = 0;
+      this.sim.maxHoldMs = 0; this.sim.minLight = 101; this.sim.maxLight = -1; this.sim.presses = 0; this.sim.minDist = 999; this.sim.nearMin = 999; this.sim.nearMax = -1; this.sim.farAfterNear = false;
       this.analysis = DL.netlist.analyze(p);
       this.resetSim();
       this.scene.build(p, this.analysis);
@@ -308,7 +308,8 @@
         LDR: '<svg viewBox="0 0 34 28"><rect x="5" y="6" width="24" height="18" rx="2" fill="#1f5fa8"/><circle cx="13" cy="13" r="4.5" fill="#e0a347"/><path d="M10 13h6" stroke="#8a4a10" stroke-width="1.2"/></svg>',
         PSU: '<svg viewBox="0 0 34 28"><rect x="3" y="6" width="28" height="17" rx="2" fill="#2b6b3a"/><rect x="5" y="9" width="9" height="11" rx="1" fill="#1b1d20"/><rect x="18" y="12" width="11" height="8" rx="1" fill="#1f9a4f"/><circle cx="21" cy="16" r="1.8" fill="#c3c8cc"/><circle cx="26" cy="16" r="1.8" fill="#c3c8cc"/></svg>',
         BB: '<svg viewBox="0 0 34 28"><rect x="2" y="4" width="30" height="20" rx="1.5" fill="#f1efe8" stroke="#c9c5ba"/><path d="M4 7h26M4 21h26" stroke="#d63a32" stroke-width=".8"/><path d="M4 8.6h26M4 19.4h26" stroke="#2b5fc4" stroke-width=".8"/><rect x="2" y="13.4" width="30" height="1.2" fill="#c9c5ba"/>' + [0, 1, 2, 3, 4, 5, 6, 7, 8].map(i => `<rect x="${5 + i * 3}" y="10.6" width="1.2" height="1.2" fill="#444"/><rect x="${5 + i * 3}" y="16.2" width="1.2" height="1.2" fill="#444"/>`).join('') + '</svg>',
-        SERVO: '<svg viewBox="0 0 34 28"><rect x="4" y="9" width="20" height="14" rx="1.5" fill="#2f6fbf"/><circle cx="18" cy="9" r="3" fill="#2f6fbf"/><rect x="16" y="6.5" width="15" height="4" rx="2" fill="#f2f2f2"/></svg>'
+        SERVO: '<svg viewBox="0 0 34 28"><rect x="4" y="9" width="20" height="14" rx="1.5" fill="#2f6fbf"/><circle cx="18" cy="9" r="3" fill="#2f6fbf"/><rect x="16" y="6.5" width="15" height="4" rx="2" fill="#f2f2f2"/></svg>',
+        US: '<svg viewBox="0 0 34 28"><rect x="1.5" y="7" width="31" height="14" rx="1.5" fill="#1f62a8"/><circle cx="9.5" cy="14" r="5.6" fill="#c9ced3"/><circle cx="9.5" cy="14" r="3.6" fill="#3a3f45"/><circle cx="24.5" cy="14" r="5.6" fill="#c9ced3"/><circle cx="24.5" cy="14" r="3.6" fill="#3a3f45"/><path d="M14 23v4M16 23v4M18 23v4M20 23v4" stroke="#c9a64b" stroke-width="1.2"/></svg>'
       };
       el.innerHTML = Object.values(DL.components).map(d => `<button class="pal" data-type="${d.type}" ${locked ? 'disabled' : ''} aria-pressed="${this.ui.placingType === d.type}">${icons[d.type] || ''}<span><b>${d.name}</b><small>${esc(d.model)}</small></span></button>`).join('') + (locked ? '<p class="hint">引導實驗鎖定了元件清單。</p>' : '');
       el.querySelectorAll('.pal').forEach(b => b.addEventListener('pointerdown', e => this.paletteDown(e, b.dataset.type)));
@@ -371,7 +372,7 @@
       const prefHtml = this.prefPinHtml ? this.prefPinHtml(c) : '';
       const mnt = DL.breadboard.mountOf(p, c.id);
       const mntHtml = mnt ? `<dt>麵包板</dt><dd>插在 ${esc(mnt.bb)}：${esc(mnt.holes.map(h => `${h.term}→${DL.breadboard.holeLabel(h.hole)}`).join('、'))}</dd>` : '';
-      el.innerHTML = `<dl class="kv"><dt>識別碼</dt><dd class="mono">${c.id}</dd><dt>型號</dt><dd>${esc(c.model)}</dd>${mntHtml}<dt>腳位綁定</dt><dd>${bnd ? esc(DL.boards[p.board.type].pinLabel(DL.boards[p.board.type].pinById[bnd.pin])) + (bnd.mA ? ` · 約 ${bnd.mA} mA` : '') : '<span class="muted">尚未形成有效綁定</span>'}</dd><dt>端子</dt><dd>${def.terminals.map(t => esc(t.label)).join('、')}</dd></dl>
+      el.innerHTML = `<dl class="kv"><dt>識別碼</dt><dd class="mono">${c.id}</dd><dt>型號</dt><dd>${esc(c.model)}</dd>${mntHtml}<dt>腳位綁定</dt><dd>${bnd ? (bnd.role === 'ultrasonic' ? esc(`TRIG ${DL.boards[p.board.type].pinLabel(DL.boards[p.board.type].pinById[bnd.trig])}、ECHO ${DL.boards[p.board.type].pinLabel(DL.boards[p.board.type].pinById[bnd.echo])}（VCC ${bnd.vcc} V）`) : esc(DL.boards[p.board.type].pinLabel(DL.boards[p.board.type].pinById[bnd.pin]))) + (bnd.mA ? ` · 約 ${bnd.mA} mA` : '') : '<span class="muted">尚未形成有效綁定</span>'}</dd><dt>端子</dt><dd>${def.terminals.map(t => esc(t.label)).join('、')}</dd></dl>
         ${params}${prefHtml}${(def.notes || []).map(n => `<p class="hint">${esc(n)}</p>`).join('')}
         <div class="row"><button class="btn" id="insRot">旋轉 90°</button>${mnt ? '<button class="btn" id="insUnmount">從麵包板拔出</button>' : ''}<button class="btn danger" id="insDel" ${p.lock.components ? 'disabled' : ''}>移除</button></div>`;
       if (mnt) $('insUnmount').onclick = () => this.unmount(c.id);
@@ -407,7 +408,7 @@
       $('wireList').querySelectorAll('li.ins').forEach(li => li.onclick = e => { if (e.target.dataset.unmount) return; this.ui.selected = { kind: 'comp', id: li.dataset.comp }; this.renderInspector(); this.renderWires(); });
       $('wireList').querySelectorAll('li[data-id]').forEach(li => li.onclick = e => { if (e.target.dataset.del) { DL.project.removeConnection(p, e.target.dataset.del); this.ui.selected = null; this.changed('circuit', `已移除 ${e.target.dataset.del}`); return; } this.ui.selected = { kind: 'wire', id: li.dataset.id }; this.renderInspector(); this.renderWires(); });
     }
-    taskCtx() { return { confirmedCurrent: this.confirmState() === 'current', maxHoldMs: this.sim.maxHoldMs, minLight: this.sim.minLight, maxLight: this.sim.maxLight, presses: this.sim.presses, armConfirmed: !!(this.p.arm && this.armConfirmState() === 'current'), armSawInvalid: !!(this.arm && this.arm.sawInvalid) }; }
+    taskCtx() { return { confirmedCurrent: this.confirmState() === 'current', maxHoldMs: this.sim.maxHoldMs, minLight: this.sim.minLight, maxLight: this.sim.maxLight, minDist: this.sim.minDist, nearMin: this.sim.nearMin, nearMax: this.sim.nearMax, farAfterNear: this.sim.farAfterNear, presses: this.sim.presses, armConfirmed: !!(this.p.arm && this.armConfirmState() === 'current'), armSawInvalid: !!(this.arm && this.arm.sawInvalid) }; }
     renderTasks() {
       const p = this.p; const card = $('taskCard');
       const e = p.origin.kind === 'guided' && DL.experiments.forProject(p);
@@ -418,7 +419,7 @@
       $('taskCount').textContent = `${done.filter(Boolean).length} / ${done.length}`;
       $('taskList').innerHTML = e.tasks.map((t, i) => `<li class="${done[i] ? 'done' : ''}">${esc(t.text)}</li>`).join('');
       const sg = e.suggest && e.suggest[p.board.type]; const bd = DL.boards[p.board.type];
-      $('taskSuggest').textContent = sg ? (e.custom && e.custom.strictPins ? '指定腳位：' : '建議腳位：') + Object.entries(sg).map(([k, v]) => `${k} → ${bd.pinById[v] ? bd.pinLabel(bd.pinById[v]) : v}`).join('、') + (e.custom && e.custom.strictPins ? '。' : '。其他相容腳位也可以。') : '';
+      $('taskSuggest').textContent = sg ? (e.custom && e.custom.strictPins ? '指定腳位：' : '建議腳位：') + Object.entries(sg).map(([k, v]) => `${k.replace(/\.ECHO$/, ' ECHO')}${p.components.some(c => c.id === k && c.type === 'US') ? ' TRIG' : ''} → ${bd.pinById[v] ? bd.pinLabel(bd.pinById[v]) : v}`).join('、') + (e.custom && e.custom.strictPins ? '。' : '。其他相容腳位也可以。') : '';
     }
 
     /* =========================== 行為 =========================== */
@@ -526,7 +527,7 @@
     }
     syncWiring(item) {
       const p = this.p; const b = DL.boards[p.board.type];
-      const r = DL.netlist.tryRewire(p, item.comp, item.codePin);
+      const r = DL.netlist.tryRewire(p, item.comp, item.codePin, item.part);
       if (!r.ok) { this.toast(r.msg, 'e'); return; }
       this.inlineConfirm('code', `把畫面中 ${item.comp} 的板端虛擬接線從 ${b.pinLabel(b.pinById[r.from])} 改到 ${b.pinLabel(b.pinById[r.to])}。實體導線不會因此移動；若已接真機，請自己改接並重新核對。`, '同步虛擬接線', () => {
         DL.project.rewireBoardEnd(p, r.wire, r.to);

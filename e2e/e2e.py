@@ -586,6 +586,134 @@ async def new_experiments(p):
     check("新實驗流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
     await b.close()
 
+async def ultrasonic_flow(p, pi_port):
+    """V2.5 超音波＋SG90：模擬（三種板型）、積木、真實編譯、教師指定 TRIG／ECHO、樹莓派閘道（模擬腳位）與虛擬 Uno（DofLabFirmata 實際量回波）"""
+    import aiohttp
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 1000})
+    pg = await ctx.new_page(); errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p")
+    await ev(pg, "localStorage.setItem('doflab.teacher','true')"); await pg.reload(); await pg.wait_for_function("window.doflab && doflab.p")
+    view = lambda sig: ev(pg, f"(()=>{{const v=doflab.twin.view('{sig}');return v.simulated?v.simulated.v:null}})()")
+    async def wait_sig(sig, val, ms=3000):
+        try: await pg.wait_for_function(f"(doflab.twin.view('{sig}').simulated||{{}}).v === {json.dumps(val)}", timeout=ms); return True
+        except Exception: return False
+    async def dist(cm):
+        await ev(pg, f"(()=>{{const r=document.getElementById('us-US1'); r.value={cm}; r.dispatchEvent(new Event('input'));}})()"); await pg.wait_for_timeout(50)
+    async def open_wire(exp, board):
+        await pg.click('#btnStart'); await pg.click(f'[data-exp="{exp}"][data-board="{board}"]'); await pg.wait_for_timeout(400)
+        await pg.click('#awAll'); await pg.wait_for_timeout(300)
+        await pg.click('#t-behavior'); await pg.wait_for_timeout(400)
+    async def to_observe():
+        await pg.click('#btnConfirm'); await pg.wait_for_timeout(100)
+        await pg.click('#t-observe'); await pg.wait_for_timeout(400); await pg.click('#simRun'); await pg.wait_for_timeout(100)
+    async def tasks_done():
+        await pg.click('#simRun'); await pg.click('#t-config'); await pg.wait_for_timeout(250)
+        return await ev(pg, "[document.querySelectorAll('#taskList li.done').length, document.querySelectorAll('#taskList li').length]")
+
+    # 1. 距離指針（Uno）：積木、接線、模擬、真實編譯
+    await open_wire('dist-gauge', 'uno')
+    bl = await ev(pg, "(()=>{const t=doflab.blocks.ws.getAllBlocks(false).map(b=>b.type); return {t, same: DL.stableStringify(doflab.blocks.toIR().ir)===DL.stableStringify(doflab.p.behavior.ir), b: doflab.analysis.bindings.US1}})()")
+    check("超音波：積木顯示「距離小於」條件與「伺服角度跟著距離」動作，積木轉回 IR 與實驗相同", 'dl_cond_distance' in bl['t'] and 'dl_act_servomap' in bl['t'] and bl['same'], json.dumps(bl)[:200])
+    check("超音波：接線助手把 TRIG 接 D7、ECHO 接 D8、VCC 接 5V（Uno 用 HC-SR04）", bl['b'] and bl['b']['trig'] == 'D7' and bl['b']['echo'] == 'D8' and bl['b']['vcc'] == 5, json.dumps(bl['b']))
+    summ = await pg.inner_text('#summaryList')
+    check("超音波：行為摘要寫出換算方式", '5 cm → 180°' in summ and '50 cm → 0°' in summ, summ[:120])
+    await to_observe()
+    await dist(12); a12 = await wait_sig('SERVO1.angle', 152)
+    await dist(40); a40 = await wait_sig('SERVO1.angle', 40)
+    await pg.click('[data-usfar="US1"]'); await pg.wait_for_timeout(600); far = await view('SERVO1.angle')
+    tw = await pg.inner_text('#twinRows')
+    await pg.screenshot(path=str(SHOTS / "u1_gauge_observe.png"))
+    d = await tasks_done()
+    check("距離指針：12 cm → 152°、40 cm → 40°；移走物體（沒有回波）指針停在 40°；孿生表顯示距離與「無回授」；任務全部完成", a12 and a40 and far == 40 and '沒有回波' in tw and '無回授' in tw and d[0] == d[1], json.dumps([a12, a40, far, d]))
+    await pg.click('#t-code'); await pg.click('#btnGen'); await pg.wait_for_timeout(300)
+    code = await ev(pg, "document.getElementById('code').value")
+    await pg.click('#btnCompile'); await pg.wait_for_function("document.querySelector('#btnCompile').textContent==='編譯'", timeout=180000)
+    badge = await pg.inner_text('#buildBadge'); scan = await pg.inner_text('#scanList')
+    check("距離指針：產生的程式用非阻塞量測（沒有 pulseIn）與 map()，arduino-cli 真實編譯成功；TRIG／ECHO 腳位比對一致", 'updateUS1' in code and 'pulseIn(' not in code and 'map(constrain(us1Cm' in code and '成功' in badge and 'US1 TRIG' in scan and 'US1 ECHO' in scan, badge + ' | ' + scan[:200])
+
+    # 2. 感應垃圾桶蓋（ESP32，3.3 V 版模組）
+    await open_wire('smart-bin', 'esp32')
+    bnd = await ev(pg, "doflab.analysis.bindings.US1")
+    await to_observe()
+    a0 = await view('SERVO1.angle'); await pg.click('[data-usnear="US1"]'); op = await wait_sig('SERVO1.angle', 100)
+    await dist(60); cl = await wait_sig('SERVO1.angle', 10)
+    d = await tasks_done()
+    check("感應垃圾桶蓋（ESP32）：HC-SR04P 接 3V3、TRIG GPIO26／ECHO GPIO27；手靠近 → 100°、離開 → 10°；任務全部完成", bnd['vcc'] == 3.3 and bnd['model'] == 'HC-SR04P' and (bnd['trig'], bnd['echo']) == ('GPIO26', 'GPIO27') and a0 == 10 and op and cl and d[0] == d[1], json.dumps([bnd, a0, op, cl, d]))
+
+    # 3. 倒車雷達（麵包板，Pi 4B）
+    await open_wire('parking-radar', 'pi4b')
+    rails = await ev(pg, "doflab.analysis.nets.filter(n=>n.gnd.length && (n.bb||[]).some(x=>x.bus==='TN'||x.bus==='BN')).length")
+    await to_observe()
+    await dist(30); await pg.wait_for_timeout(300); vals = []
+    for i in range(16): await pg.wait_for_timeout(60); vals.append(await view('LED1.state'))
+    r30 = await view('LED2.state')
+    await dist(10); red = await wait_sig('LED2.state', 1)
+    await pg.screenshot(path=str(SHOTS / "u2_radar_bb_observe.png"))
+    d = await tasks_done()
+    check("倒車雷達（麵包板，Pi 4B）：GND 走電源排；30 cm 黃燈閃爍、紅燈不亮；10 cm 紅燈亮；任務全部完成", rails >= 1 and len(set(vals)) == 2 and r30 == 0 and red and d[0] == d[1], json.dumps([rails, vals, r30, red, d]))
+
+    # 4. 教師：自訂專案指定 TRIG／ECHO 腳位，存成引導實驗
+    await ev(pg, "(()=>{const p=DL.project.create('uno',{name:'我的超音波'}); DL.project.addComponent(p,'US',{x:7.6,z:2.6},90); DL.project.addComponent(p,'SERVO',{x:10.4,z:-1.8},0); p.behavior.ir={rules:[{type:'while',cond:{type:'distance',comp:'US1',op:'lt',value:25},actions:[{type:'servo',comp:'SERVO1',angle:120}],onEnd:'off',restart:'restart'}]}; doflab.load(p); doflab.ui.selected={kind:'comp',id:'US1'}; doflab.renderInspector();})()")
+    await pg.wait_for_timeout(300)
+    await pg.select_option('#prefPin', 'D4'); await pg.select_option('#prefPinEcho', 'D5'); await pg.wait_for_timeout(200)
+    pins = await pg.inner_text('#assistBody')
+    await pg.click('#awAll'); await pg.wait_for_timeout(300)
+    bnd = await ev(pg, "doflab.analysis.bindings.US1")
+    await ev(pg, "doflab.openGuideDialog()"); await pg.wait_for_timeout(200); await pg.check('#gStrict'); await pg.click('#gSave'); await pg.wait_for_timeout(300)
+    cu = await ev(pg, "doflab._lastGuide && doflab._lastGuide.custom")
+    check("教師模式：超音波可以分別指定 TRIG（D4）與 ECHO（D5）；存成引導實驗時兩個腳位都記下來，任務寫出 TRIG／ECHO", 'US1 TRIG' in pins and 'US1 ECHO' in pins and bnd['trig'] == 'D4' and bnd['echo'] == 'D5' and cu and cu['pins'].get('US1.ECHO') == 'D5' and cu['hasDistance'], json.dumps([bnd, cu and cu['pins']]))
+    await pg.keyboard.press('Escape')
+
+    # 5. 樹莓派閘道（--mock）：唯讀量測距離 → 引擎推算
+    await ev(pg, "(()=>{const r=DL.experiments.solved('dist-alarm','pi4b'); doflab.load(DL.project.clone(r.project,{name:'Pi 超音波',origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}}));})()")
+    await pg.click('#t-behavior'); await pg.wait_for_timeout(300); await pg.click('#btnConfirm'); await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+    await pg.fill('#wsUrl', f'ws://localhost:{pi_port}/ws'); await pg.click('#hwConn')
+    await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=8000)
+    try: await pg.wait_for_function("(doflab.twin.view('US1.distance').measured||{}).v === 100", timeout=3000); m100 = True
+    except Exception: m100 = False
+    await pg.click('#simRun')
+    async with aiohttp.ClientSession() as s:
+        async with s.ws_connect(f'http://localhost:{pi_port}/ws') as ws:
+            await ws.send_json({"op": "mock_distance", "trig": 5, "cm": 12})
+            on = await wait_sig('LED1.state', 1, 4000)
+            q = await ev(pg, "doflab.twin.quality('US1.distance')"); cmd = await ev(pg, "doflab.twin.view('LED1.state').commanded")
+            await ws.send_json({"op": "mock_distance", "trig": 5, "cm": 100})
+            off = await wait_sig('LED1.state', 0, 4000)
+    check("樹莓派閘道（模擬腳位）：唯讀時量測層收到距離；12 cm → 行為推算 LED1 亮、100 cm → 熄滅；唯讀沒有送出命令", m100 and on and off and q == 'ok' and cmd is None, json.dumps([m100, on, off, q, cmd]))
+    await pg.click('#simRun'); await pg.click('#hwDisc'); await pg.wait_for_timeout(300)
+    check("超音波流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    await b.close()
+
+    # 6. 虛擬 Uno（DofLabFirmata 1.1 真實韌體＋HC-SR04 時序模型）：真機同步一路到 D13
+    hexText = (ROOT / 'tests' / 'fixtures' / 'DofLabFirmata-uno.hex').read_text()
+    bundle = (ROOT / 'e2e' / 'virtual_uno.bundle.js').read_text()
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 1000})
+    await ctx.add_init_script(bundle + "\nwindow.addEventListener('DOMContentLoaded',()=>{const u=DofLabVirtual.install(" + json.dumps(hexText) + "); window.__sonar=u.attachSonar(7, 8, 80);});")
+    pg = await ctx.new_page(); errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p && window.__vuno && window.__sonar")
+    await ev(pg, "(()=>{const r=DL.experiments.solved('dist-alarm','uno'); doflab.load(DL.project.clone(r.project,{name:'虛擬 Uno 超音波',origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}}));})()")
+    await pg.click('#t-behavior'); await pg.wait_for_timeout(300); await pg.click('#btnConfirm'); await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+    await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=15000)
+    try: await pg.wait_for_function("(m => m && Math.abs(m.v - 80) <= 1)(doflab.twin.view('US1.distance').measured)", timeout=5000); m80 = True
+    except Exception: m80 = False
+    hb = await pg.inner_text('#hwBody')
+    for cb in await pg.locator('[data-chk]').all(): await cb.check()
+    await pg.wait_for_timeout(100); can = await pg.locator('#hwAuth').is_enabled()
+    await pg.click('#hwAuth'); await pg.wait_for_timeout(300); await pg.click('#simRun')
+    await ev(pg, "window.__sonar.cm = 9")
+    try: await pg.wait_for_function("window.__vuno.isHigh(13)", timeout=5000); lit = True
+    except Exception: lit = False
+    ack = await ev(pg, "(v => v.ack && v.ack.matches)(doflab.twin.view('LED1.state'))")
+    await ev(pg, "window.__sonar.cm = 60")
+    try: await pg.wait_for_function("!window.__vuno.isHigh(13)", timeout=5000); dark = True
+    except Exception: dark = False
+    await pg.screenshot(path=str(SHOTS / "u3_virtual_uno_sonar.png"))
+    await pg.click('#simRun'); await pg.click('#hwDisc'); await pg.wait_for_timeout(500)
+    trig_in = await ev(pg, "(window.__vuno.cpu.data[0x2A] & 0x80) === 0")
+    check("虛擬 Uno＋DofLabFirmata：韌體量到 80 cm（誤差 ≤ 1 cm）；授權後物體靠近到 9 cm → D13 亮並收到 ACK、移到 60 cm → 熄滅；中斷後 TRIG 回到輸入", m80 and can and lit and ack and dark and trig_in and 'TRIG' in hb, json.dumps([m80, can, lit, ack, dark, trig_in]))
+    check("虛擬 Uno 超音波流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    await b.close()
+
 async def main():
     srv = subprocess.Popen([sys.executable, str(DIST / 'doflab_server.py'), '--port', '8766'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(8766)
     bridge = subprocess.Popen([sys.executable, str(DIST / 'pi_bridge.py'), '--mock', '--port', '8765'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(8765)
@@ -598,6 +726,7 @@ async def main():
             if on('teacher'): await teacher_flow(p)
             if on('experiments'): await new_experiments(p)
             if on('pi'): bridge = await pi_hw(p, 8765, bridge)
+            if on('ultrasonic'): await ultrasonic_flow(p, 8765)
             if on('arm'): await arm_flow(p)
             if on('uno'): await uno_virtual(p)
             if on('upload'): await upload_flow(p)

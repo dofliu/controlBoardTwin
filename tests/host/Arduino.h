@@ -14,9 +14,15 @@
 #define A3 17
 #define A4 18
 #define A5 19
-extern unsigned long __now; extern int __din[64]; extern int __dout[64]; extern int __adc[64]; extern int __mode[64];
-inline unsigned long millis(){ return __now; }
-inline int digitalRead(int p){ return __din[p]; }
-inline void digitalWrite(int p,int v){ __dout[p]=v; }
+typedef uint8_t byte;
+extern unsigned long long __us; extern int __din[64]; extern int __dout[64]; extern int __adc[64]; extern int __mode[64];
+int __sonarRead(int p, int *v); void __sonarWrite(int p, int v);   // 超音波模組的替身（harness.cpp）
+inline unsigned long millis(){ return (unsigned long)(__us / 1000); }
+inline unsigned long micros(){ return (unsigned long)__us; }
+inline void delayMicroseconds(unsigned int n){ __us += n; }
+inline int digitalRead(int p){ int v; if (__sonarRead(p, &v)) return v; return __din[p]; }
+inline void digitalWrite(int p,int v){ __dout[p]=v; __sonarWrite(p, v); }
 inline void pinMode(int p,int m){ __mode[p]=m; }
 inline int analogRead(int p){ return __adc[p]; }
+inline long map(long x, long in_min, long in_max, long out_min, long out_max){ return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min; }
+template<class T> inline T constrain(T x, T a, T b){ return x < a ? a : (x > b ? b : x); }

@@ -317,6 +317,38 @@
       g.add(smdLed('#ff3b30', -0.4, 0.15).translateY(0.08)); g.add(smdLed('#3ddc6b', -0.4, 0.35).translateY(0.08));
       if (ins) { ref.lift = 0.28; for (const t of def.terminals) { const h = H(t.id); g.add(box(0.064, 0.5, 0.064, gold(), h[0], -0.2, h[1])); g.add(box(0.25, 0.25, 0.25, black(), h[0], -0.13, h[1])); } }   // 排針朝下插入，模組浮在麵包板上方
       else { g.add(box(0.76, 0.25, 0.25, black(), 0, 0.2, 0.5)); for (const t of def.terminals) { g.add(box(0.064, 0.064, 0.42, gold(), t.x, 0.2, 0.6)); g.add(box(0.064, 0.2, 0.064, gold(), t.x, 0.06, 0.42)); } }   // 直角排針：針腳水平朝外
+    } else if (c.type === 'US') {
+      // HC-SR04：45 × 20 mm 藍色電路板直立，兩個 16 mm 探頭朝前（本地 −Z）；四支排針在下緣
+      const pcbM = c.params.model === 'HC-SR04P' ? mat('uspcbP', '#1d6b4f', { roughness: 0.5 }) : mat('uspcb', '#1f5aa0', { roughness: 0.5 });   // 3.3 V 版用綠色電路板，方便分辨（材質依顏色分開快取）
+      const PY = 0.3, PH = 2.0;   // 電路板下緣高度與板高
+      add(box(4.5, PH, 0.16, pcbM, 0, PY + PH / 2, 0));
+      const meshCv = document.createElement('canvas'); meshCv.width = meshCv.height = 128; const mg = meshCv.getContext('2d');
+      mg.fillStyle = '#2b2f33'; mg.fillRect(0, 0, 128, 128); mg.fillStyle = '#596067'; for (let y = 4; y < 128; y += 8) for (let x = (y / 8) % 2 ? 8 : 4; x < 128; x += 8) { mg.beginPath(); mg.arc(x, y, 2.2, 0, Math.PI * 2); mg.fill(); }
+      const meshM = new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(meshCv), roughness: 0.8 });
+      const can = mat('uscan', '#c8ccd0', { metalness: 0.75, roughness: 0.35 });
+      for (const sx of [-1.3, 1.3]) {
+        const t = cyl(0.8, 1.2, [can, meshM, can], sx, PY + 1.05, -0.68, 36); t.rotation.x = -Math.PI / 2; add(t);   // 圓柱軸改成沿 Z；網面朝前
+        const rim = cyl(0.82, 0.08, can, sx, PY + 1.05, -0.14, 36); rim.rotation.x = -Math.PI / 2; add(rim);
+      }
+      const front = labelPlane(c.params.model === 'HC-SR04P' ? 'HC-SR04P\nT       R' : 'HC-SR04\nT       R', 1.0, 0.7, 70); front.rotation.set(0, Math.PI, 0); front.position.set(0, PY + 1.55, -0.085); g.add(front);
+      const back = labelPlane('Vcc Trig Echo Gnd', 1.5, 0.22, 46); back.rotation.set(0, 0, 0); back.position.set(0, PY + 0.2, 0.085); g.add(back);
+      const xtal = cyl(0.2, 0.12, metal(), 0, PY + 1.55, 0.14, 20, 0.2); xtal.rotation.x = Math.PI / 2; xtal.scale.set(1.6, 1, 0.7); g.add(xtal);   // 背面的石英振盪器
+      for (const [x, y] of [[-1.2, 1.0], [1.2, 1.0], [0, 0.95]]) { const ch = chip(0.55, 0.45, 0.1, 'soic', { n: 4 }); ch.rotation.x = Math.PI / 2; ch.position.set(x, PY + y, 0.08); g.add(ch); }
+      const pins = def.terminals;
+      if (ins) {   // 直排針朝下插進麵包板
+        g.add(box(1.0, 0.25, 0.25, black(), 0, 0.12, 0));
+        for (const t of pins) { const h = H(t.id); g.add(leg(THREE, [[t.x, PY + 0.05, 0], [t.x, 0.15, 0], [h[0], 0.0, h[1]], [h[0], -0.32, h[1]]], 0.03, gold())); }
+      } else {     // 直角排針：從板子下緣往後（+Z）伸出
+        g.add(box(1.0, 0.25, 0.25, black(), 0, 0.15, 0.12));
+        for (const t of pins) { g.add(box(0.064, 0.3, 0.064, gold(), t.x, 0.2, 0)); g.add(box(0.064, 0.064, t.z, gold(), t.x, 0.07, t.z / 2)); }
+      }
+      // 前方的物體（模擬或量測到的距離）：橘色板＋聲波示意線；畫面最多畫到 18 cm 遠，標籤顯示實際數值
+      const ob = new THREE.Group(); ob.visible = false;
+      const obM = new THREE.MeshStandardMaterial({ color: new THREE.Color('#e8892a'), transparent: true, opacity: 0.55, roughness: 0.6 });
+      const plate = box(3.4, 2.6, 0.12, obM, 0, PY + 1.05, 0); plate.raycast = () => { }; ob.add(plate);
+      const beamM = new THREE.MeshBasicMaterial({ color: new THREE.Color('#e8892a'), transparent: true, opacity: 0.6 });
+      const beams = []; for (let i = 0; i < 24; i++) { const b = box(0.05, 0.05, 0.35, beamM, 0, PY + 1.05, 0); b.raycast = () => { }; g.add(b); beams.push(b); }
+      g.add(ob); ref.obstacle = { group: ob, plate, mat: obM, beams, front: -1.28 };
     } else if (c.type === 'SERVO') {
       const blue = new THREE.MeshPhysicalMaterial({ color: new THREE.Color('#2a63c4'), transparent: true, opacity: 0.88, roughness: 0.35, clearcoat: 0.6 });
       add(box(2.3, 2.25, 1.22, blue, 0, 1.125, 0));

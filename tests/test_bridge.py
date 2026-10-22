@@ -20,6 +20,47 @@ class Bridge(unittest.TestCase):
 
     def run_async(self, coro): return asyncio.run(coro)
 
+    def test_sonar(self):
+        """超音波（--mock）：每 100 ms 回報距離；模擬距離可改；TRIG／ECHO 不能同時被其他用途或其他連線使用；斷線釋放"""
+        async def go():
+            async with aiohttp.ClientSession() as s:
+                async with s.ws_connect(f"http://127.0.0.1:{self.port}/ws") as ws:
+                    async def rx(op=None):
+                        while True:
+                            m = await asyncio.wait_for(ws.receive_json(), 3)
+                            if op is None or m["op"] == op: return m
+                    await ws.send_json({"op": "hello", "client": "test", "proto": 2}); await rx("hello")
+                    await ws.send_json({"op": "sonar", "sensors": [{"trig": 5, "echo": 5}]})
+                    e = await rx("error"); self.assertIn("同一個腳位", e["message"])
+                    await ws.send_json({"op": "sonar", "sensors": [{"trig": 5, "echo": 6}]})
+                    d0 = await rx("distance"); self.assertEqual((d0["trig"], d0["cm"]), (5, 100))
+                    await ws.send_json({"op": "mock_distance", "trig": 5, "cm": 12})
+                    for _ in range(5):
+                        d = await rx("distance")
+                        if d["cm"] == 12: break
+                    self.assertEqual(d["cm"], 12); self.assertGreater(d["seq"], d0["seq"])
+                    t0 = time.time(); n = 0
+                    while time.time() - t0 < 0.55: await rx("distance"); n += 1
+                    self.assertTrue(4 <= n <= 7, f"約每 100 ms 一次：0.55 秒 {n} 次")
+                    # ECHO 正在使用：不能再當成輸出授權
+                    await ws.send_json({"op": "authorize", "outputs": [{"pin": 6, "kind": "digital"}]})
+                    e = await rx("error"); self.assertIn("GPIO6", e["message"])
+                    # 另一個連線不能搶用同一顆超音波的腳位
+                    async with s.ws_connect(f"http://127.0.0.1:{self.port}/ws") as ws2:
+                        await ws2.send_json({"op": "sonar", "sensors": [{"trig": 5, "echo": 6}]})
+                        while True:
+                            m = await asyncio.wait_for(ws2.receive_json(), 3)
+                            if m["op"] == "error": break
+                        self.assertIn("另一個連線", m["message"])
+                # 斷線後釋放：新連線可以使用
+                async with s.ws_connect(f"http://127.0.0.1:{self.port}/ws") as ws3:
+                    await ws3.send_json({"op": "sonar", "sensors": [{"trig": 5, "echo": 6}]})
+                    while True:
+                        m = await asyncio.wait_for(ws3.receive_json(), 3)
+                        if m["op"] in ("distance", "error"): break
+                    self.assertEqual(m["op"], "distance")
+        self.run_async(go())
+
     def test_protocol(self):
         async def go():
             async with aiohttp.ClientSession() as s:

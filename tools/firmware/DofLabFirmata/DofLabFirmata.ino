@@ -6,7 +6,11 @@
  *   - 開機不閃燈，立刻回報版本，連線較快
  *   - 只實作 DofLab 需要的訊息：版本、韌體名稱、能力、類比對應、腳位模式、數位回報、
  *     類比回報、設定腳位值、伺服角度、腳位狀態回讀（作為 ACK）、系統重設
- * 序列埠 57600 bps。協定版本回報為 2.6。
+ *   - DofLab 擴充（韌體版本 1.1 起）：超音波測距（HC-SR04 類）
+ *       設定 F0 62 <trig> <echo> F7（trig = 7F 表示全部停止）
+ *       回報 F0 63 <trig> <cm 低 7 位元> <cm 高 7 位元> F7（每 60 ms 量一次，量完就回報；沒有回波 = 400）
+ *       不用 pulseIn：每一輪 loop 看一次 ECHO，所以量測時序列埠與其他回報照常運作
+ * 序列埠 57600 bps。協定版本回報為 2.6；韌體名稱 DofLabFirmata、版本 1.1。
  * 授權：MIT（DofLab 原型）
  */
 #if defined(ARDUINO_ARCH_ESP32)
@@ -30,7 +34,13 @@
 #endif
 #define ANALOG_CHANNELS 6
 
-enum { M_INPUT = 0, M_OUTPUT = 1, M_ANALOG = 2, M_SERVO = 4, M_PULLUP = 0x0B, M_UNSET = 0x7F };
+enum { M_INPUT = 0, M_OUTPUT = 1, M_ANALOG = 2, M_SERVO = 4, M_PULLUP = 0x0B, M_SONAR = 0x0C, M_UNSET = 0x7F };
+#define MAX_SONARS 2
+#define SONAR_PERIOD_MS 60
+#define SONAR_TIMEOUT_US 30000UL
+#define SONAR_MAX_CM 400
+struct Sonar { bool on; uint8_t trig, echo, state; unsigned long due, t0; };
+Sonar sonar[MAX_SONARS];
 uint8_t pinMode_[TOTAL_PINS];
 uint8_t pinState_[TOTAL_PINS];   // 輸出值或伺服角度
 int servoOf[TOTAL_PINS];
@@ -44,7 +54,7 @@ uint8_t buf[32]; uint8_t blen = 0; bool sysex = false; uint8_t cmd = 0; uint8_t 
 void sendVersion() { Serial.write(0xF9); Serial.write(2); Serial.write(6); }
 void sendFirmware() {
   const char *name = "DofLabFirmata";
-  Serial.write(0xF0); Serial.write(0x79); Serial.write(1); Serial.write(0);
+  Serial.write(0xF0); Serial.write(0x79); Serial.write(1); Serial.write(1);   // 韌體版本 1.1（1.1 起支援超音波）
   for (const char *c = name; *c; c++) { Serial.write(*c & 0x7F); Serial.write(0); }
   Serial.write(0xF7);
 }
@@ -81,7 +91,49 @@ void setValue(uint8_t p, int v) {
   if (pinMode_[p] == M_OUTPUT) { pinState_[p] = v ? 1 : 0; digitalWrite(p, v ? HIGH : LOW); }
   else if (pinMode_[p] == M_SERVO && servoOf[p] >= 0) { if (v > 180) v = 180; pinState_[p] = v; servos[servoOf[p]].write(v); }
 }
+void sendSonar(uint8_t i, int cm) { Serial.write(0xF0); Serial.write(0x63); Serial.write(sonar[i].trig); Serial.write(cm & 0x7F); Serial.write((cm >> 7) & 0x7F); Serial.write(0xF7); }
+void sonarStop() {
+  for (uint8_t i = 0; i < MAX_SONARS; i++) if (sonar[i].on) {
+    sonar[i].on = false;
+    pinMode(sonar[i].trig, INPUT); pinMode_[sonar[i].trig] = M_INPUT; pinMode_[sonar[i].echo] = M_INPUT;
+  }
+}
+// 設定超音波：TRIG 設為輸出（LOW）、ECHO 設為輸入；這兩個腳位不再出現在數位回報裡
+void sonarConfig(uint8_t trig, uint8_t echo) {
+  if (trig == 0x7F) { sonarStop(); return; }
+  if (trig >= TOTAL_PINS || echo >= TOTAL_PINS || !pinValid(trig) || !pinValid(echo) || trig == echo || pinInputOnly(trig)) return;
+  int8_t slot = -1;
+  for (uint8_t i = 0; i < MAX_SONARS; i++) if (sonar[i].on && sonar[i].trig == trig) slot = i;
+  for (uint8_t i = 0; i < MAX_SONARS && slot < 0; i++) if (!sonar[i].on) slot = i;
+  if (slot < 0) return;
+  detachServo(trig); detachServo(echo);
+  digitalWrite(trig, LOW); pinMode(trig, OUTPUT); pinMode(echo, INPUT);
+  pinMode_[trig] = M_SONAR; pinMode_[echo] = M_SONAR;
+  sonar[slot].on = true; sonar[slot].trig = trig; sonar[slot].echo = echo; sonar[slot].state = 0; sonar[slot].due = millis();
+}
+// 與 DofLab 產生的程式相同的非阻塞量測
+void sonarUpdate() {
+  unsigned long now = millis();
+  for (uint8_t i = 0; i < MAX_SONARS; i++) {
+    Sonar &s = sonar[i]; if (!s.on) continue;
+    if (s.state == 1) {
+      if (digitalRead(s.echo) == HIGH) { s.t0 = micros(); s.state = 2; }
+      else if (micros() - s.t0 > SONAR_TIMEOUT_US) { sendSonar(i, SONAR_MAX_CM); s.state = 0; }
+    } else if (s.state == 2) {
+      unsigned long w = micros() - s.t0;
+      if (digitalRead(s.echo) == LOW) { unsigned long cm = w / 58; sendSonar(i, cm > SONAR_MAX_CM ? SONAR_MAX_CM : (int)cm); s.state = 0; }
+      else if (w > SONAR_TIMEOUT_US) { sendSonar(i, SONAR_MAX_CM); s.state = 0; }
+    }
+    if (s.state == 0 && (long)(now - s.due) >= 0 && digitalRead(s.echo) == LOW) {
+      s.due = now + SONAR_PERIOD_MS;
+      digitalWrite(s.trig, HIGH); delayMicroseconds(10); digitalWrite(s.trig, LOW);
+      s.t0 = micros(); s.state = 1;
+    }
+  }
+}
+
 void resetAll() {
+  sonarStop();
   for (uint8_t p = 0; p < TOTAL_PINS; p++) { if (pinMode_[p] == M_SERVO) detachServo(p); if (pinValid(p) && pinMode_[p] != M_UNSET && p > 1) pinMode(p, INPUT); pinMode_[p] = pinValid(p) ? M_INPUT : M_UNSET; pinState_[p] = 0; servoOf[p] = -1; }
   for (uint8_t i = 0; i < sizeof(reportPort); i++) { reportPort[i] = 0; lastPort[i] = 0; }
   reportAnalog = 0;
@@ -110,6 +162,8 @@ void handleSysex() {
     int st = pinMode_[p] == M_OUTPUT ? (digitalRead(p) ? 1 : 0) : pinState_[p];
     if (pinMode_[p] == M_INPUT || pinMode_[p] == M_PULLUP) st = digitalRead(p);
     Serial.write(0xF0); Serial.write(0x6E); Serial.write(p); Serial.write(pinMode_[p]); Serial.write(st & 0x7F); if (st > 127) Serial.write(st >> 7); Serial.write(0xF7);
+  } else if (c == 0x62 && blen >= 2) {  // DofLab 擴充：超音波設定
+    sonarConfig(buf[1], blen >= 3 ? buf[2] : 0x7F);
   } else if (c == 0x6F && blen >= 3) {  // EXTENDED_ANALOG
     int v = buf[2] | (blen > 3 ? buf[3] << 7 : 0); setValue(buf[1], v);
   }
@@ -142,6 +196,7 @@ void parse(uint8_t b) {
 void setup() {
   Serial.begin(57600);
   for (uint8_t p = 0; p < TOTAL_PINS; p++) { pinMode_[p] = pinValid(p) ? M_INPUT : M_UNSET; pinState_[p] = 0; servoOf[p] = -1; }
+  for (uint8_t i = 0; i < MAX_SONARS; i++) sonar[i].on = false;
 #if defined(ARDUINO_ARCH_ESP32)
   analogReadResolution(ADC_BITS);
 #endif
@@ -150,6 +205,7 @@ void setup() {
 
 void loop() {
   while (Serial.available()) parse(Serial.read());
+  sonarUpdate();
   for (uint8_t port = 0; port < sizeof(reportPort); port++) if (reportPort[port]) { uint8_t v = readPort(port); if (v != lastPort[port]) sendPort(port); }
   unsigned long now = millis();
   if (reportAnalog && now - lastAnalog >= 50) {

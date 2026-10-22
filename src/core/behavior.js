@@ -6,8 +6,10 @@
  *   { type:'while', cond, actions, onEnd:'off'|'keep', restart:'restart'|'resume' }
  *        持續條件：成立期間持續作用；結束與重新開始的規則都要明示
  *   cond:   { type:'pressed', comp } | { type:'light', comp, op:'lt'|'gt', value(0–100 %) }
+ *           | { type:'distance', comp, op:'lt'|'gt', value(2–400 cm) }      超音波：每 60 ms 量一次，用上一次量到的值
  *   action: { type:'led', comp, on } | { type:'toggle', comp } | { type:'blink', comp, onMs, offMs }
  *           | { type:'servo', comp, angle }
+ *           | { type:'servoMap', comp, src, inMin, inMax, outMin, outMax }   伺服角度跟著距離（線性換算，只能放在持續條件）
  *
  * 輸出合成：沒有持續規則作用時，元件維持「鎖存值」（由開始／事件規則設定）；
  * 有持續規則作用時，以排在最後、目前成立的那條規則為準。
@@ -15,8 +17,9 @@
 (function (root) {
   const DL = (root.DL = root.DL || {});
 
-  const ACTION_TYPES = { led: 'LED', toggle: 'LED', blink: 'LED', servo: 'SERVO' };
-  const COND_TYPES = { pressed: 'BTN', light: 'LDR' };
+  const ACTION_TYPES = { led: 'LED', toggle: 'LED', blink: 'LED', servo: 'SERVO', servoMap: 'SERVO' };
+  const COND_TYPES = { pressed: 'BTN', light: 'LDR', distance: 'US' };
+  const US_MAX = 400, US_MIN = 2;
 
   function validate(p, analysis) {
     const issues = [];
@@ -43,6 +46,7 @@
         else {
           needType(r.cond.comp, COND_TYPES[r.cond.type], '條件', i);
           if (r.cond.type === 'light' && !(r.cond.value >= 0 && r.cond.value <= 100)) add('error', `規則 ${i + 1}：亮度門檻必須介於 0–100 %。`, i);
+          if (r.cond.type === 'distance' && !(Number.isInteger(r.cond.value) && r.cond.value >= US_MIN && r.cond.value <= US_MAX)) add('error', `規則 ${i + 1}：距離門檻必須是 ${US_MIN}–${US_MAX} cm 的整數。`, i);
         }
         if (!['off', 'keep'].includes(r.onEnd)) add('error', `規則 ${i + 1}：沒有指定條件結束時的處理方式。`, i);
         if (!['restart', 'resume'].includes(r.restart)) add('error', `規則 ${i + 1}：沒有指定再次成立時的處理方式。`, i);
@@ -57,6 +61,17 @@
         }
         if (a.type === 'toggle' && r.type === 'while') add('error', `規則 ${i + 1}：「切換」是單次動作，不能放在持續條件中（會每個迴圈都切換）。`, i);
         if (a.type === 'servo' && !(a.angle >= 0 && a.angle <= 180)) add('error', `規則 ${i + 1}：角度必須介於 0–180°。`, i);
+        if (a.type === 'servoMap') {
+          if (r.type !== 'while') add('error', `規則 ${i + 1}：「伺服跟著距離」要持續更新，只能放在「持續成立時」規則裡。`, i);
+          needType(a.src, 'US', '距離來源', i);
+          const ints = ['inMin', 'inMax', 'outMin', 'outMax'].every(k => Number.isInteger(a[k]));
+          if (!ints) add('error', `規則 ${i + 1}：距離與角度的換算範圍必須是整數。`, i);
+          else {
+            if (a.inMin === a.inMax) add('error', `規則 ${i + 1}：距離範圍的兩端不能相同。`, i);
+            if (![a.inMin, a.inMax].every(x => x >= US_MIN && x <= US_MAX)) add('error', `規則 ${i + 1}：距離範圍必須介於 ${US_MIN}–${US_MAX} cm。`, i);
+            if (![a.outMin, a.outMax].every(x => x >= 0 && x <= 180)) add('error', `規則 ${i + 1}：角度範圍必須介於 0–180°。`, i);
+          }
+        }
         if (r.type === 'while') (whileTargets[a.comp] = whileTargets[a.comp] || []).push(i + 1);
       }
       if (r.type === 'while') {
@@ -73,12 +88,14 @@
   function condText(c, p) {
     if (c.type === 'pressed') { const b = DL.project.findComp(p, c.comp); return `${c.comp} 被按住${b ? `（狀態穩定 ${b.params.debounceMs} ms 後才判定，用來去彈跳）` : ''}`; }
     if (c.type === 'light') return `${c.comp} 的亮度${c.op === 'lt' ? '低於' : '高於'} ${c.value} %`;
+    if (c.type === 'distance') return `${c.comp} 量到的距離${c.op === 'lt' ? '小於' : '大於'} ${c.value} cm`;
     return '（未知條件）';
   }
   function actionText(a, inWhile) {
     if (a.type === 'led') return `${a.comp} ${a.on ? '亮' : '熄滅'}`;
     if (a.type === 'toggle') return `切換 ${a.comp}（亮↔滅）`;
     if (a.type === 'servo') return `${a.comp} 命令轉到 ${a.angle}°`;
+    if (a.type === 'servoMap') return `${a.comp} 的命令角度跟著 ${a.src} 的距離：${a.inMin} cm → ${a.outMin}°、${a.inMax} cm → ${a.outMax}°（中間線性換算，超出範圍取端點）`;
     if (a.type === 'blink') {
       const T = a.onMs + a.offMs; const hz = 1000 / T;
       return `${a.comp} 反覆閃爍：亮 ${a.onMs} ms、暗 ${a.offMs} ms（週期 ${T} ms，約 ${hz >= 10 ? hz.toFixed(0) : hz.toFixed(hz % 1 ? 2 : 0)} Hz），每次開始都先亮`;
@@ -106,9 +123,10 @@
     }
     const notes = ['所有計時都不阻塞：閃爍等待期間仍持續讀取按鈕，放開會在下一個迴圈（約數毫秒內）反應。'];
     if (p.components.some(c => c.type === 'SERVO')) notes.push('伺服角度是送出的命令值；SG90 沒有回授，實際角度未知。');
+    if (p.components.some(c => c.type === 'US')) notes.push('超音波每 60 ms 量一次，規則使用「上一次量到」的距離，所以反應會慢 60–120 ms；沒有回波或超出量程時一律當成 400 cm。');
     return { lines, init, notes };
   }
 
-  DL.behavior = { validate, summarize, condText, actionText, ACTION_TYPES, COND_TYPES };
+  DL.behavior = { validate, summarize, condText, actionText, ACTION_TYPES, COND_TYPES, US_MAX, US_MIN, US_PERIOD_MS: 60 };
   if (typeof module !== 'undefined') module.exports = DL;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

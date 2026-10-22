@@ -10,10 +10,11 @@ if (!arg) {
   process.stdout.write(JSON.stringify({ code, press, exp }));
 } else {
   const p = solved(arg.exp, 'pi4b'); const code = DL.codegen.generate(p).code; const a = DL.netlist.analyze(p).bindings;
-  const pins = Object.fromEntries(Object.entries(a).map(([k, b]) => [k, DL.boards.pi4b.pinById[b.pin].num]));
+  const pins = Object.fromEntries(Object.entries(a).flatMap(([k, b]) => b.role === 'ultrasonic' ? [[k, DL.boards.pi4b.pinById[b.trig].num], [k + '.ECHO', DL.boards.pi4b.pinById[b.echo].num]] : [[k, DL.boards.pi4b.pinById[b.pin].num]]));
   const e = DL.createEngine(p); const exp = [];
   for (let t = 0; t <= arg.T; t += 5) {
-    for (const [btn, ranges] of Object.entries(arg.press)) e.setButton(btn, ranges.some(([x, y]) => t >= x && t < y));
+    for (const [btn, ranges] of Object.entries(arg.press || {})) e.setButton(btn, ranges.some(([x, y]) => t >= x && t < y));
+    for (const [us, steps] of Object.entries(arg.dist || {})) { let cm = 400; for (const [x, v] of steps) if (t >= x) cm = v; e.setDistance(us, cm); }   // 超音波：[[時間, 公分或 null], ...]
     const o = e.tick(t).out; exp.push([t, arg.outs.map(id => Number(o[id]))]);
   }
   process.stdout.write(JSON.stringify({ code, pins, exp }));

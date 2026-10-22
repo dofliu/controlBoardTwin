@@ -11,12 +11,15 @@
 
   // 各板型、各用途的建議腳位順序（與引導實驗的建議一致）
   const PREF = {
-    uno: { button: ['D2', 'D3', 'D4', 'D7', 'D8', 'D12'], led: ['D13', 'D12', 'D11', 'D10', 'D8', 'D7', 'D6', 'D5', 'D4'], analog: ['A0', 'A1', 'A2', 'A3'], servo: ['D9', 'D10', 'D11', 'D6', 'D5', 'D3'] },
-    esp32: { button: ['GPIO4', 'GPIO16', 'GPIO17', 'GPIO25', 'GPIO26', 'GPIO27', 'GPIO32', 'GPIO33'], led: ['GPIO23', 'GPIO22', 'GPIO21', 'GPIO19', 'GPIO18', 'GPIO17', 'GPIO16'], analog: ['GPIO34', 'GPIO35', 'GPIO32', 'GPIO33', 'GPIO36', 'GPIO39'], servo: ['GPIO18', 'GPIO19', 'GPIO21', 'GPIO22', 'GPIO23', 'GPIO25', 'GPIO26', 'GPIO27'] },
-    pi4b: { button: ['GPIO27', 'GPIO22', 'GPIO5', 'GPIO6', 'GPIO26', 'GPIO16'], led: ['GPIO17', 'GPIO23', 'GPIO24', 'GPIO25', 'GPIO16', 'GPIO20', 'GPIO21'], analog: [], servo: ['GPIO12', 'GPIO13', 'GPIO18', 'GPIO19'] }
+    uno: { button: ['D2', 'D3', 'D4', 'D7', 'D8', 'D12'], led: ['D13', 'D12', 'D11', 'D10', 'D8', 'D7', 'D6', 'D5', 'D4'], analog: ['A0', 'A1', 'A2', 'A3'], servo: ['D9', 'D10', 'D11', 'D6', 'D5', 'D3'], trig: ['D7', 'D4', 'D5', 'D6', 'D8', 'D12'], echo: ['D8', 'D4', 'D5', 'D6', 'D7', 'D12'] },
+    esp32: { button: ['GPIO4', 'GPIO16', 'GPIO17', 'GPIO25', 'GPIO26', 'GPIO27', 'GPIO32', 'GPIO33'], led: ['GPIO23', 'GPIO22', 'GPIO21', 'GPIO19', 'GPIO18', 'GPIO17', 'GPIO16'], analog: ['GPIO34', 'GPIO35', 'GPIO32', 'GPIO33', 'GPIO36', 'GPIO39'], servo: ['GPIO18', 'GPIO19', 'GPIO21', 'GPIO22', 'GPIO23', 'GPIO25', 'GPIO26', 'GPIO27'], trig: ['GPIO26', 'GPIO25', 'GPIO32', 'GPIO33', 'GPIO16', 'GPIO17'], echo: ['GPIO27', 'GPIO35', 'GPIO34', 'GPIO32', 'GPIO33', 'GPIO25'] },
+    pi4b: { button: ['GPIO27', 'GPIO22', 'GPIO5', 'GPIO6', 'GPIO26', 'GPIO16'], led: ['GPIO17', 'GPIO23', 'GPIO24', 'GPIO25', 'GPIO16', 'GPIO20', 'GPIO21'], analog: [], servo: ['GPIO12', 'GPIO13', 'GPIO18', 'GPIO19'], trig: ['GPIO5', 'GPIO16', 'GPIO20', 'GPIO21', 'GPIO26'], echo: ['GPIO6', 'GPIO16', 'GPIO20', 'GPIO21', 'GPIO26', 'GPIO19'] }
   };
   const NEED = { LED: { role: 'led', caps: ['dout'] }, BTN: { role: 'button', caps: ['din', 'pullup'] }, LDR: { role: 'analog', caps: ['adc'] }, SERVO: { role: 'servo', caps: ['servo'] } };
-  const ROLE_NAME = { led: '數位輸出', button: '數位輸入＋內建上拉', analog: '類比輸入（ADC）', servo: '伺服脈波' };
+  // 超音波模組有兩個訊號腳：TRIG 用元件 id、ECHO 用「元件 id.ECHO」記在 pins 裡
+  const US_SLOTS = [{ part: 'TRIG', role: 'trig', caps: ['dout'], pref: 'prefPin' }, { part: 'ECHO', role: 'echo', caps: ['din'], pref: 'prefPinEcho' }];
+  const slotKey = (id, part) => part === 'ECHO' ? id + '.ECHO' : id;
+  const ROLE_NAME = { led: '數位輸出', button: '數位輸入＋內建上拉', analog: '類比輸入（ADC）', servo: '伺服脈波', trig: 'TRIG（數位輸出）', echo: 'ECHO（數位輸入）' };
 
   const clone = o => JSON.parse(JSON.stringify(o));
   const key = ep => ep.comp + '.' + ep.term;
@@ -38,34 +41,43 @@
     const board = DL.boards[p.board.type]; const used = new Set(Object.keys(a.pinUse)); const pins = {};
     const ok = (pin, need) => pin && pin.kind === 'gpio' && need.caps.every(c => pin.caps.includes(c));
     const quiet = pin => !pin.notes.some(n => n.level === 'warn' || n.level === 'error');
-    for (const c of p.components) {
-      const need = NEED[c.type]; if (!need) continue;
-      const b = a.bindings[c.id];
-      if (b) { pins[c.id] = b.pin; continue; }   // 已經接好的沿用
-      const ex = existingPin(p, a, c, need);       // 接了一半：某支腳（或經過一顆電阻）已經接到能力相符的腳位
-      if (ex && (!used.has(ex) || (a.pinUse[ex] || []).length === 0)) { pins[c.id] = ex; used.add(ex); continue; }
-      if (c.prefPin) {
-        const pin = board.pinById[c.prefPin];
-        if (!ok(pin, need)) issues.push({ level: 'warn', comp: c.id, msg: `${c.id} 指定的 ${pin ? board.pinLabel(pin) : c.prefPin} 不能當${ROLE_NAME[need.role]}，改用建議腳位。` });
-        else if (used.has(pin.id)) issues.push({ level: 'warn', comp: c.id, msg: `${c.id} 指定的 ${board.pinLabel(pin)} 已被使用，改用建議腳位。` });
-        else { pins[c.id] = pin.id; used.add(pin.id); continue; }
+    const exp = p.origin && (p.origin.custom || (p.origin.experimentId && DL.experiments && DL.experiments.list.find(e => e.id === p.origin.experimentId)));
+    // 幫一個訊號挑腳位：接了一半的沿用 → 老師指定 → 實驗建議 → 板型建議順序
+    const choose = (c, key, need, terms, prefPin, label) => {
+      const ex = existingPin(p, a, c, need, terms);       // 接了一半：某支腳（或經過一顆電阻）已經接到能力相符的腳位
+      if (ex && (!used.has(ex) || (a.pinUse[ex] || []).length === 0)) { pins[key] = ex; used.add(ex); return; }
+      if (prefPin) {
+        const pin = board.pinById[prefPin];
+        if (!ok(pin, need)) issues.push({ level: 'warn', comp: c.id, msg: `${label} 指定的 ${pin ? board.pinLabel(pin) : prefPin} 不能當${ROLE_NAME[need.role]}，改用建議腳位。` });
+        else if (used.has(pin.id)) issues.push({ level: 'warn', comp: c.id, msg: `${label} 指定的 ${board.pinLabel(pin)} 已被使用，改用建議腳位。` });
+        else { pins[key] = pin.id; used.add(pin.id); return; }
       }
       // 引導實驗的建議腳位（老師自訂的實驗也一樣）優先，其次才是板型的建議順序
-      const exp = p.origin && (p.origin.custom || (p.origin.experimentId && DL.experiments && DL.experiments.list.find(e => e.id === p.origin.experimentId)));
-      const sug = exp && exp.suggest && exp.suggest[board.id] && exp.suggest[board.id][c.id];
+      const sug = exp && exp.suggest && exp.suggest[board.id] && exp.suggest[board.id][key];
       const list = [...(sug ? [String(sug).split('（')[0]] : []), ...((PREF[board.id] && PREF[board.id][need.role]) || [])];
       let pick = list.find(id => !used.has(id) && ok(board.pinById[id], need));
       if (!pick) pick = (board.pins.find(x => !used.has(x.id) && ok(x, need) && quiet(x)) || board.pins.find(x => !used.has(x.id) && ok(x, need)) || {}).id;
-      if (!pick) { issues.push({ level: 'error', comp: c.id, msg: need.role === 'analog' && !board.adcBits ? `${board.short} 沒有類比輸入（ADC），無法接 ${c.id}。` : `${board.short} 沒有可用的${ROLE_NAME[need.role]}腳位給 ${c.id}。` }); continue; }
-      pins[c.id] = pick; used.add(pick);
+      if (!pick) { issues.push({ level: 'error', comp: c.id, msg: need.role === 'analog' && !board.adcBits ? `${board.short} 沒有類比輸入（ADC），無法接 ${c.id}。` : `${board.short} 沒有可用的${ROLE_NAME[need.role]}腳位給 ${label}。` }); return; }
+      pins[key] = pick; used.add(pick);
+    };
+    for (const c of p.components) {
+      const b = a.bindings[c.id];
+      if (c.type === 'US') {
+        if (b) { pins[c.id] = b.trig; pins[c.id + '.ECHO'] = b.echo; continue; }
+        for (const s of US_SLOTS) choose(c, slotKey(c.id, s.part), s, [s.part], c[s.pref], `${c.id} ${s.part}`);
+        continue;
+      }
+      const need = NEED[c.type]; if (!need) continue;
+      if (b) { pins[c.id] = b.pin; continue; }   // 已經接好的沿用
+      choose(c, c.id, need, null, c.prefPin, c.id);
     }
     return pins;
   }
 
-  function existingPin(p, a, c, need) {
+  function existingPin(p, a, c, need, terms) {
     const board = DL.boards[p.board.type]; const def = DL.components[c.type];
     const netOf = k => a.nets.find(n => n.eps.includes(k)) || null;
-    const sig = { LED: ['A'], BTN: ['1', '2'], LDR: ['AO'], SERVO: ['SIG'] }[c.type] || [];
+    const sig = terms || { LED: ['A'], BTN: ['1', '2'], LDR: ['AO'], SERVO: ['SIG'] }[c.type] || [];
     for (const t of sig) {
       const n = netOf(c.id + '.' + t); if (!n) continue;
       const nets = [n];
@@ -77,7 +89,7 @@
 
   /* ---------- 2. 每個元件需要的連線關係 ---------- */
   // 關係：{ e: 端點, t: 目標 }，目標可以是 {pin}、{gnd:true}（任一控制板 GND）、{power:伏特}、{term:端點}
-  function relations(p, a, pins, extra) {
+  function relations(p, a, pins, extra, issues) {
     const rel = []; const board = DL.boards[p.board.type];
     const netOf = k => a.nets.find(n => n.eps.includes(k)) || null;
     const servos = p.components.filter(c => c.type === 'SERVO');
@@ -102,6 +114,19 @@
         rel.push({ e: T(c.id, 'VCC'), t: { power: board.logicV }, why: `${c.id} VCC 接 ${board.logicV}V：輸出電壓不能超過 ${board.short} 的 ${board.logicV}V 類比輸入範圍` });
         rel.push({ e: T(c.id, 'GND'), t: { gnd: true }, why: `${c.id} GND 接 GND` });
         rel.push({ e: T(c.id, 'AO'), t: { pin: pins[c.id] }, why: `${c.id} AO 接 ${pinL(pins[c.id])}（類比輸入）` });
+      }
+      if (c.type === 'US' && pins[c.id] && pins[c.id + '.ECHO']) {
+        const model = c.params.model || 'HC-SR04';
+        if (model === 'HC-SR04' && board.logicV < 5) {
+          // 只能 5 V 供電的 HC-SR04：ECHO 會輸出 5 V，不能直接接 3.3 V 的腳位，所以不自動接這顆
+          (issues || []).push({ level: 'error', comp: c.id, msg: `${c.id} 是只能 5 V 供電的 HC-SR04，ECHO 會輸出 5 V，不能直接接 ${board.short} 的 3.3 V 腳位：請在「選取項目」把型號改成 HC-SR04P 類（3.3 V 可用），或自己加分壓電阻（本版不分析分壓）。` });
+        } else {
+          const vcc = model === 'HC-SR04' ? 5 : board.logicV;
+          rel.push({ e: T(c.id, 'VCC'), t: { power: vcc }, why: model === 'HC-SR04' ? `${c.id} VCC 接 5V：HC-SR04 需要 5 V 供電` : `${c.id} VCC 接 ${vcc}V：ECHO 的高電位等於 VCC，接 ${board.logicV} V 才不會超過 ${board.short} 的腳位電壓` });
+          rel.push({ e: T(c.id, 'GND'), t: { gnd: true }, why: `${c.id} GND 接 GND` });
+          rel.push({ e: T(c.id, 'TRIG'), t: { pin: pins[c.id] }, why: `${c.id} TRIG 接 ${pinL(pins[c.id])}：程式每 60 ms 送出一次 10 µs 的觸發脈衝` });
+          rel.push({ e: T(c.id, 'ECHO'), t: { pin: pins[c.id + '.ECHO'] }, why: `${c.id} ECHO 接 ${pinL(pins[c.id + '.ECHO'])}：讀回波高電位的寬度（約 58 µs／cm）換算距離` });
+        }
       }
       if (c.type === 'SERVO' && pins[c.id]) {
         rel.push({ e: T(c.id, 'SIG'), t: { pin: pins[c.id] }, why: `${c.id} SIG（橘）接 ${pinL(pins[c.id])}：可輸出伺服脈波` });
@@ -276,7 +301,7 @@
     const pins = assignPins(p, a, issues);
     const extra = pairParts(p, a, opts, steps, issues, pins);
     a = DL.netlist.analyze(p);
-    let rel = relations(p, a, pins, extra);
+    let rel = relations(p, a, pins, extra, issues);
     // 接錯的線
     const wrong = findWrong(p, rel);
     for (const w of wrong) {
@@ -337,6 +362,6 @@
     return { done, plan: plan(p, opts) };
   }
 
-  DL.autowire = { plan, apply, PREF, epName };
+  DL.autowire = { plan, apply, PREF, epName, US_SLOTS };
   if (typeof module !== 'undefined') module.exports = DL;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

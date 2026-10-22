@@ -92,6 +92,7 @@
       if (c.type === 'LED') checkLED(c);
       else if (c.type === 'BTN') checkBTN(c);
       else if (c.type === 'LDR') checkLDR(c);
+      else if (c.type === 'US') checkUS(c);
       else if (c.type === 'SERVO') checkServo(c);
       else if (c.type === 'PSU') checkPSU(c);
     }
@@ -175,6 +176,32 @@
       add('info', 'ldr_ok', `${c.id}：AO → ${board.pinLabel(pin)}（${board.adcBits} 位元 ADC，0–${(1 << board.adcBits) - 1}）。`, [c.id]);
     }
 
+    // 超音波測距模組：TRIG 接數位輸出、ECHO 接數位輸入；ECHO 的高電位約等於模組的 VCC
+    function checkUS(c) {
+      const nV = net(c.id, 'VCC'), nG = net(c.id, 'GND'), nT = net(c.id, 'TRIG'), nE = net(c.id, 'ECHO');
+      const model = c.params.model || 'HC-SR04'; let bad = false;
+      let v = null;
+      if (nV && !nV.power.length) { add('error', 'us_vcc', `${c.id} 的 VCC 沒有接到電源。`, [c.id]); bad = true; }
+      if (nV && nV.power.length) {
+        v = nV.power[0].volts;
+        if (model === 'HC-SR04' && v < 4.5) { add('error', 'us_low_v', `${c.id} 是 HC-SR04，需要 5 V 供電；接 ${nV.power[0].label} 量不到或讀值不穩定。${board.logicV < 5 ? `${board.short} 是 3.3 V 邏輯：請把型號改成 3.3 V 可用的 HC-SR04P 類模組，VCC 接 3V3。` : '請改接 5V。'}`, [c.id]); bad = true; }
+        if (v > board.logicV) { add('error', 'overvoltage', `${c.id} 接 ${nV.power[0].label} 供電，ECHO 的高電位約 ${v} V，超過 ${board.short} 的 ${board.logicV} V 邏輯，可能損壞腳位。請改用 3.3 V 可用的 HC-SR04P 類模組並接 3V3（ECHO 加分壓電阻也可以，但本版不分析分壓電路）。`, [c.id]); bad = true; }
+      }
+      if (nG && !nG.gnd.length) { add('error', 'us_gnd', `${c.id} 的 GND 沒有接到 GND。`, [c.id]); bad = true; }
+      else if (nG && !nG.gnd.some(g => !g.external)) { add('error', 'us_no_common_gnd', `${c.id} 的 GND 沒有和控制板共地，TRIG／ECHO 訊號沒有共同參考電位。`, [c.id]); bad = true; }
+      if (!nT || !nE) return;
+      if (!nT.gpio.length) { add('error', 'us_no_trig', `${c.id} 的 TRIG 沒有接到 GPIO。`, [c.id]); return; }
+      if (!nE.gpio.length) { add('error', 'us_no_echo', `${c.id} 的 ECHO 沒有直接接到 GPIO${resistorsOn(nE).length ? '（經過電阻的分壓接法本版不分析）' : ''}。`, [c.id]); return; }
+      const trig = nT.gpio[0], echo = nE.gpio[0];
+      if (!trig.caps.includes('dout')) { add('error', 'pin_cap', `${board.pinLabel(trig)} 只能當輸入，不能送出 ${c.id} 的 TRIG 觸發脈衝。ECHO 可以接只能輸入的腳位，TRIG 不行。`, [c.id, 'board.' + trig.id]); return; }
+      if (!echo.caps.includes('din')) { add('error', 'pin_cap', `${board.pinLabel(echo)} 不能讀取數位輸入。`, [c.id, 'board.' + echo.id]); return; }
+      if (bad) return;
+      claim(trig, c.id); claim(echo, c.id);
+      bindings[c.id] = { comp: c.id, role: 'ultrasonic', pin: trig.id, num: trig.num, trig: trig.id, trigNum: trig.num, echo: echo.id, echoNum: echo.num, wire: (wireToPin(trig) || {}).id, echoWire: (wireToPin(echo) || {}).id, model, vcc: v };
+      add('info', 'us_ok', `${c.id}：TRIG ← ${board.pinLabel(trig)}、ECHO → ${board.pinLabel(echo)}，${model} 由 ${v} V 供電；量程以 2–400 cm 計，每 60 ms 量一次。`, [c.id]);
+      if (board.id === 'pi4b') add('info', 'us_pi_timing', `${c.id}：樹莓派在 Linux 上量回波時間，受排程影響，誤差可能有數公分。`, [c.id]);
+    }
+
     function checkPSU(c) {
       const nG = net(c.id, 'GND');
       if (nG && !nG.gnd.some(g => !g.external)) add('error', 'psu_no_common_gnd', `${c.id} 的 GND 沒有接到控制板 GND：外部電源與控制板沒有共地，訊號沒有共同參考電位。`, [c.id]);
@@ -223,9 +250,11 @@
   function splitKey(k) { const i = k.indexOf('.'); return [k.slice(0, i), k.slice(i + 1)]; }
 
   // 試算：把某條板端連線換到新腳位後，會不會出錯（同步虛擬接線前檢查）
-  function tryRewire(p, compId, newPinId) {
+  // part：超音波的 'ECHO'（改 ECHO 那條線）；其他元件不用給
+  function tryRewire(p, compId, newPinId, part) {
     const res = analyze(p);
-    const b = res.bindings[compId];
+    const b0 = res.bindings[compId];
+    const b = b0 && part === 'ECHO' ? Object.assign({}, b0, { pin: b0.echo, wire: b0.echoWire }) : b0;
     if (!b || !b.wire) return { ok: false, msg: `${compId} 目前沒有可識別的板端連線。` };
     const board = DL.boards[p.board.type];
     const pin = board.pinById[newPinId];
@@ -234,7 +263,8 @@
     const r = DL.project.rewireBoardEnd(q, b.wire, newPinId);
     if (!r.ok) return r;
     const after = analyze(q);
-    const nb = after.bindings[compId];
+    const nb0 = after.bindings[compId];
+    const nb = nb0 && part === 'ECHO' ? Object.assign({}, nb0, { pin: nb0.echo }) : nb0;
     const newErrors = after.issues.filter(i => i.level === 'error' && !res.issues.some(j => j.level === 'error' && j.msg === i.msg));
     if (!nb || nb.pin !== newPinId || newErrors.length) return { ok: false, msg: `改接到 ${board.pinLabel(pin)} 會產生問題：${newErrors.map(e => e.msg).join(' ') || '無法建立綁定'}`, after };
     return { ok: true, project: q, wire: b.wire, from: b.pin, to: newPinId, after };

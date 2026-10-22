@@ -195,7 +195,7 @@ select.inp,input.inp{border:1px solid var(--line-strong);background:var(--bg);bo
 .aw-next{display:grid;gap:2px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,#1fae5b 12%,var(--surface));border:1px solid color-mix(in srgb,#1fae5b 40%,var(--line));font-size:.84rem;margin-bottom:8px}
 .aw-next b{color:#178a48;font-size:.78rem}
 .aw-pins{list-style:none;margin:4px 0 0;padding:0;display:grid;gap:2px;font-size:.82rem}
-.aw-pins li{display:grid;grid-template-columns:4.5em 1fr auto;gap:8px}
+.aw-pins li{display:grid;grid-template-columns:minmax(4.5em,max-content) 1fr auto;gap:8px}
 #btnTeacher.on{background:#1f7a4a;color:#fff;border-color:#1f7a4a}
 .inline-confirm{display:grid;gap:8px;padding:10px 12px;background:var(--warn-soft);border-bottom:1px solid var(--line);font-size:.86rem}
 pre.raw{margin:0;max-height:260px;overflow:auto;background:var(--code-bg);color:var(--code-fg);font-family:var(--font-mono);font-size:11.8px;line-height:1.5;padding:10px 12px;border-radius:8px;white-space:pre-wrap;word-break:break-word}

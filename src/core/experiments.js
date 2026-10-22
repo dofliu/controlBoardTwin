@@ -158,6 +158,87 @@
     ]
   });
 
+  /* ---------- V2.5 新增：超音波測距（HC-SR04）＋SG90 伺服 ----------
+   * ESP32 與樹莓派是 3.3 V 邏輯：這些實驗在這兩種板子上改用 3.3 V 可用的 HC-SR04P 類模組（VCC 接 3V3），
+   * 因為 5 V 的 HC-SR04 的 ECHO 會輸出 5 V。Uno 用一般的 HC-SR04（VCC 接 5V）。 */
+  const US33 = { esp32: { US1: { model: 'HC-SR04P' } }, pi4b: { US1: { model: 'HC-SR04P' } } };
+  const usPins = { uno: { US1: 'D7', 'US1.ECHO': 'D8' }, esp32: { US1: 'GPIO26', 'US1.ECHO': 'GPIO27' }, pi4b: { US1: 'GPIO5', 'US1.ECHO': 'GPIO6' } };
+  const withUs = extra => Object.fromEntries(Object.entries(usPins).map(([b, v]) => [b, Object.assign({}, v, extra[b])]));
+  const usTask = { text: 'US1 的 VCC、GND 接好，TRIG 與 ECHO 各接一個 GPIO（3.3 V 板子用 3.3 V 版模組接 3V3）', check: bound('US1') };
+  const servoTask = { text: 'SERVO1 的 SIG、VCC、GND 都接好', check: (p, a) => !!a.bindings.SERVO1 };
+  EXPERIMENTS.push({
+    id: 'dist-alarm', title: '距離警示燈', boards: ['uno', 'esp32', 'pi4b'], auto: true, boardParams: US33,
+    goal: '超音波測到前方物體近於 20 cm 時 LED1 亮；離開後熄滅。練習超音波的接線（TRIG 送出觸發、ECHO 讀回波）與「距離小於」條件；注意感測器每 60 ms 才量一次。',
+    parts: [['US', 7.6, 2.6, 90], ['RES', 8.2, -1.6, 0], ['LED', 10.6, -1.8, 0, { color: 'red' }]],
+    suggest: withUs({ uno: { LED1: 'D13' }, esp32: { LED1: 'GPIO23' }, pi4b: { LED1: 'GPIO17' } }),
+    rules: [{ type: 'while', cond: { type: 'distance', comp: 'US1', op: 'lt', value: 20 }, actions: [{ type: 'led', comp: 'LED1', on: true }], onEnd: 'off', restart: 'restart' }],
+    tasks: [
+      usTask,
+      { text: 'LED1 經 R1 接到 GPIO，陰極接 GND', check: ledR('LED1') },
+      { text: '配置檢查沒有錯誤', check: (p, a) => a.ok && a.counts.unknown === 0 },
+      { text: '在「行為」頁確認行為摘要', check: (p, a, ctx) => !!ctx.confirmedCurrent },
+      { text: '在「觀測」頁把物體移到 20 cm 以內，看 LED1 亮', check: (p, a, ctx) => ctx.minDist < 20 }
+    ]
+  });
+  EXPERIMENTS.push({
+    id: 'smart-bin', title: '感應垃圾桶蓋', boards: ['uno', 'esp32', 'pi4b'], auto: true, boardParams: US33,
+    goal: '手靠近到 15 cm 以內時，SG90 伺服 SERVO1 命令轉到 100°（打開蓋子）；手離開後回到初始的 10°（關上）。伺服沒有回授：畫面顯示的是命令角度。',
+    parts: [['US', 7.6, 3.4, 90], ['SERVO', 10.4, -1.8, 0, { initAngle: 10 }]],
+    suggest: withUs({ uno: { SERVO1: 'D9' }, esp32: { SERVO1: 'GPIO18' }, pi4b: { SERVO1: 'GPIO18' } }),
+    rules: [{ type: 'while', cond: { type: 'distance', comp: 'US1', op: 'lt', value: 15 }, actions: [{ type: 'servo', comp: 'SERVO1', angle: 100 }], onEnd: 'off', restart: 'restart' }],
+    tasks: [
+      usTask, servoTask,
+      { text: '配置檢查沒有錯誤', check: (p, a) => a.ok && a.counts.unknown === 0 },
+      { text: '在「行為」頁確認行為摘要', check: (p, a, ctx) => !!ctx.confirmedCurrent },
+      { text: '在「觀測」頁把手移到 15 cm 以內再移開，看蓋子打開又關上', check: (p, a, ctx) => ctx.minDist < 15 && ctx.farAfterNear }
+    ]
+  });
+  EXPERIMENTS.push({
+    id: 'parking-gate', title: '停車場柵欄', boards: ['uno', 'esp32', 'pi4b'], auto: true, boardParams: US33,
+    goal: '車子開到柵欄前 10 cm 以內時，SERVO1 把柵欄抬到 90°，綠燈 LED1 亮表示可以通過；車子離開後柵欄放下（0°）、綠燈熄滅。一條規則同時控制伺服與 LED。',
+    parts: [['US', 7.6, 3.4, 90], ['SERVO', 10.4, -1.8, 0, { initAngle: 0 }], ['RES', 8.2, -4.6, 0], ['LED', 10.6, -4.8, 0, { color: 'green' }]],
+    suggest: withUs({ uno: { SERVO1: 'D9', LED1: 'D13' }, esp32: { SERVO1: 'GPIO18', LED1: 'GPIO23' }, pi4b: { SERVO1: 'GPIO18', LED1: 'GPIO17' } }),
+    rules: [{ type: 'while', cond: { type: 'distance', comp: 'US1', op: 'lt', value: 10 }, actions: [{ type: 'servo', comp: 'SERVO1', angle: 90 }, { type: 'led', comp: 'LED1', on: true }], onEnd: 'off', restart: 'restart' }],
+    tasks: [
+      usTask, servoTask,
+      { text: '綠燈 LED1 經 R1 接到 GPIO', check: ledR('LED1') },
+      { text: '配置檢查沒有錯誤', check: (p, a) => a.ok && a.counts.unknown === 0 },
+      { text: '在「行為」頁確認行為摘要', check: (p, a, ctx) => !!ctx.confirmedCurrent },
+      { text: '在「觀測」頁讓「車子」開到 10 cm 以內再離開', check: (p, a, ctx) => ctx.minDist < 10 && ctx.farAfterNear }
+    ]
+  });
+  EXPERIMENTS.push({
+    id: 'dist-gauge', title: '超音波距離指針', boards: ['uno', 'esp32', 'pi4b'], auto: true, boardParams: US33,
+    goal: '把 SG90 當成指針式儀表：物體在 60 cm 以內時，SERVO1 的角度跟著距離改變（5 cm → 180°、50 cm → 0°，中間線性換算）；物體離開 60 cm 時指針停在最後的位置。',
+    parts: [['US', 7.6, 3.0, 90], ['SERVO', 10.4, -1.8, 0, { initAngle: 0 }]],
+    suggest: withUs({ uno: { SERVO1: 'D9' }, esp32: { SERVO1: 'GPIO18' }, pi4b: { SERVO1: 'GPIO18' } }),
+    rules: [{ type: 'while', cond: { type: 'distance', comp: 'US1', op: 'lt', value: 60 }, actions: [{ type: 'servoMap', comp: 'SERVO1', src: 'US1', inMin: 5, inMax: 50, outMin: 180, outMax: 0 }], onEnd: 'keep', restart: 'restart' }],
+    tasks: [
+      usTask, servoTask,
+      { text: '配置檢查沒有錯誤', check: (p, a) => a.ok && a.counts.unknown === 0 },
+      { text: '在「行為」頁確認行為摘要', check: (p, a, ctx) => !!ctx.confirmedCurrent },
+      { text: '在「觀測」頁把物體在 15 cm 以內與 40 cm 以外（60 cm 以內）來回移動，看指針跟著轉', check: (p, a, ctx) => ctx.nearMin <= 15 && ctx.nearMax >= 40 }
+    ]
+  });
+  EXPERIMENTS.push({
+    id: 'parking-radar', title: '倒車雷達（麵包板）', boards: ['uno', 'esp32', 'pi4b'], auto: true, boardParams: US33,
+    goal: '超音波模組和兩顆 LED 插在麵包板上。障礙物近於 40 cm 時黃燈 LED1 閃爍（亮 200 ms、暗 200 ms）；近於 15 cm 時紅燈 LED2 也亮起。兩條「距離小於」規則各管一顆燈。',
+    parts: [['BB', 11.6, 0.2, 0], ['US', { on: 'BB1', hole: 'h12' }, 180], ['RES', { on: 'BB1', hole: 'c15' }, 0], ['LED', { on: 'BB1', hole: 'e19' }, 0, { color: 'yellow' }], ['RES', { on: 'BB1', hole: 'c22' }, 0], ['LED', { on: 'BB1', hole: 'e26' }, 0, { color: 'red' }]],
+    suggest: withUs({ uno: { LED1: 'D13', LED2: 'D12' }, esp32: { LED1: 'GPIO23', LED2: 'GPIO22' }, pi4b: { LED1: 'GPIO17', LED2: 'GPIO23' } }),
+    rules: [
+      { type: 'while', cond: { type: 'distance', comp: 'US1', op: 'lt', value: 40 }, actions: [{ type: 'blink', comp: 'LED1', onMs: 200, offMs: 200 }], onEnd: 'off', restart: 'restart' },
+      { type: 'while', cond: { type: 'distance', comp: 'US1', op: 'lt', value: 15 }, actions: [{ type: 'led', comp: 'LED2', on: true }], onEnd: 'off', restart: 'restart' }
+    ],
+    tasks: [
+      { text: '控制板 GND 接到麵包板的 − 電源排', check: (p, a) => a.nets.some(n => n.gnd.some(g => !g.external) && (n.bb || []).some(b => /^(TN|BN)$/.test(b.bus))) },
+      { text: 'US1 插在麵包板上：VCC、GND、TRIG、ECHO 那四號都接好', check: bound('US1') },
+      { text: '黃燈 LED1、紅燈 LED2 各經自己的電阻接到 GPIO', check: (p, a) => ledR('LED1')(p, a) && ledR('LED2')(p, a) },
+      { text: '配置檢查沒有錯誤', check: (p, a) => a.ok && a.counts.unknown === 0 },
+      { text: '在「行為」頁確認行為摘要', check: (p, a, ctx) => !!ctx.confirmedCurrent },
+      { text: '在「觀測」頁把障礙物從遠處移到 15 cm 以內', check: (p, a, ctx) => ctx.minDist < 15 }
+    ]
+  });
+
   EXPERIMENTS.push({
     id: 'arm-3dof', title: '三軸機械手臂', boards: ['uno', 'esp32', 'pi4b'],
     goal: '三顆伺服組成底座、肩、肘三個關節。在「手臂」頁拖曳目標點，觀察逆運動學、關節限位、不可達提示與限速；伺服由外部 5V 供電並與控制板共地。',
@@ -185,6 +266,8 @@
       else r = DL.project.addComponent(p, type, { x, z }, rot);
       if (params && r.ok) Object.assign(r.comp.params, params);   // 例如 LED 顏色、伺服初始角度
     }
+    const bp = e.boardParams && e.boardParams[boardId];   // 依板型調整的參數（例如 3.3 V 板子用 3.3 V 版超音波模組）
+    if (bp) for (const [id, prm] of Object.entries(bp)) { const c = DL.project.findComp(p, id); if (c) Object.assign(c.params, prm); }
     p.behavior.ir = { rules: JSON.parse(JSON.stringify(e.rules)) };
     p.lock = { components: true, behavior: true, board: true };
     if (e.arm) { const cfg = DL.arm.defaultConfig(); p.arm = { config: cfg, target: { x: 10, y: 8, z: 0 }, q: null, poses: [], confirmed: null }; }
@@ -245,35 +328,39 @@
     if (errs.length) return { ok: false, msg: '這個配置還不能自動接完：' + errs.map(i => i.msg).join(' ') };
     const a = DL.netlist.analyze(sol.project);
     if (!a.ok) return { ok: false, msg: '自動接線後檢查仍有錯誤：' + a.issues.filter(i => i.level === 'error').map(i => i.msg).join(' ') };
-    const pins = {}; for (const [id, b] of Object.entries(a.bindings)) pins[id] = b.pin;
-    if (!Object.keys(pins).length) return { ok: false, msg: '沒有需要接到控制板的元件（LED、按鈕、光敏模組、伺服）。' };
+    const pins = {}; for (const [id, b] of Object.entries(a.bindings)) { pins[id] = b.pin; if (b.role === 'ultrasonic') pins[id + '.ECHO'] = b.echo; }
+    if (!Object.keys(pins).length) return { ok: false, msg: '沒有需要接到控制板的元件（LED、按鈕、光敏模組、超音波、伺服）。' };
     const board = DL.boards[p.board.type];
     const id = 'c_' + DL.hash({ t: meta.title, at: Date.now(), r: Math.random() }).slice(0, 10);
     const custom = {
       id, title: String(meta.title || p.name || '自訂實驗').slice(0, 60), goal: String(meta.goal || '').slice(0, 400), board: board.id,
       strictPins: !!meta.strictPins, allowHints: meta.allowHints !== false, pins,
       suggest: { [board.id]: Object.fromEntries(Object.entries(pins).map(([k, v]) => [k, v])) },
-      hasButton: p.components.some(c => c.type === 'BTN'), hasLight: p.components.some(c => c.type === 'LDR'), arm: !!p.arm,
+      hasButton: p.components.some(c => c.type === 'BTN'), hasLight: p.components.some(c => c.type === 'LDR'), hasDistance: p.components.some(c => c.type === 'US'), arm: !!p.arm,
       createdAt: new Date().toISOString()
     };
     const q = DL.project.clone(p, { name: '引導：' + custom.title, origin: { kind: 'guided', experimentId: 'custom:' + id, custom }, lock: { components: true, behavior: true, board: true } });
     q.connections = q.connections.filter(w => w.kind === 'insert');
     q.behavior.confirmed = null; q.code = { text: '', origin: 'none', basedOnInputs: null, generatorVersion: null }; q.builds = [];
-    for (const c of q.components) delete c.prefPin;
+    for (const c of q.components) { delete c.prefPin; delete c.prefPinEcho; }
     if (q.arm) { q.arm.confirmed = null; q.arm.poses = []; }
     return { ok: true, project: q, custom, solutionSteps: sol.steps.length };
   }
   function customTasks(cu) {
     const board = DL.boards[cu.board]; const L = id => board.pinLabel(board.pinById[id]);
-    const t = Object.entries(cu.pins).map(([comp, pin]) => ({
-      text: `${comp} 接好${cu.strictPins ? `（接到 ${L(pin)}）` : ''}`,
-      check: (p, a) => !!a.bindings[comp] && (!cu.strictPins || a.bindings[comp].pin === pin)
-    }));
+    const t = Object.entries(cu.pins).filter(([k]) => !/\.ECHO$/.test(k)).map(([comp, pin]) => {
+      const echo = cu.pins[comp + '.ECHO'];   // 超音波：TRIG 與 ECHO 都要對
+      return {
+        text: `${comp} 接好${cu.strictPins ? `（接到 ${echo ? `TRIG ${L(pin)}、ECHO ${L(echo)}` : L(pin)}）` : ''}`,
+        check: (p, a) => !!a.bindings[comp] && (!cu.strictPins || (a.bindings[comp].pin === pin && (!echo || a.bindings[comp].echo === echo)))
+      };
+    });
     t.push({ text: '配置檢查沒有錯誤', check: (p, a) => a.ok && a.counts.unknown === 0 });
     if (cu.arm) t.push({ text: '在「手臂」頁確認設定與伺服映射', check: (p, a, ctx) => !!ctx.armConfirmed });
     else t.push({ text: '在「行為」頁確認行為摘要', check: (p, a, ctx) => !!ctx.confirmedCurrent });
     if (cu.hasButton) t.push({ text: '在「觀測」頁按住按鈕超過 1.5 秒，觀察結果', check: (p, a, ctx) => ctx.maxHoldMs >= 1500 });
     else if (cu.hasLight) t.push({ text: '在「觀測」頁把亮度拉到 30 % 以下，觀察結果', check: (p, a, ctx) => ctx.minLight < 30 });
+    else if (cu.hasDistance) t.push({ text: '在「觀測」頁把物體移近到 15 cm 以內再移開，觀察結果', check: (p, a, ctx) => ctx.minDist < 15 && ctx.farAfterNear });
     return t;
   }
   // 依專案找出它的引導實驗（內建或老師自訂）
