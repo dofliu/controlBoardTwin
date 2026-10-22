@@ -1,0 +1,17 @@
+{
+  "fps": 30, "width": 1920, "height": 1080, "xfade": 0.6,
+  "scenes": [
+    {"file": "s01_open.html",   "duration": 7,         "transition": "fade"},
+    {"file": "s02_flow.html",   "duration": 8,         "transition": "fadeblack"},
+    {"file": "ch1.html",        "duration": 48.8,      "transition": "fade"},
+    {"file": "ch2.html",        "duration": 20.233333, "transition": "fade"},
+    {"file": "ch3.html",        "duration": 20.666667, "transition": "fade"},
+    {"file": "ch4.html",        "duration": 33.833333, "transition": "fade"},
+    {"file": "ch5.html",        "duration": 20.233333, "transition": "fade"},
+    {"file": "ch6.html",        "duration": 33.833333, "transition": "fade"},
+    {"file": "ch7.html",        "duration": 52.366667, "transition": "smoothleft"},
+    {"file": "s03_tests.html",  "duration": 9,         "transition": "fade"},
+    {"file": "s04_limits.html", "duration": 9,         "transition": "circleopen"},
+    {"file": "s05_end.html",    "duration": 7}
+  ]
+}

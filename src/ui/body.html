@@ -1,0 +1,259 @@
+<header class="bar">
+  <div class="wrap">
+    <div class="brand"><span class="logo" aria-hidden="true"></span><b>DofLab</b><span class="ver">V2.4 原型</span></div>
+    <div class="proj"><input id="projName" aria-label="專案名稱" maxlength="80"><span id="projMeta" class="meta">r0</span></div>
+    <div class="status">
+      <span class="chip" id="boardChip">—</span>
+      <span class="pill sim" id="modePill" title="資料來源模式"><i></i><span>模擬</span></span>
+      <span class="pill" id="connPill" title="設備連線狀態"><i></i><span>未連線</span></span>
+    </div>
+    <div class="actions">
+      <button class="btn" id="btnTeacher" aria-pressed="false" title="接線助手、指定腳位、存成引導實驗">教師模式</button>
+      <button class="btn" id="btnStart">開始／實驗</button>
+      <button class="btn" id="btnProject">專案與版本</button>
+      <button class="btn primary" id="btnSave">保存</button>
+    </div>
+  </div>
+</header>
+<div class="banner" id="banner" hidden><div class="wrap" id="bannerBody"></div></div>
+<nav class="tabs" aria-label="工作分頁">
+  <div class="wrap" role="tablist">
+    <button role="tab" id="t-config" aria-controls="tab-config" aria-selected="true"><span class="step">1</span>配置<span class="tb" id="tbConfig"></span></button>
+    <button role="tab" id="t-behavior" aria-controls="tab-behavior" aria-selected="false"><span class="step">2</span>行為<span class="tb" id="tbBehavior"></span></button>
+    <button role="tab" id="t-code" aria-controls="tab-code" aria-selected="false"><span class="step">3</span>程式<span class="tb" id="tbCode"></span></button>
+    <button role="tab" id="t-observe" aria-controls="tab-observe" aria-selected="false"><span class="step">4</span>觀測<span class="tb" id="tbObserve"></span></button>
+    <button role="tab" id="t-arm" aria-controls="tab-arm" aria-selected="false"><span class="step">5</span>手臂<span class="tb" id="tbArm"></span></button>
+  </div>
+</nav>
+
+<main class="wrap">
+  <!-- ================= 配置 ================= -->
+  <section class="panel" id="tab-config" role="tabpanel" aria-labelledby="t-config">
+    <div class="col col-l">
+      <div class="card">
+        <h3>控制板</h3>
+        <div class="bd">
+          <select class="inp" id="boardSel" aria-label="控制板型號"></select>
+          <p class="hint" id="boardNotes"></p>
+        </div>
+      </div>
+      <div class="card">
+        <h3>元件 <span class="muted" style="font-weight:500;letter-spacing:0">拖到場景，或點一下再點位置</span></h3>
+        <div class="bd"><div class="palette" id="palette"></div></div>
+      </div>
+      <div class="card">
+        <h3>選取項目</h3>
+        <div class="bd" id="inspector"></div>
+      </div>
+    </div>
+    <div class="col col-c">
+      <div class="viewport" id="vpConfig">
+        <div class="vp-tools">
+          <div class="grp" role="group" aria-label="快捷視角">
+            <button data-view="iso">等角</button><button data-view="top">俯視</button><button data-view="front">正面</button><button data-view="side">側面</button>
+          </div>
+          <div class="grp"><button id="tglWire" aria-pressed="true" title="自動以最佳路徑整線；關閉時改用弧線">整齊走線</button><button id="tglUsed" aria-pressed="false">高亮已用腳位</button></div>
+        </div>
+        <div class="vp-hint"><span id="hintConfig">拖曳空白處旋轉 · 右鍵或雙指平移 · 滾輪／雙指縮放</span></div>
+      </div>
+    </div>
+    <div class="col col-r">
+      <div class="card" id="assistCard" hidden>
+        <h3>接線助手 <span class="n" id="assistCount"></span></h3>
+        <div class="bd" id="assistBody"></div>
+      </div>
+      <div class="card" id="taskCard" hidden>
+        <h3>引導任務 <span class="n" id="taskCount"></span></h3>
+        <div class="bd"><p class="hint" id="taskGoal"></p><ol class="tasks" id="taskList"></ol><p class="hint" id="taskSuggest"></p></div>
+      </div>
+      <div class="card">
+        <h3>電路檢查 <span class="counts" id="issueCounts"></span></h3>
+        <div class="bd"><ul class="issues" id="issueList"></ul></div>
+      </div>
+      <div class="card">
+        <h3>連線（網表）<span class="n" id="wireCount"></span></h3>
+        <div class="bd"><ul class="wires" id="wireList"></ul><p class="hint">連線只由這張表決定；移動或旋轉元件不會改變導通。</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 行為 ================= -->
+  <section class="panel" id="tab-behavior" role="tabpanel" aria-labelledby="t-behavior" hidden>
+    <div class="col">
+      <div class="blockly-host" id="blocklyHost"><div class="nogl" id="blocklyFallback" hidden></div></div>
+      <p class="hint">規則由上到下排列，依序評估；積木裡的元件名稱直接對應「配置」頁的元件。沒有放進規則裡的積木會被忽略。</p>
+    </div>
+    <div class="col">
+      <div class="card">
+        <h3>行為摘要</h3>
+        <div class="bd">
+          <ul class="summary" id="summaryList"></ul>
+          <p class="hint" id="summaryInit"></p>
+          <ul class="issues" id="behaviorIssues"></ul>
+          <div class="confirmbox" id="confirmBox"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 程式 ================= -->
+  <section class="panel" id="tab-code" role="tabpanel" aria-labelledby="t-code" hidden>
+    <div class="col">
+      <div class="card">
+        <div class="codebar">
+          <button class="btn primary" id="btnGen">產生程式</button>
+          <button class="btn" id="btnCompile">編譯</button>
+          <span class="badge unk" id="codeBadge">尚未產生</span>
+          <span class="badge unk" id="buildBadge">尚未編譯</span>
+          <span class="muted mono" id="langInfo" style="margin-left:auto;font-size:.78rem"></span>
+        </div>
+        <div id="codeConfirm"></div>
+        <div class="editor"><div class="gutter" id="gutter"></div><textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="程式碼"></textarea></div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card">
+        <h3>程式與接線是否一致</h3>
+        <div class="bd"><ul class="issues" id="scanList"></ul></div>
+      </div>
+      <div class="card">
+        <h3>編譯結果</h3>
+        <div class="bd" id="buildBody"></div>
+      </div>
+      <div class="card" id="uploadCard">
+        <h3>上傳到板子</h3>
+        <div class="bd" id="uploadBody"></div>
+      </div>
+      <div class="card">
+        <h3>編譯服務</h3>
+        <div class="bd">
+          <label class="field"><span>服務網址（在你的電腦執行 doflab_server.py）</span><input class="inp mono" id="compileUrl"></label>
+          <p class="hint" id="toolInfo">Uno／ESP32 用 arduino-cli；Raspberry Pi 用 python3 -m py_compile（只檢查語法）。上傳 Uno 也可以不經過服務，直接用瀏覽器（USB）。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 觀測 ================= -->
+  <section class="panel" id="tab-observe" role="tabpanel" aria-labelledby="t-observe" hidden>
+    <div class="col">
+      <div>
+        <div class="viewport" id="vpObserve">
+          <div class="vp-tools">
+            <div class="grp" role="group" aria-label="快捷視角"><button data-view="iso">等角</button><button data-view="top">俯視</button><button data-view="front">正面</button></div>
+          </div>
+          <div class="vp-hint"><span id="hintObserve">模擬時，按住場景中的按鈕即可按下</span></div>
+        </div>
+        <div class="simbar">
+          <button class="btn primary" id="simRun">▶ 執行</button>
+          <button class="btn" id="simStep" title="前進 10 ms">單步 +10 ms</button>
+          <button class="btn" id="simReset">重置</button>
+          <select class="inp" id="simSpeed" style="width:auto" aria-label="模擬速度"><option value="1">1×</option><option value="0.25">0.25×</option><option value="0.1">0.1×</option></select>
+          <span class="simtime" id="simTime">t = 0.000 s</span>
+          <span class="muted" id="simNote" style="font-size:.8rem"></span>
+        </div>
+        <div class="inputs" id="simInputs"></div>
+      </div>
+      <div class="card">
+        <h3>訊號波形（最近 6 秒）</h3>
+        <div class="bd"><canvas class="trace" id="trace" aria-label="訊號波形"></canvas></div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card">
+        <h3>孿生狀態 <span class="muted" style="font-weight:500;letter-spacing:0">五層分開，不混用</span></h3>
+        <div class="bd flush twinwrap"><table class="twin"><thead><tr><th>訊號</th><th>模擬</th><th>目標</th><th>命令</th><th>確認 ACK</th><th>量測</th></tr></thead><tbody id="twinRows"></tbody></table></div>
+      </div>
+      <div class="card">
+        <h3>真機連線 <span id="drvStatus" class="status-tag st-unver"></span></h3>
+        <div class="bd" id="hwBody"></div>
+      </div>
+      <div class="card">
+        <h3>事件與錯誤 <button class="btn sm" id="clearEvents">清除</button></h3>
+        <div class="bd"><ul class="events" id="eventList" aria-live="polite"></ul></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 手臂 ================= -->
+  <section class="panel" id="tab-arm" role="tabpanel" aria-labelledby="t-arm" hidden>
+    <div class="col" id="armPanel">
+      <div class="card" id="armEmpty" hidden><h3>三自由度機械手臂</h3><div class="bd" id="armEmptyBody"></div></div>
+      <div id="armMain">
+        <div class="viewport" id="vpArm">
+          <div class="vp-tools">
+            <div class="grp" role="group" aria-label="快捷視角"><button data-aview="iso" aria-pressed="true">等角</button><button data-aview="top">俯視</button><button data-aview="front">正面</button><button data-aview="side">側面</button></div>
+            <div class="grp" role="group" aria-label="拖曳平面"><button data-plane="xz">水平 XZ</button><button data-plane="xy">垂直 XY</button></div>
+          </div>
+          <div class="vp-hint"><span id="armHint">拖曳橘色球移動目標</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="col" id="armSide">
+      <div class="card"><h3>目標</h3><div class="bd">
+        <div class="confirmbox" id="armStatus"></div>
+        <div class="row"><label class="field" style="flex:1 1 70px"><span>X（cm）</span><input class="inp mono" type="number" step="0.5" id="armTx"></label><label class="field" style="flex:1 1 70px"><span>Y 高度</span><input class="inp mono" type="number" step="0.5" id="armTy"></label><label class="field" style="flex:1 1 70px"><span>Z</span><input class="inp mono" type="number" step="0.5" id="armTz"></label></div>
+        <div class="row"><button class="btn primary" id="armApply">移到這個位置</button><button class="btn" id="armHome">回到預備姿態</button></div>
+        <label class="row" style="font-size:.84rem"><input type="checkbox" id="armJump"> 允許換解（拖曳時可能大幅翻轉）</label>
+      </div></div>
+      <div class="card"><h3>關節（直接設定）</h3><div class="bd" id="armJoints"></div></div>
+      <div class="card"><h3>姿態 <button class="btn sm" id="armSavePose">記下目前姿態</button></h3><div class="bd"><ul class="revs" id="armPoses"></ul></div></div>
+      <div class="card"><h3>真機</h3><div class="bd"><label class="row" style="font-size:.88rem"><input type="checkbox" id="armStream" disabled> 把手臂命令送到設備</label><p class="hint" id="armHwNote"></p></div></div>
+      <div class="card"><h3>設定與伺服映射</h3><div class="bd" id="armConfig"></div></div>
+    </div>
+  </section>
+</main>
+
+<!-- ================= 對話框 ================= -->
+<dialog id="dlgStart" aria-labelledby="dlgStartT">
+  <div class="dh"><h2 id="dlgStartT">開始</h2><button class="btn" data-close>關閉</button></div>
+  <div class="db">
+    <p class="sec-t">引導實驗 · 元件與行為已備好，練習接線、確認、模擬</p>
+    <div class="exps" id="expList"></div>
+    <p class="sec-t">老師自訂的實驗 · 在這個瀏覽器存過的</p>
+    <div class="exps" id="myExpList"></div>
+    <p class="sec-t">自訂專案 · 自己決定元件、接線與行為</p>
+    <div class="row" id="newList"></div>
+    <p class="sec-t">範例</p>
+    <div class="row"><button class="btn" id="openExample">開啟已接好線的範例（按住閃爍 · Uno R3）</button></div>
+  </div>
+</dialog>
+
+<dialog id="dlgGuide" aria-labelledby="dlgGuideT">
+  <div class="dh"><h2 id="dlgGuideT">存成引導實驗</h2><button class="btn" data-close>關閉</button></div>
+  <div class="db">
+    <p class="hint">學生版會保留元件、麵包板上的插件與行為，拿掉所有導線並鎖定元件與行為。解答由接線助手自動算出；任務依元件自動產生。</p>
+    <label class="field"><span>實驗名稱</span><input class="inp" id="gTitle" maxlength="60"></label>
+    <label class="field"><span>目標（學生會在任務卡片上看到）</span><textarea class="inp" id="gGoal" rows="3" maxlength="400"></textarea></label>
+    <label class="check"><input type="checkbox" id="gStrict"><span>學生必須接到和解答相同的腳位（不勾：任何相容腳位都算對）</span></label>
+    <label class="check"><input type="checkbox" id="gHints" checked><span>允許學生按「提示下一條線」</span></label>
+    <div class="row"><button class="btn primary" id="gSave">存成引導實驗</button></div>
+    <div id="gMsg" class="hint"></div>
+  </div>
+</dialog>
+
+<dialog id="dlgProject" aria-labelledby="dlgProjectT">
+  <div class="dh"><h2 id="dlgProjectT">專案與版本</h2><button class="btn" data-close>關閉</button></div>
+  <div class="db">
+    <div>
+      <p class="sec-t">這個專案的保存版本</p>
+      <ul class="revs" id="revList"></ul>
+      <p class="hint">開啟舊版本只會還原配置與邏輯；不會恢復連線、不會把舊量測當成最新，也不會自動執行任何硬體動作。</p>
+    </div>
+    <div>
+      <p class="sec-t">其他已保存的專案</p>
+      <ul class="revs" id="projList"></ul>
+    </div>
+    <div>
+      <p class="sec-t">匯出／匯入（JSON）</p>
+      <div class="row"><button class="btn" id="btnExport">把目前專案放進下方文字框</button><button class="btn" id="btnCopyJson">複製文字</button><button class="btn" id="btnImport">從文字框匯入</button><label class="btn" for="importFile">選擇檔案…</label><input type="file" id="importFile" accept=".json,application/json" hidden><a class="btn" id="dlJson" href="#" download="doflab-project.json">下載 .json</a></div>
+      <textarea class="json" id="jsonBox" spellcheck="false" aria-label="專案 JSON"></textarea>
+      <p class="hint" id="importMsg">匯入失敗時，文字框內容會原樣保留，不會被修改或丟棄。「下載」在 Claude 預覽中可能無效，請改用複製。</p>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="dlgAbout" aria-labelledby="dlgAboutT">
+  <div class="dh"><h2 id="dlgAboutT">這個版本做到哪裡</h2><button class="btn" data-close>關閉</button></div>
+  <div class="db"><div class="tablewrap" id="aboutBody"></div></div>
+</dialog>

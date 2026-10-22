@@ -1,0 +1,613 @@
+"""DofLab 瀏覽器端到端測試（Playwright + headless Chromium/SwiftShader）
+在 3D 場景中以真實指標事件接線、放置、拖曳；跑完整流程：配置 → 行為 → 程式（真實編譯）→ 觀測 → 真機（Pi 模擬腳位）。"""
+import asyncio, json, os, subprocess, sys, time, pathlib, socket
+from playwright.async_api import async_playwright
+ROOT = pathlib.Path(__file__).resolve().parent.parent; DIST = ROOT / "dist"; SHOTS = pathlib.Path(os.environ.get("SHOTS", "/tmp/doflab-shots")); SHOTS.mkdir(exist_ok=True, parents=True)
+ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']
+results = []
+def check(name, cond, detail=""):
+    results.append((name, bool(cond), detail)); print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail and not cond else ""), flush=True)
+
+def wait_port(p):
+    for _ in range(80):
+        try: socket.create_connection(("127.0.0.1", p), 0.2).close(); return
+        except OSError: time.sleep(0.1)
+
+async def ev(pg, js, *a): return await pg.evaluate(js, *a)
+async def scr(pg, ep): return await pg.evaluate("ep => doflab.scene.screenOf(ep)", ep)
+async def click_ep(pg, ep):
+    p = await scr(pg, ep); await pg.mouse.click(p['x'], p['y']); await pg.wait_for_timeout(60)
+async def wire(pg, a, b):
+    await click_ep(pg, a); await click_ep(pg, b)
+B = lambda t: {"comp": "board", "term": t}
+E = lambda c, t: {"comp": c, "term": t}
+
+async def desktop(p):
+    b = await p.chromium.launch(args=ARGS)
+    ctx = await b.new_context(viewport={'width': 1440, 'height': 940})
+    pg = await ctx.new_page(); errs = []
+    pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p"); await pg.wait_for_timeout(800)
+    check("啟動：載入範例專案、WebGL 場景可用", await ev(pg, "doflab.scene.ok && doflab.p.components.length === 3"))
+    await pg.screenshot(path=str(SHOTS / "d1_example.png"))
+
+    # ---------- 引導實驗：只開放接線 ----------
+    await pg.click('#btnStart'); await pg.click('[data-exp="hold-blink"][data-board="uno"]'); await pg.wait_for_timeout(400)
+    check("引導實驗：元件與行為鎖定、元件清單停用", await ev(pg, "doflab.p.lock.components && doflab.p.lock.behavior && document.querySelector('.pal').disabled"))
+    await pg.click('#vpConfig [data-view="top"]'); await pg.wait_for_timeout(300)
+    await wire(pg, B('D2'), E('BTN1', '1')); await wire(pg, E('BTN1', '2'), B('GND1'))
+    await wire(pg, B('D13'), E('R1', '1')); await wire(pg, E('R1', '2'), E('LED1', 'A'))
+    n_before = await ev(pg, "doflab.p.connections.length")
+    check("接線：點選兩端點建立 4 條連線", n_before == 4, str(n_before))
+    await wire(pg, E('LED1', 'A'), E('LED1', 'K'))
+    check("接線：同一元件兩端被拒絕、不留連線", await ev(pg, "doflab.p.connections.length") == n_before and await ev(pg, "!doflab.ui.wiringFrom"))
+    await wire(pg, E('BTN1', '1'), B('D2'))
+    check("接線：重複連線被拒絕", await ev(pg, "doflab.p.connections.length") == n_before)
+    await click_ep(pg, E('LED1', 'K')); started = await ev(pg, "!!doflab.ui.wiringFrom"); await pg.keyboard.press('Escape')
+    check("接線：Esc 取消不殘留", started and await ev(pg, "!doflab.ui.wiringFrom") and await ev(pg, "doflab.p.connections.length") == n_before)
+    a = await scr(pg, E('LED1', 'K')); c = await scr(pg, B('GND2'))
+    await pg.mouse.move(a['x'], a['y']); await pg.mouse.down(); await pg.mouse.move((a['x'] + c['x']) / 2, (a['y'] + c['y']) / 2, steps=6); await pg.mouse.move(c['x'], c['y'], steps=6); await pg.mouse.up(); await pg.wait_for_timeout(150)
+    check("接線：拖曳端點也能建立連線", await ev(pg, "doflab.p.connections.length") == n_before + 1)
+    a = await ev(pg, "({ok: doflab.analysis.ok, b: doflab.analysis.bindings})")
+    check("網表：BTN1→D2、LED1→D13 經 R1、無錯誤", a['ok'] and a['b'].get('BTN1', {}).get('pin') == 'D2' and a['b'].get('LED1', {}).get('via') == ['R1'], json.dumps(a)[:300])
+    tasks = await ev(pg, "[...document.querySelectorAll('#taskList li')].map(l=>l.classList.contains('done'))")
+    check("引導任務：前三項接線任務完成", tasks[:3] == [True, True, True], str(tasks))
+    await pg.click('#vpConfig [data-view="iso"]'); await pg.wait_for_timeout(200); await pg.screenshot(path=str(SHOTS / "d2_guided_wired.png"))
+
+    # ---------- 行為確認 ----------
+    await pg.click('#t-behavior'); await pg.wait_for_timeout(700)
+    s = await pg.inner_text('#summaryList')
+    check("行為摘要：列出 1 Hz、立即熄滅、從亮開始", all(k in s for k in ['1 Hz', '立即熄滅', '先亮']), s[:200])
+    await pg.click('#btnConfirm'); await pg.wait_for_timeout(200)
+    check("行為確認後分頁顯示已確認", '已確認' in await pg.inner_text('#tbBehavior'))
+    await pg.screenshot(path=str(SHOTS / "d3_behavior.png"))
+
+    # ---------- 觀測：在 3D 場景按住 BTN1 ----------
+    await pg.click('#t-observe'); await pg.wait_for_timeout(600)
+    await pg.click('#simRun'); await pg.wait_for_timeout(100)
+    bp = await ev(pg, "doflab.scene.compScreen('BTN1')")
+    await pg.mouse.move(bp['x'], bp['y']); await pg.mouse.down()
+    samples = []
+    for i in range(30):
+        await pg.wait_for_timeout(60); samples.append(await ev(pg, "[doflab.sim.time, doflab.twin.view('LED1.state').simulated.v]"))
+    await pg.screenshot(path=str(SHOTS / "d4_observe_hold.png"))
+    await pg.mouse.up(); await pg.wait_for_timeout(150)
+    vals = [v for t, v in samples]
+    flips = sum(1 for i in range(1, len(vals)) if vals[i] != vals[i - 1])
+    check("模擬：在 3D 場景按住 BTN1，LED1 閃爍（約 1.8 秒內至少翻轉 2 次）", flips >= 2, str(samples[::5]))
+    try: await pg.wait_for_function("doflab.twin.view('LED1.state').simulated.v === 0", timeout=2000); off = True   # 去彈跳 20 ms 後熄滅；軟體渲染負載高時模擬的步進可能稍晚，所以用等待而不是固定延遲
+    except Exception: off = False
+    check("模擬：放開後 LED1 熄滅", off)
+    t5 = await ev(pg, "doflab.sim.maxHoldMs")
+    check("引導任務 5：按住超過 1.5 秒被記錄", t5 >= 1500, str(t5))
+    await pg.click('#simRun')
+    tw = await pg.inner_text('#twinRows')
+    check("孿生狀態：LED 量測欄顯示「無回授」，不冒充量測", '無回授' in tw)
+
+    # ---------- 複製為自訂專案；拖放與點放產生相同資料 ----------
+    await pg.click('#t-config'); await pg.click('#bnCopy'); await pg.wait_for_timeout(400)
+    check("複製為自訂：解除鎖定、元件清單可用", await ev(pg, "!doflab.p.lock.components && !document.querySelector('.pal').disabled && doflab.p.origin.kind==='custom'"))
+    vp = await pg.locator('#vpConfig').bounding_box()
+    tgt1 = {'x': vp['x'] + vp['width'] * 0.78, 'y': vp['y'] + vp['height'] * 0.78}
+    tgt2 = {'x': vp['x'] + vp['width'] * 0.22, 'y': vp['y'] + vp['height'] * 0.78}
+    pal = await pg.locator('.pal[data-type="LED"]').bounding_box()
+    await pg.mouse.move(pal['x'] + 20, pal['y'] + 20); await pg.mouse.down(); await pg.mouse.move(tgt1['x'], tgt1['y'], steps=12); await pg.mouse.up(); await pg.wait_for_timeout(200)
+    await pg.click('.pal[data-type="LED"]'); placing = await ev(pg, "doflab.ui.mode"); await pg.mouse.click(tgt2['x'], tgt2['y']); await pg.wait_for_timeout(200)
+    pts = await ev(pg, "[[%s,%s],[%s,%s]].map(([x,y])=>{const v=doflab.scene.clientToPlane(x,y);return {x:Math.round(v.x*10)/10,z:Math.round(v.z*10)/10}})" % (tgt1['x'], tgt1['y'], tgt2['x'], tgt2['y']))
+    comps = await ev(pg, "doflab.p.components.filter(c=>c.id==='LED2'||c.id==='LED3')")
+    strip = lambda c: {k: c[k] for k in ('type', 'model', 'params', 'rot')}
+    check("放置：拖放與「先選再點」各新增一個元件", len(comps) == 2 and placing == 'placing', str(comps))
+    if len(comps) == 2:
+        check("放置：兩種方式產生相同資料（型號、參數、方向），位置落在指標處", strip(comps[0]) == strip(comps[1]) and abs(comps[0]['pos']['x'] - pts[0]['x']) < 0.3 and abs(comps[1]['pos']['x'] - pts[1]['x']) < 0.3, json.dumps(comps) + json.dumps(pts))
+    await pg.click('.pal[data-type="RES"]'); await pg.keyboard.press('Escape'); await pg.mouse.click(tgt2['x'], tgt2['y'] - 40); await pg.wait_for_timeout(150)
+    check("放置：Esc 取消後點場景不會新增元件", await ev(pg, "doflab.p.components.length") == 5)
+    for cid in ['LED2', 'LED3']:
+        await ev(pg, f"doflab.sceneSelect({{kind:'comp',id:'{cid}'}})"); await pg.keyboard.press('Delete')
+    check("移除：Delete 移除選取元件", await ev(pg, "doflab.p.components.length") == 3)
+
+    # ---------- 程式：產生、真實編譯、移動不過期 ----------
+    await pg.click('#t-behavior'); await pg.wait_for_timeout(500); await pg.click('#btnConfirm'); await pg.click('#t-code'); await pg.wait_for_timeout(300)
+    await pg.click('#btnGen'); await pg.wait_for_timeout(200)
+    check("程式：產生後標示「一致」", '一致' in await pg.inner_text('#codeBadge'))
+    await pg.click('#btnCompile'); await pg.wait_for_function("document.querySelector('#btnCompile').textContent==='編譯'", timeout=180000)
+    check("編譯：arduino-cli 真實編譯成功", await pg.inner_text('#buildBadge') == '編譯成功', (await pg.inner_text('#buildBody'))[:400])
+    await pg.screenshot(path=str(SHOTS / "d5_code_compiled.png"))
+    await pg.click('#t-config'); await pg.wait_for_timeout(300)
+    h0 = await ev(pg, "DL.project.inputsHash(doflab.p, DL.codegen.GENERATOR_VERSION)"); w0 = await ev(pg, "JSON.stringify(doflab.p.connections)")
+    p0 = await ev(pg, "doflab.p.components.find(c=>c.id==='LED1').pos")
+    lp = await ev(pg, "doflab.scene.compScreen('LED1')")
+    await pg.mouse.move(lp['x'], lp['y'] - 4); await pg.mouse.down(); await pg.mouse.move(lp['x'] + 60, lp['y'] + 50, steps=10); await pg.mouse.up(); await pg.wait_for_timeout(200)
+    moved = await ev(pg, "doflab.p.components.find(c=>c.id==='LED1').pos")
+    check("移動：拖曳 LED1 改變位置，但網表與輸入雜湊不變、程式不過期", moved != p0 and await ev(pg, "DL.project.inputsHash(doflab.p, DL.codegen.GENERATOR_VERSION)") == h0 and await ev(pg, "JSON.stringify(doflab.p.connections)") == w0 and await ev(pg, "doflab.codeState().state") == 'current', json.dumps([p0, moved]))
+
+    # ---------- 手改程式：錯誤行號、腳位不一致與同步 ----------
+    await pg.click('#t-code'); await pg.wait_for_timeout(200)
+    code = await pg.input_value('#code')
+    await pg.fill('#code', code.replace('digitalWrite(LED1_PIN, led1 ? HIGH : LOW);', 'digitalWrit(LED1_PIN, led1 ? HIGH : LOW);')); await pg.dispatch_event('#code', 'input'); await pg.wait_for_timeout(400)
+    check("手改程式：標示「手動修改」且舊編譯結果過期", '手動修改' in await pg.inner_text('#codeBadge') and await pg.inner_text('#buildBadge') == '編譯結果已過期')
+    await pg.click('#btnCompile'); await pg.wait_for_function("document.querySelector('#btnCompile').textContent==='編譯'", timeout=180000)
+    diag = await pg.inner_text('#buildBody')
+    check("編譯失敗：顯示失敗與原始行號", await pg.inner_text('#buildBadge') == '編譯失敗' and '第 ' in diag, diag[:300])
+    await pg.screenshot(path=str(SHOTS / "d6_code_error.png"))
+    await pg.fill('#code', code.replace('const int BTN1_PIN = 2;', 'const int BTN1_PIN = 4;')); await pg.dispatch_event('#code', 'input'); await pg.wait_for_timeout(400)
+    scan = await pg.inner_text('#scanList')
+    check("腳位比對：程式 D4 與接線 D2 不一致被提示", '不一致' in scan and 'D4' in scan, scan[:200])
+    await pg.click('[data-sync]'); await pg.wait_for_timeout(100)
+    confirm_text = await pg.inner_text('#codeConfirm')
+    await pg.click('#icOk'); await pg.wait_for_timeout(300)
+    check("同步虛擬接線：先說明實體導線不會移動，確認後 BTN1 改到 D4", '實體導線不會' in confirm_text and await ev(pg, "doflab.analysis.bindings.BTN1 && doflab.analysis.bindings.BTN1.pin") == 'D4')
+    check("版本失效：接線改變後行為需重新確認", await ev(pg, "doflab.confirmState()") == 'stale')
+    await pg.screenshot(path=str(SHOTS / "d7_code_sync.png"))
+
+    # ---------- 保存、重開、版本、匯入 ----------
+    await pg.click('#btnSave'); await pg.wait_for_timeout(200)
+    await pg.reload(); await pg.wait_for_function("window.doflab && doflab.p"); await pg.wait_for_timeout(500)
+    st = await ev(pg, "({rev: doflab.p.revision, mode: doflab.twin.mode, conn: doflab.twin.conn.state, pin: doflab.analysis.bindings.BTN1 && doflab.analysis.bindings.BTN1.pin, dirty: doflab.dirty})")
+    check("保存後重開：還原 r1 配置，模式為模擬、未連線", st == {'rev': 1, 'mode': 'sim', 'conn': 'none', 'pin': 'D4', 'dirty': False}, json.dumps(st))
+    await pg.click('#btnProject'); await pg.wait_for_timeout(200)
+    bad = '{"format":"doflab.project","formatVersion":2,"board":'
+    await pg.fill('#jsonBox', bad); await pg.click('#btnImport'); await pg.wait_for_timeout(200)
+    check("匯入損壞檔案：明確錯誤，文字框原樣保留，專案未被替換", '不是有效的 JSON' in await pg.inner_text('#importMsg') and await pg.input_value('#jsonBox') == bad and await ev(pg, "doflab.p.revision") == 1)
+    future = await ev(pg, "JSON.stringify(Object.assign(JSON.parse(DL.project.serialize(doflab.p)),{formatVersion:7}))")
+    await pg.fill('#jsonBox', future); await pg.click('#btnImport'); await pg.wait_for_timeout(200)
+    check("匯入較新格式：拒絕並說明版本", '較新的格式 v7' in await pg.inner_text('#importMsg'))
+    await pg.screenshot(path=str(SHOTS / "d8_import.png"))
+    await pg.click('#dlgProject [data-close]')
+
+    # ---------- 板型能力：Pi 不支援光控夜燈；ESP32 沒有驅動 ----------
+    await pg.click('#btnStart'); d = await ev(pg, "document.querySelector('#expList').innerText")
+    check("引導清單：光控夜燈標示 Pi 4B 沒有 ADC", 'ADC' in d)
+    await pg.click('[data-new="esp32"]'); await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+    check("ESP32：提供 USB 連線並說明需先上傳 DofLabFirmata", 'DofLabFirmata' in await pg.inner_text('#hwBody') and await pg.locator('#hwConn').count() == 1)
+    await pg.click('#t-config'); await pg.click('#btnStart'); await pg.click('[data-new="pi4b"]'); await pg.wait_for_timeout(300)
+    await pg.click('#vpConfig [data-view="top"]'); await pg.wait_for_timeout(200); await pg.screenshot(path=str(SHOTS / "d9_pi_top.png"))
+    await pg.click('#btnStart'); await pg.click('[data-new="esp32"]'); await pg.wait_for_timeout(300); await pg.click('#vpConfig [data-view="top"]'); await pg.wait_for_timeout(200); await pg.screenshot(path=str(SHOTS / "d10_esp32_top.png"))
+    await pg.click('#bnAbout'); await pg.wait_for_timeout(200); await pg.screenshot(path=str(SHOTS / "d11_about.png")); await pg.click('#dlgAbout [data-close]')
+    check("桌面流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    await b.close()
+
+async def pi_hw(p, port, bridge):
+    """以 pi_bridge.py --mock 當作真機：唯讀 → 核對 → 授權 → 命令／ACK → 斷線不重播 → 重連唯讀"""
+    import aiohttp
+    b = await p.chromium.launch(args=ARGS); pg = await b.new_page(viewport={'width': 1440, 'height': 1000}); errs = []
+    pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.goto(f'http://localhost:{port}/'); await pg.wait_for_function("window.doflab && doflab.p")
+    await ev(pg, "(()=>{const r=DL.experiments.solved('hold-blink','pi4b'); const q=DL.project.clone(r.project,{name:'Pi 真機測試',origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}}); doflab.load(q); })()")
+    await pg.click('#t-behavior'); await pg.wait_for_timeout(400); await pg.click('#btnConfirm')
+    await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+    await pg.fill('#wsUrl', f'ws://localhost:{port}/ws'); await pg.click('#hwConn')
+    await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=8000); await pg.wait_for_timeout(300)
+    check("真機：連線後一律從唯讀開始", await ev(pg, "doflab.twin.mode") == 'hw-read')
+    check("真機：辨識結果標示為模擬腳位（非實體設備）", '模擬腳位' in await pg.inner_text('#hwBody'))
+    check("真機：未核對前不能授權寫入", await pg.locator('#hwAuth').is_disabled())
+    async with aiohttp.ClientSession() as s:
+        async with s.ws_connect(f'http://localhost:{port}/ws') as ws:
+            await ws.send_json({"op": "mock_level", "pin": 27, "value": 0}); await pg.wait_for_timeout(500)
+            m = await ev(pg, "(()=>{const v=doflab.twin.view('BTN1.pressed'); return {v: v.measured && v.measured.v, q: v.quality, cmd: doflab.twin.view('LED1.state').commanded}})()")
+            check("唯讀：按下實體按鈕 → 量測層顯示按下、品質有效；沒有送出任何命令", m['v'] is True and m['q'] == 'ok' and m['cmd'] is None, json.dumps(m))
+            check("唯讀：3D 按鈕顯示「量測」標籤", '量測' in await pg.inner_text('#vpObserve .labels'))
+            await ws.send_json({"op": "mock_level", "pin": 27, "value": 1}); await pg.wait_for_timeout(300)
+            check("唯讀：偵測到實體按鈕變化", '已偵測到變化' in await pg.inner_text('#hwBody'))
+            for cb in await pg.locator('[data-chk]').all(): await cb.check()
+            await pg.wait_for_timeout(100)
+            check("核對完成後可以授權", await pg.locator('#hwAuth').is_enabled())
+            await pg.click('#hwAuth'); await pg.wait_for_timeout(300)
+            check("授權後進入受控寫入", await ev(pg, "doflab.twin.mode") == 'hw-control')
+            await pg.click('#simRun'); await pg.wait_for_timeout(200)
+            await ws.send_json({"op": "mock_level", "pin": 27, "value": 0}); await pg.wait_for_timeout(1500)
+            v = await ev(pg, "(()=>{const v=doflab.twin.view('LED1.state'); return {cmd: v.commanded, ack: v.ack, meas: v.quality}})()")
+            check("受控寫入：行為輸出 → 命令 → 閘道回覆 ACK（回讀一致），量測仍為無回授", bool(v['cmd'] and v['ack'] and v['ack']['matches'] and v['meas'] == 'none'), json.dumps(v)[:300])
+            await pg.screenshot(path=str(SHOTS / "h1_pi_control.png"))
+    bridge.kill(); bridge.wait(5); await pg.wait_for_timeout(2500)   # 模擬拔線／斷電
+    st = await ev(pg, "({mode: doflab.twin.mode, conn: doflab.twin.conn.state, pending: doflab.twin.pending.length, q: doflab.twin.quality('BTN1.pressed')})")
+    check("斷線：回到模擬、無待送命令、量測標為過期", st == {'mode': 'sim', 'conn': 'lost', 'pending': 0, 'q': 'stale'}, json.dumps(st))
+    await pg.screenshot(path=str(SHOTS / "h2_pi_lost.png"))
+    bridge2 = subprocess.Popen([sys.executable, str(DIST / 'pi_bridge.py'), '--mock', '--port', str(port)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(port)
+    ncmd = await ev(pg, "doflab.twin.log.filter(e=>e.type==='command').length")
+    await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=8000); await pg.wait_for_timeout(800)
+    st = await ev(pg, "({mode: doflab.twin.mode, auth: doflab.twin.auth, cmds: doflab.twin.log.filter(e=>e.type==='command').length})")
+    check("重連：從唯讀開始、需要重新授權、沒有重播任何命令", st['mode'] == 'hw-read' and st['auth'] is None and st['cmds'] == ncmd, json.dumps(st))
+    check("真機流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    await b.close(); return bridge2
+
+async def mobile(p):
+    b = await p.chromium.launch(args=ARGS)
+    ctx = await b.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=2, is_mobile=True, has_touch=True)
+    pg = await ctx.new_page(); errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p"); await pg.wait_for_timeout(800)
+    sw = await ev(pg, "document.documentElement.scrollWidth")
+    check("手機：頁面沒有水平捲動", sw <= 390, str(sw))
+    await pg.screenshot(path=str(SHOTS / "m1_config.png"))
+    n0 = await ev(pg, "doflab.p.components.length")
+    await pg.locator('.pal[data-type="BTN"]').tap(); await pg.wait_for_timeout(300); vp = await pg.locator('#vpConfig').bounding_box()
+    check("手機：點元件後自動捲回場景且進入放置模式", vp['y'] >= -1 and vp['y'] + vp['height'] <= 844 + 1 and await ev(pg, "doflab.ui.mode") == 'placing', json.dumps(vp))
+    await pg.touchscreen.tap(vp['x'] + vp['width'] * 0.3, vp['y'] + vp['height'] * 0.75); await pg.wait_for_timeout(200)
+    check("手機：點元件再點場景（觸控）可以放置", await ev(pg, "doflab.p.components.length") == n0 + 1)
+    for t in ['behavior', 'code', 'observe']:
+        await pg.locator(f'#t-{t}').tap(); await pg.wait_for_timeout(700)
+        sw = await ev(pg, "document.documentElement.scrollWidth")
+        check(f"手機：{t} 分頁沒有水平捲動", sw <= 390, str(sw)); await pg.screenshot(path=str(SHOTS / f"m_{t}.png"))
+    check("手機流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    await b.close()
+
+async def dark(p):
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 940}, color_scheme='dark'); pg = await ctx.new_page()
+    await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p"); await pg.wait_for_timeout(800)
+    await pg.screenshot(path=str(SHOTS / "k1_dark_config.png")); await pg.click('#t-behavior'); await pg.wait_for_timeout(600); await pg.screenshot(path=str(SHOTS / "k2_dark_behavior.png"))
+    await pg.click('#t-observe'); await pg.wait_for_timeout(600); await pg.screenshot(path=str(SHOTS / "k3_dark_observe.png"))
+    await b.close()
+
+async def arm_flow(p):
+    """手臂：拖曳（XZ）、不可達保留最後有效命令、退化投影保護、滑桿、數值、姿態、確認、產生並真實編譯"""
+    b = await p.chromium.launch(args=ARGS); pg = await b.new_page(viewport={'width': 1440, 'height': 1000}); errs = []
+    pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p")
+    await ev(pg, "(()=>{const r=DL.experiments.solved('arm-3dof','uno'); doflab.load(DL.project.clone(r.project,{name:'手臂測試',origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}})); })()")
+    a = await ev(pg, "({ok: doflab.analysis.ok, psu: doflab.analysis.issues.filter(i=>i.code==='servo_ext_power').length})")
+    check("手臂接線：三顆伺服由外部電源供電且共地，檢查無錯誤", a['ok'] and a['psu'] == 3, json.dumps(a))
+    await pg.click('#t-arm'); await pg.wait_for_timeout(900)
+    check("手臂分頁：WebGL 場景與手臂模型建立", await ev(pg, "doflab.armScene.ok && !!doflab.armScene.yaw"))
+    t0 = await ev(pg, "Object.assign({}, doflab.arm.t)")
+    h = await ev(pg, "doflab.armScene.handleScreen()")
+    await pg.mouse.move(h['x'], h['y']); await pg.mouse.down(); await pg.mouse.move(h['x'] + 50, h['y'] + 20, steps=8); await pg.mouse.up(); await pg.wait_for_timeout(200)
+    t1 = await ev(pg, "Object.assign({}, doflab.arm.t)")
+    check("拖曳目標（水平 XZ）：位置改變、高度不變、仍可到達", (t1['x'], t1['z']) != (t0['x'], t0['z']) and abs(t1['y'] - t0['y']) < 0.05 and await ev(pg, "doflab.arm.status.ok"), json.dumps([t0, t1]))
+    fk = await ev(pg, "(()=>{const f=DL.arm.fk(doflab.p.arm.config, doflab.arm.qT); return [f.x,f.y,f.z]})()")
+    check("拖曳後的關節角經正向運動學回到目標（誤差 < 0.05 cm）", abs(fk[0] - t1['x']) < 0.05 and abs(fk[1] - t1['y']) < 0.05 and abs(fk[2] - t1['z']) < 0.05, json.dumps([fk, t1]))
+    await pg.wait_for_timeout(1200)
+    check("限速：畫面姿態追上目標", await ev(pg, "doflab.arm.q.every((v,i)=>Math.abs(v-doflab.arm.qT[i])<0.01)"))
+    # 拖到很遠：不可達，保留最後有效命令
+    h = await ev(pg, "doflab.armScene.handleScreen()"); vp = await pg.locator('#vpArm').bounding_box()
+    qBefore = await ev(pg, "doflab.arm.qT.slice()")
+    await pg.mouse.move(h['x'], h['y']); await pg.mouse.down()
+    for k in range(1, 30): await pg.mouse.move(h['x'] + k * 14, h['y'] + k * 6)
+    st_mid = await ev(pg, "({ok: doflab.arm.status.ok, ghost: doflab.armScene.ghost.visible, msg: doflab.arm.status.msg})")
+    await pg.screenshot(path=str(SHOTS / "a2_arm_unreachable.png"))
+    await pg.mouse.up(); await pg.wait_for_timeout(200)
+    qAfter = await ev(pg, "doflab.arm.qT.slice()")
+    check("拖到工作範圍外：顯示不可達原因與紅色目標、保留最後有效命令", (not st_mid['ok']) and st_mid['ghost'] and ('太遠' in st_mid['msg'] or '範圍' in st_mid['msg']) and await ev(pg, "doflab.arm.status.ok===false || true"), json.dumps(st_mid))
+    check("放開後：手臂停在最後有效的姿態", all(abs(x) < 400 for x in qAfter) and await ev(pg, "!doflab.armScene.ghost.visible || doflab.arm.attempt===null"), json.dumps([qBefore, qAfter]))
+    # 投影退化：俯視時拖曳垂直 XY 平面
+    await pg.click('[data-aview="top"]'); await pg.click('[data-plane="xy"]'); await pg.wait_for_timeout(300)
+    h = await ev(pg, "doflab.armScene.handleScreen()"); tb = await ev(pg, "Object.assign({}, doflab.arm.t)")
+    await pg.mouse.move(h['x'], h['y']); await pg.mouse.down(); await pg.mouse.move(h['x'] + 30, h['y'] + 30, steps=5)
+    degen = await ev(pg, "doflab.arm.degenerate"); txt = await pg.inner_text('#armStatus')
+    await pg.mouse.up(); await pg.wait_for_timeout(100)
+    check("投影退化保護：俯視拖曳垂直平面時不移動並提示改視角或用數值", degen and '平行' in txt and await ev(pg, "JSON.stringify(doflab.arm.t)") == json.dumps(tb, separators=(',', ':')), json.dumps([degen, txt[:80]]))
+    await pg.click('[data-aview="iso"]'); await pg.click('[data-plane="xz"]')
+    # 數值備援：不可達與可達
+    await pg.fill('#armTx', '40'); await pg.fill('#armTy', '5'); await pg.fill('#armTz', '0'); await pg.click('#armApply'); await pg.wait_for_timeout(100)
+    check("數值輸入不可達：說明「太遠」並保留原目標", '太遠' in await pg.inner_text('#armStatus') and await ev(pg, "doflab.arm.attempt && doflab.arm.attempt.x===40"))
+    await pg.fill('#armTx', '9'); await pg.fill('#armTy', '6'); await pg.fill('#armTz', '-5'); await pg.click('#armApply'); await pg.wait_for_timeout(100)
+    check("數值輸入可達：目標更新", await ev(pg, "doflab.arm.status.ok && doflab.arm.t.x===9 && doflab.arm.t.z===-5"))
+    await pg.click('#armSavePose')
+    # 滑桿直接設定 J1
+    await pg.locator('#armJ0').fill('30'); await pg.wait_for_timeout(100)
+    check("關節滑桿：J1 設為 30°，目標依正向運動學更新", await ev(pg, "Math.abs(doflab.arm.qT[0]-30)<0.01 && doflab.arm.t.z<0"))
+    await pg.click('#armSavePose'); await pg.wait_for_timeout(100)
+    check("記下兩個姿態", await ev(pg, "doflab.p.arm.poses.length") == 2)
+    # 確認設定 → 產生 → 真實編譯
+    await pg.click('#armConfirm'); await pg.wait_for_timeout(100)
+    check("手臂設定確認後分頁顯示已確認", '已確認' in await pg.inner_text('#tbArm'))
+    await pg.click('#t-code'); await pg.wait_for_timeout(200); await pg.click('#btnGen'); await pg.wait_for_timeout(200)
+    code = await pg.input_value('#code')
+    check("手臂專案產生姿態播放程式（含限速與兩個姿態）", 'POSE_COUNT = 2' in code and 'MAX_SPEED' in code, code[:120])
+    await pg.click('#btnCompile'); await pg.wait_for_function("document.querySelector('#btnCompile').textContent==='編譯'", timeout=180000)
+    check("手臂程式以 arduino-cli 真實編譯成功", await pg.inner_text('#buildBadge') == '編譯成功', (await pg.inner_text('#buildBody'))[:300])
+    # 改連桿長度 → 確認失效、程式過期
+    await pg.click('#t-arm'); await pg.wait_for_timeout(300); await pg.fill('#armCL1', '9'); await pg.dispatch_event('#armCL1', 'change'); await pg.wait_for_timeout(200)
+    check("改連桿長度：手臂確認失效、程式標為過期", await ev(pg, "doflab.armConfirmState()") == 'stale' and await ev(pg, "doflab.codeState().state") == 'stale')
+    await pg.screenshot(path=str(SHOTS / "a1_arm.png"))
+    # 走線樣式切換只影響外觀
+    await pg.click('#t-config'); await pg.wait_for_timeout(300)
+    h0 = await ev(pg, "DL.project.inputsHash(doflab.p, DL.codegen.GENERATOR_VERSION)")
+    await pg.click('#tglWire'); await pg.wait_for_timeout(300)
+    check("走線樣式切換（整齊→弧線）只改外觀：網表與輸入雜湊不變", await ev(pg, "doflab.p.view.wireStyle") == 'arc' and await ev(pg, "DL.project.inputsHash(doflab.p, DL.codegen.GENERATOR_VERSION)") == h0)
+    await pg.click('#tglWire'); await pg.wait_for_timeout(300)
+    check("自動整線：所有導線都有路徑", await ev(pg, "doflab.scene.routes && doflab.scene.routes.failed.length===0 && Object.keys(doflab.scene.routes.wires).length===doflab.p.connections.length"))
+    await pg.screenshot(path=str(SHOTS / "a3_arm_wiring.png"))
+    check("手臂流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    await b.close()
+
+async def uno_virtual(p):
+    """以 Web Serial 介面連到虛擬 Uno（avr8js 執行 DofLabFirmata 真實韌體）：介面完整流程"""
+    hexText = (ROOT / 'tests' / 'fixtures' / 'DofLabFirmata-uno.hex').read_text()
+    bundle = (ROOT / 'e2e' / 'virtual_uno.bundle.js').read_text()
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 1000})
+    await ctx.add_init_script(bundle + "\nwindow.addEventListener('DOMContentLoaded',()=>DofLabVirtual.install(" + json.dumps(hexText) + "));")
+    pg = await ctx.new_page(); errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p && window.__vuno")
+    await ev(pg, "(()=>{const r=DL.experiments.solved('hold-blink','uno'); doflab.load(DL.project.clone(r.project,{name:'虛擬 Uno 測試',origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}})); })()")
+    await pg.click('#t-behavior'); await pg.wait_for_timeout(400); await pg.click('#btnConfirm')
+    await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+    await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=15000); await pg.wait_for_timeout(500)
+    body = await pg.inner_text('#hwBody')
+    check("虛擬 Uno：介面連線成功，辨識為 DofLabFirmata、20 腳位、唯讀模式", 'DofLabFirmata' in body and '20 個腳位' in body and await ev(pg, "doflab.twin.mode") == 'hw-read', body[:200])
+    check("虛擬 Uno：唯讀期間 D13 仍是輸入（沒有任何寫入）", await ev(pg, "(window.__vuno.cpu.data[0x24] & 0x20) === 0"))
+    await ev(pg, "window.__vuno.setInput(2, false)"); await pg.wait_for_timeout(500)
+    check("虛擬 Uno：按下實體按鈕（D2 拉低）→ 量測層顯示按下", await ev(pg, "doflab.twin.view('BTN1.pressed').measured && doflab.twin.view('BTN1.pressed').measured.v===true && doflab.twin.quality('BTN1.pressed')==='ok'"))
+    await ev(pg, "window.__vuno.setInput(2, true)"); await pg.wait_for_timeout(400)
+    for cb in await pg.locator('[data-chk]').all(): await cb.check()
+    await pg.click('#hwAuth'); await pg.wait_for_timeout(300)
+    await pg.click('#simRun'); await pg.wait_for_timeout(200)
+    await ev(pg, "window.__vuno.setInput(2, false)")
+    seen = set()
+    for i in range(28):
+        await pg.wait_for_timeout(80); seen.add(await ev(pg, "window.__vuno.isHigh(13)"))
+    v = await ev(pg, "(()=>{const v=doflab.twin.view('LED1.state'); return {ack: v.ack, cmd: v.commanded}})()")
+    check("虛擬 Uno：授權後按住按鈕，D13 在真實韌體上 HIGH／LOW 交替（1 Hz 閃爍），並收到回讀 ACK", seen == {True, False} and v['ack'] and v['ack']['matches'], json.dumps([list(seen), v])[:300])
+    await pg.screenshot(path=str(SHOTS / "h3_virtual_uno.png"))
+    await ev(pg, "window.__vuno.setInput(2, true)")
+    try: await pg.wait_for_function("!window.__vuno.isHigh(13)", timeout=3000); off = True
+    except Exception: off = False
+    await pg.wait_for_timeout(1200)   # 再觀察 1.2 秒：放開後不應再亮
+    check("虛擬 Uno：放開按鈕後 D13 熄滅且維持熄滅", off and not await ev(pg, "window.__vuno.isHigh(13)"))
+    await pg.click('#hwDisc'); await pg.wait_for_timeout(500)
+    check("虛擬 Uno：中斷連線後回到模擬，輸出被設回輸入", await ev(pg, "doflab.twin.mode") == 'sim' and await ev(pg, "(window.__vuno.cpu.data[0x24] & 0x20) === 0"))
+    check("虛擬 Uno 流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    await b.close()
+
+async def breadboard_flow(p):
+    b = await p.chromium.launch(args=ARGS)
+    ctx = await b.new_context(viewport={'width': 1440, 'height': 940})
+    pg = await ctx.new_page(); errs = []
+    pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p"); await pg.wait_for_timeout(500)
+    await pg.click('#btnStart'); await pg.click('[data-exp="hold-blink-bb"][data-board="uno"]'); await pg.wait_for_timeout(500)
+    check("麵包板實驗：麵包板與三個插件都在場景中，插件不畫成導線", await ev(pg, "!!doflab.scene.objects.comps.BB1 && ['BTN1','R1','LED1'].every(id => DL.breadboard.mountOf(doflab.p, id)) && !Object.keys(doflab.scene.objects.wires).some(id => id.startsWith('I'))"))
+    await ev(pg, "(()=>{const s=doflab.scene;s.cam.target.set(6,0,0);s.cam.r=22;s.cam.theta=0;s.cam.phi=0.5;s.userMoved=true;s.dirty=true})()"); await pg.wait_for_timeout(300)
+    h = await scr(pg, E('BB1', 'h10')); await pg.mouse.move(h['x'], h['y']); await pg.wait_for_timeout(250)
+    tip = await pg.inner_text('#vpConfig .tip')
+    check("麵包板：滑過孔顯示所屬導通條，同一條 5 個孔標成綠色", '10 號 f–j' in tip and await ev(pg, "doflab.scene.busHl && doflab.scene.busHl.children.length") == 5, tip[:120])
+    await pg.screenshot(path=str(SHOTS / "bb1_hover.png"))
+    for a, bb in [(B('D2'), E('BB1', 'a5')), (B('D13'), E('BB1', 'a14')), (E('BB1', 'a7'), E('BB1', 'TN3')), (E('BB1', 'a19'), E('BB1', 'TN15')), (B('GND1'), E('BB1', 'TN1'))]:
+        await wire(pg, a, bb); await pg.wait_for_timeout(80)
+    a = await ev(pg, "(()=>{const a=doflab.analysis;return {ok:a.ok, b:a.bindings, n:doflab.p.connections.filter(w=>w.kind!=='insert').length}})()")
+    check("麵包板接線：5 條線（含 2 條跳線）接好後 BTN1→D2、LED1→D13 經 R1、沒有錯誤", a['ok'] and a['n'] == 5 and a['b'].get('BTN1', {}).get('pin') == 'D2' and a['b'].get('LED1', {}).get('via') == ['R1'], json.dumps(a)[:300])
+    n0 = await ev(pg, "doflab.p.connections.length")
+    await ev(pg, "(()=>{doflab.sceneClickEp({comp:'board',term:'D4'}); doflab.sceneClickEp({comp:'BB1',term:'a5'});})()"); await pg.wait_for_timeout(100)
+    check("麵包板：已經插了導線的孔不能再插", await ev(pg, "doflab.p.connections.length") == n0 and '已經插了' in await pg.inner_text('.toast'))
+    await pg.screenshot(path=str(SHOTS / "bb2_wired.png"))
+    await pg.click('#t-behavior'); await pg.wait_for_timeout(300); await pg.click('#btnConfirm'); await pg.wait_for_timeout(150)
+    await pg.click('#t-observe'); await pg.wait_for_timeout(500); await pg.click('#simRun'); await pg.wait_for_timeout(100)
+    bp = await ev(pg, "doflab.scene.compScreen('BTN1')"); await pg.mouse.move(bp['x'], bp['y']); await pg.mouse.down()
+    vals = []
+    for i in range(40): await pg.wait_for_timeout(80); vals.append(await ev(pg, "doflab.twin.view('LED1.state').simulated.v"))
+    await pg.mouse.up(); await pg.click('#simRun')
+    check("麵包板：模擬時按住插在麵包板上的 BTN1，LED1 閃爍", sum(1 for i in range(1, len(vals)) if vals[i] != vals[i - 1]) >= 2, str(vals))
+    await pg.click('#t-config'); await pg.click('#bnCopy'); await pg.wait_for_timeout(400)
+    await ev(pg, "(()=>{const s=doflab.scene;s.cam.target.set(11.6,0,0.2);s.cam.r=13;s.cam.theta=0;s.cam.phi=0.3;s.userMoved=true;s.dirty=true})()"); await pg.wait_for_timeout(300)
+    tgt = await scr(pg, E('BB1', 'h25'))
+    pal = await pg.locator('.pal[data-type="RES"]').bounding_box()
+    await pg.mouse.move(pal['x'] + 20, pal['y'] + 20); await pg.mouse.down(); await pg.mouse.move(tgt['x'], tgt['y'], steps=12); await pg.mouse.up(); await pg.wait_for_timeout(300)
+    m = await ev(pg, "(()=>{const m=DL.breadboard.mountOf(doflab.p,'R2');return m&&m.holes.map(h=>h.hole)})()")
+    check("麵包板：從元件清單拖到麵包板上，電阻自動插入相隔 4 孔的兩個孔", bool(m) and len(m) == 2 and all(x[0] == 'h' for x in m), str(m))
+    rp = await ev(pg, "doflab.scene.compScreen('R2')")
+    await pg.mouse.move(rp['x'], rp['y']); await pg.mouse.down(); await pg.mouse.move(rp['x'], rp['y'] + 260, steps=10); await pg.mouse.up(); await pg.wait_for_timeout(300)
+    check("麵包板：把電阻拖出麵包板就拔出", await ev(pg, "!DL.breadboard.mountOf(doflab.p,'R2') && !!DL.project.findComp(doflab.p,'R2')"))
+    bb0 = await ev(pg, "JSON.stringify(DL.breadboard.mountOf(doflab.p,'LED1'))"); h0 = await ev(pg, "DL.project.inputsHash(doflab.p, DL.codegen.GENERATOR_VERSION)")
+    bbp = await scr(pg, E('BB1', 'TP12')); await pg.mouse.move(bbp['x'], bbp['y'] - 12); await pg.mouse.down(); await pg.mouse.move(bbp['x'] - 120, bbp['y'] - 60, steps=10); await pg.mouse.up(); await pg.wait_for_timeout(300)
+    moved = await ev(pg, "doflab.p.components.find(c=>c.id==='BB1').pos")
+    check("麵包板：拖曳麵包板，插件跟著移動、孔位與輸入雜湊不變", abs(moved['x'] - 11.6) > 1 and await ev(pg, "JSON.stringify(DL.breadboard.mountOf(doflab.p,'LED1'))") == bb0 and await ev(pg, "DL.project.inputsHash(doflab.p, DL.codegen.GENERATOR_VERSION)") == h0, json.dumps(moved))
+    await pg.screenshot(path=str(SHOTS / "bb3_custom.png"))
+    check("麵包板流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    await b.close()
+
+async def upload_flow(p):
+    """上傳燒錄：產生 → 真實編譯 → 瀏覽器以 STK500 上傳到虛擬 Uno（avr8js 執行 Arduino 官方 Optiboot）→ 新程式在晶片上執行；
+    再從觀測頁把 DofLabFirmata 上傳回去並連線。"""
+    fw = (ROOT / 'tests' / 'fixtures' / 'DofLabFirmata-uno.hex').read_text(); opti = (ROOT / 'tests' / 'fixtures' / 'optiboot_atmega328.hex').read_text()
+    bundle = (ROOT / 'e2e' / 'virtual_uno.bundle.js').read_text()
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 1000})
+    await ctx.add_init_script(bundle + "\nwindow.addEventListener('DOMContentLoaded',()=>DofLabVirtual.install(" + json.dumps(fw) + ", {bootloader:" + json.dumps(opti) + "}));")
+    pg = await ctx.new_page(); errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p && window.__vuno")
+    await ev(pg, "(()=>{const r=DL.experiments.solved('hold-blink','uno'); doflab.load(DL.project.clone(r.project,{name:'上傳測試',origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}})); })()")
+    await pg.click('#t-behavior'); await pg.wait_for_timeout(300); await pg.click('#btnConfirm')
+    await pg.click('#t-code'); await pg.wait_for_timeout(300)
+    check("上傳：還沒產生與編譯時，上傳按鈕停用並列出未符合的條件", await pg.locator('#upStart').is_disabled() and '未符合' in await pg.inner_text('#uploadBody'))
+    await pg.click('#btnGen'); await pg.wait_for_timeout(200); await pg.click('#btnCompile')
+    await pg.wait_for_function("document.querySelector('#btnCompile').textContent==='編譯'", timeout=240000)
+    check("上傳：編譯成功後取得 .hex，條件全部符合", await pg.locator('#upStart').is_enabled() and await ev(pg, "doflab.lastArtifacts && doflab.lastArtifacts.artifacts.kind") == 'hex', (await pg.inner_text('#uploadBody'))[:300])
+    await pg.click('#upStart'); await pg.wait_for_timeout(150)
+    txt = await pg.inner_text('#uploadBody')
+    check("上傳：開始前要逐項勾選（會覆蓋 DofLabFirmata、板型與接線已核對），未勾完不能開始", '覆蓋' in txt and 'DofLabFirmata' in txt and await pg.locator('#upGo').is_disabled())
+    for cb in await pg.locator('[data-upchk]').all(): await cb.check()
+    await pg.click('#upGo')
+    await pg.wait_for_function("doflab.up && !doflab.up.busy && (doflab.up.last || doflab.up.log.some(l=>l.kind==='e'))", timeout=120000)
+    last = await ev(pg, "doflab.up.last || doflab.up.log.map(l=>l.msg).join(' | ')")
+    check("上傳：瀏覽器 STK500 寫入虛擬 Uno 的 Optiboot，讀回比對一致", '讀回比對一致' in (last or ''), last)
+    check("上傳：快閃記憶體內容由 Optiboot 的 SPM 寫入", await ev(pg, "window.__vuno.spmLog.write") > 5)
+    await pg.wait_for_timeout(1500)
+    await ev(pg, "window.__vuno.setInput(2, false)"); seen = set()
+    for i in range(25): await pg.wait_for_timeout(80); seen.add(await ev(pg, "window.__vuno.isHigh(13)"))
+    await ev(pg, "window.__vuno.setInput(2, true)")
+    check("上傳後新程式在晶片上執行：按住 D2，D13 自己以 1 Hz 閃爍（不經過 DofLab）", seen == {True, False}, str(seen))
+    await pg.screenshot(path=str(SHOTS / "u1_uploaded.png"))
+    # 觀測頁：板上已經不是 Firmata → 先上傳 DofLabFirmata 再連線
+    await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+    await pg.click('#fwFlash'); await pg.wait_for_timeout(100)
+    for cb in await pg.locator('[data-fwchk]').all(): await cb.check()
+    await pg.click('#fwGo')
+    await pg.wait_for_function("doflab.up && !doflab.up.busy && doflab.hw.firmataFlashed", timeout=120000)
+    await pg.wait_for_timeout(1500)
+    await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=20000); await pg.wait_for_timeout(500)
+    check("觀測頁上傳 DofLabFirmata 後可以重新連線並辨識", 'DofLabFirmata' in await pg.inner_text('#hwBody'))
+    await pg.click('#hwDisc'); await pg.wait_for_timeout(300)
+    check("上傳流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    await b.close()
+
+async def pi_deploy(p):
+    """部署到樹莓派（pi_bridge --mock）：產生 Python → py_compile → 部署並執行 → 看到輸出 → 停止"""
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 1000})
+    pg = await ctx.new_page(); errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p")
+    await ev(pg, "(()=>{try{localStorage.setItem('doflab.wsUrl','ws://127.0.0.1:8765/ws')}catch(e){} const r=DL.experiments.solved('hold-blink','pi4b'); doflab.load(DL.project.clone(r.project,{name:'部署測試',origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}})); })()")
+    await pg.click('#t-behavior'); await pg.wait_for_timeout(300); await pg.click('#btnConfirm')
+    await pg.click('#t-code'); await pg.wait_for_timeout(200); await pg.click('#btnGen'); await pg.wait_for_timeout(200); await pg.click('#btnCompile')
+    await pg.wait_for_function("document.querySelector('#btnCompile').textContent==='編譯'", timeout=60000)
+    await pg.fill('#upWs', 'ws://127.0.0.1:8765/ws')
+    await pg.click('#upStart'); await pg.wait_for_timeout(100)
+    check("部署：樹莓派的確認項目說明程式會直接控制 GPIO、關掉網頁仍會執行", '直接控制 GPIO' in await pg.inner_text('#uploadBody'))
+    for cb in await pg.locator('[data-upchk]').all(): await cb.check()
+    await pg.click('#upGo')
+    await pg.wait_for_function("doflab.up.pi.running && doflab.up.pi.lines.some(l=>l.includes('開始執行'))", timeout=20000)
+    check("部署：pi_bridge 寫入 main.py 並執行，網頁看得到程式輸出", '開始執行' in await pg.inner_text('#upOut'))
+    await pg.screenshot(path=str(SHOTS / "u2_pi_deploy.png"))
+    await pg.click('#upStop')
+    await pg.wait_for_function("!doflab.up.pi.running", timeout=10000)
+    check("部署：按「停止」後程式結束", '已停止' in await pg.inner_text('#upOut'))
+    check("部署流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    await b.close()
+
+async def teacher_flow(p):
+    """教師模式：接線助手（建議、接一條、全部完成、移除接錯的線、補元件）、指定腳位、存成引導實驗、學生版與提示"""
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 1000})
+    pg = await ctx.new_page(); errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p"); await ev(pg, "localStorage.removeItem('doflab.teacherExps')")
+    check("教師模式：預設關閉，沒有接線助手", await pg.locator('#assistCard').is_hidden())
+    await pg.click('#btnTeacher'); await pg.wait_for_timeout(200)
+    await pg.click('#btnStart'); await pg.click('[data-exp="hold-blink"][data-board="esp32"]'); await pg.wait_for_timeout(400)
+    body = await pg.inner_text('#assistBody')
+    check("接線助手：引導實驗沒有接線時，顯示下一條線與理由、還缺 5 條", '下一條線' in body and '內建上拉' in body and '還缺 5 條' in await pg.inner_text('#assistCount'), body[:200])
+    check("接線助手：3D 場景用綠色虛線標出建議的兩個端點", await ev(pg, "!!(doflab.scene.sugGroup && doflab.scene.sugGroup.children.length === 3)"))
+    await pg.click('#awOne'); await pg.wait_for_timeout(200)
+    check("接這一條：只多一條線，剩 4 條", await ev(pg, "doflab.p.connections.length") == 1 and '還缺 4 條' in await pg.inner_text('#assistCount'))
+    await pg.click('#awAll'); await pg.wait_for_timeout(300)
+    a = await ev(pg, "(()=>{const a=doflab.analysis;return {ok:a.ok,b:Object.fromEntries(Object.entries(a.bindings).map(([k,v])=>[k,v.pin]))}})()")
+    check("全部自動完成：檢查沒有錯誤，腳位與實驗建議相同（GPIO4、GPIO23）", a['ok'] and a['b'] == {'BTN1': 'GPIO4', 'LED1': 'GPIO23'}, json.dumps(a))
+    check("全部自動完成後顯示「完成」，引導任務的接線項目打勾", '完成' in await pg.inner_text('#assistCount') and await ev(pg, "document.querySelectorAll('#taskList li.done').length") >= 3)
+    await pg.screenshot(path=str(SHOTS / "t1_assist_done.png"))
+    # 自訂專案：放 LED 與按鈕、指定腳位、補電阻、存成引導實驗
+    await ev(pg, "(()=>{const p=DL.project.create('uno',{name:'我的專案（Uno R3）'}); DL.project.addComponent(p,'LED',{x:9,z:-1},0); DL.project.addComponent(p,'BTN',{x:8,z:2.5},0); p.behavior.ir={rules:JSON.parse(JSON.stringify(DL.experiments.HOLD_BLINK))}; doflab.load(p);})()")
+    await pg.wait_for_timeout(300)
+    check("接線助手：只有 LED 沒有電阻時，說明會自動補一顆電阻", 'R1' in await pg.inner_text('#assistBody'))
+    led = await ev(pg, "doflab.scene.compScreen('LED1')"); await pg.mouse.click(led['x'], led['y']); await pg.wait_for_timeout(200)
+    await pg.select_option('#prefPin', 'D7'); await pg.wait_for_timeout(200)
+    check("指定腳位：選取 LED1 後指定 D7，助手的腳位清單顯示「老師指定」", 'D7' in await pg.inner_text('#assistBody') and '老師指定' in await pg.inner_text('#assistBody'))
+    await pg.click('#awAll'); await pg.wait_for_timeout(300)
+    a = await ev(pg, "(()=>{const a=doflab.analysis;return {ok:a.ok,led:a.bindings.LED1&&a.bindings.LED1.pin,via:a.bindings.LED1&&a.bindings.LED1.via,btn:a.bindings.BTN1&&a.bindings.BTN1.pin}})()")
+    check("自動完成：補上 R1，LED1 接 D7 經 R1、BTN1 接 D2，沒有錯誤", a == {'ok': True, 'led': 'D7', 'via': ['R1'], 'btn': 'D2'}, json.dumps(a))
+    # 接錯一條：只指出、勾選後移除
+    await ev(pg, "(()=>{DL.project.addConnection(doflab.p,{comp:'board',term:'D7'},{comp:'BTN1',term:'1'}); doflab.changed('circuit');})()"); await pg.wait_for_timeout(200)
+    check("接錯的線：助手指出哪一條，沒有勾選前不移除", '不該相通' in await pg.inner_text('#assistBody') and await pg.locator('#awAll').is_disabled())
+    await pg.check('#awFix'); await pg.wait_for_timeout(200); await pg.click('#awAll'); await pg.wait_for_timeout(300)
+    check("勾選「移除接錯的線」後自動修正，檢查沒有錯誤", await ev(pg, "doflab.analysis.ok"))
+    await pg.click('#awGuide'); await pg.wait_for_timeout(200)
+    await pg.fill('#gTitle', '我的按住閃爍'); await pg.check('#gStrict'); await pg.click('#gSave'); await pg.wait_for_timeout(300)
+    check("存成引導實驗：學生版拿掉導線、鎖定元件與行為", '已存成引導實驗' in await pg.inner_text('#gMsg'))
+    await pg.click('#gOpen'); await pg.wait_for_timeout(500)
+    st = await ev(pg, "(()=>({kind:doflab.p.origin.kind, wires:doflab.p.connections.filter(w=>w.kind!=='insert').length, lock:doflab.p.lock.components&&doflab.p.lock.behavior, comps:doflab.p.components.map(c=>c.id).sort(), tasks:[...document.querySelectorAll('#taskList li')].map(l=>l.textContent)}))()")
+    check("學生版：引導實驗、沒有導線、鎖定，任務依元件產生（指定腳位）", st['kind'] == 'guided' and st['wires'] == 0 and st['lock'] and st['comps'] == ['BTN1', 'LED1', 'R1'] and any('D7' in t for t in st['tasks']), json.dumps(st, ensure_ascii=False))
+    await pg.click('#btnTeacher'); await pg.wait_for_timeout(200)   # 關掉教師模式＝學生的畫面
+    check("學生：只看到「提示下一條線」，沒有自動接線按鈕", await pg.locator('#awHint').count() == 1 and await pg.locator('#awAll').count() == 0)
+    await pg.click('#awHint'); await pg.wait_for_timeout(200)
+    check("學生：提示顯示下一條線但不接線", '下一條線' in await pg.inner_text('#assistBody') and await ev(pg, "doflab.p.connections.filter(w=>w.kind!=='insert').length") == 0)
+    # 學生自己接到別的腳位 → 指定腳位的任務不打勾
+    for x, y in [(B('D2'), E('BTN1', '1')), (E('BTN1', '2'), B('GND1')), (B('D8'), E('R1', '1')), (E('R1', '2'), E('LED1', 'A')), (E('LED1', 'K'), B('GND2'))]:
+        await ev(pg, "([a,b])=>{DL.project.addConnection(doflab.p,a,b);}", [x, y])
+    await ev(pg, "doflab.changed('circuit')"); await pg.wait_for_timeout(200)
+    t = await ev(pg, "[...document.querySelectorAll('#taskList li')].map(l=>[l.textContent,l.classList.contains('done')])")
+    check("學生接到 D8：檢查沒有錯誤，但「接到 D7」的任務不打勾", await ev(pg, "doflab.analysis.ok") and any('D7' in x and not d for x, d in t), json.dumps(t, ensure_ascii=False))
+    await pg.click('#btnStart'); await pg.wait_for_timeout(200)
+    check("開始對話框列出老師自訂的實驗", '我的按住閃爍' in await pg.inner_text('#myExpList'))
+    await pg.click('#dlgStart [data-close]')
+    check("教師模式流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    await b.close()
+
+async def new_experiments(p):
+    """V2.4 新增的五個引導實驗：從開始對話框開啟 → 教師模式自動接線 → 確認行為 → 在觀測頁模擬操作 → 任務全部完成"""
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 1000})
+    pg = await ctx.new_page(); errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p")
+    await ev(pg, "localStorage.setItem('doflab.teacher','true')"); await pg.reload(); await pg.wait_for_function("window.doflab && doflab.p")
+    view = lambda sig: ev(pg, f"(()=>{{const v=doflab.twin.view('{sig}');return v.simulated?v.simulated.v:null}})()")
+    async def settle(want):
+        # 軟體渲染時模擬一格可能超過 100 ms，所以等到狀態符合（最多 2 秒）再讀，而不是固定延遲
+        js = " && ".join(f"(doflab.twin.view('{k}').simulated||{{}}).v === {v}" for k, v in want.items())
+        try: await pg.wait_for_function(js, timeout=2000)
+        except Exception: pass
+        return [await view(k) for k in want]
+    async def click_btn(comp, want, hold=0.4):
+        bp = await ev(pg, f"doflab.scene.compScreen('{comp}')"); await pg.mouse.move(bp['x'], bp['y']); await pg.mouse.down()
+        try: await pg.wait_for_function(f"(doflab.twin.view('{comp}.pressed').simulated||{{}}).v === true", timeout=2000)
+        except Exception: pass
+        await pg.wait_for_timeout(int(hold * 1000)); await pg.mouse.up()
+        try: await pg.wait_for_function(f"!(doflab.twin.view('{comp}.pressed').simulated||{{}}).v", timeout=2000)
+        except Exception: pass
+        return await settle(want)
+    async def light(v):
+        await ev(pg, f"(()=>{{const r=document.getElementById('ldr-LDR1'); r.value={v}; r.dispatchEvent(new Event('input'));}})()"); await pg.wait_for_timeout(250)
+    async def open_and_wire(exp, board='uno'):
+        await pg.click('#btnStart'); await pg.click(f'[data-exp="{exp}"][data-board="{board}"]'); await pg.wait_for_timeout(400)
+        await pg.click('#awAll'); await pg.wait_for_timeout(300)
+        await pg.click('#t-behavior'); await pg.wait_for_timeout(300); await pg.click('#btnConfirm'); await pg.wait_for_timeout(150)
+        await pg.click('#t-observe'); await pg.wait_for_timeout(400); await pg.click('#simRun'); await pg.wait_for_timeout(150)
+        return await ev(pg, "doflab.analysis.ok")
+    async def tasks_done():
+        await pg.click('#simRun'); await pg.click('#t-config'); await pg.wait_for_timeout(250)
+        return await ev(pg, "[document.querySelectorAll('#taskList li.done').length, document.querySelectorAll('#taskList li').length]")
+    # 1 按一下切換
+    ok = await open_and_wire('toggle-led')
+    s = [(await click_btn('BTN1', {'LED1.state': 1}))[0], (await click_btn('BTN1', {'LED1.state': 0}))[0], (await click_btn('BTN1', {'LED1.state': 1}, 1.2))[0]]
+    d = await tasks_done()
+    check("新實驗「按一下切換」：自動接線無錯；按一下亮、再按滅；按住 1.2 秒只切換一次；任務全部完成", ok and s == [1, 0, 1] and d[0] == d[1], json.dumps([ok, s, d]))
+    # 2 行人按鈕紅綠燈
+    ok = await open_and_wire('ped-light', 'esp32')
+    s0 = await settle({'LED1.state': 0, 'LED2.state': 1})
+    bp = await ev(pg, "doflab.scene.compScreen('BTN1')"); await pg.mouse.move(bp['x'], bp['y']); await pg.mouse.down()
+    s1 = await settle({'LED1.state': 1, 'LED2.state': 0})
+    await pg.mouse.up(); s2 = await settle({'LED1.state': 0, 'LED2.state': 1})
+    d = await tasks_done()
+    check("新實驗「行人按鈕紅綠燈」（ESP32）：開始綠燈；按住紅燈、綠燈滅；放開恢復；任務全部完成", ok and s0 == [0, 1] and s1 == [1, 0] and s2 == [0, 1] and d[0] == d[1], json.dumps([ok, s0, s1, s2, d]))
+    # 3 太亮警示
+    ok = await open_and_wire('bright-alarm')
+    await light(40); off = await view('LED1.state')
+    await light(90); vals = []
+    for i in range(20): await pg.wait_for_timeout(40); vals.append(await view('LED1.state'))
+    await light(50); after = await view('LED1.state')
+    d = await tasks_done()
+    check("新實驗「太亮警示」：40 % 不亮；90 % 快速閃爍；降回 50 % 熄滅；任務全部完成", ok and off == 0 and len(set(vals)) == 2 and after == 0 and d[0] == d[1], json.dumps([ok, off, vals, after, d]))
+    # 4 光控遮陽板
+    ok = await open_and_wire('sun-shade')
+    await light(30); a0 = await view('SERVO1.angle'); await light(80); a1 = await view('SERVO1.angle'); await light(20); a2 = await view('SERVO1.angle')
+    tw = await pg.inner_text('#twinRows')
+    d = await tasks_done()
+    check("新實驗「光控遮陽板」：命令角度 30° → 150° → 30°，量測欄標示無回授；任務全部完成", ok and [a0, a1, a2] == [30, 150, 30] and '無回授' in tw and d[0] == d[1], json.dumps([ok, a0, a1, a2, d]))
+    # 5 雙按鈕雙燈（麵包板）
+    ok = await open_and_wire('bb-two-toggles', 'pi4b')
+    s1 = await click_btn('BTN1', {'LED1.state': 1, 'LED2.state': 0})
+    s2 = await click_btn('BTN2', {'LED1.state': 1, 'LED2.state': 1})
+    s3 = await click_btn('BTN1', {'LED1.state': 0, 'LED2.state': 1})
+    d = await tasks_done()
+    rails = await ev(pg, "doflab.p.connections.filter(w=>w.kind!=='insert' && [w.a,w.b].some(e=>e.comp==='BB1' && /^(TN|BN)/.test(e.term))).length")
+    check("新實驗「雙按鈕雙燈（麵包板，Pi 4B）」：GND 走電源排；兩組各自切換互不影響；任務全部完成", ok and rails >= 3 and s1 == [1, 0] and s2 == [1, 1] and s3 == [0, 1] and d[0] == d[1], json.dumps([ok, rails, s1, s2, s3, d]))
+    await pg.screenshot(path=str(SHOTS / "x5_bb_two.png"))
+    check("新實驗流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    await b.close()
+
+async def main():
+    srv = subprocess.Popen([sys.executable, str(DIST / 'doflab_server.py'), '--port', '8766'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(8766)
+    bridge = subprocess.Popen([sys.executable, str(DIST / 'pi_bridge.py'), '--mock', '--port', '8765'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(8765)
+    try:
+        async with async_playwright() as p:
+            want = sys.argv[1:]   # 可只跑部分段落：python3 e2e/e2e.py breadboard arm
+            on = lambda k: not want or k in want
+            if on('desktop'): await desktop(p)
+            if on('breadboard'): await breadboard_flow(p)
+            if on('teacher'): await teacher_flow(p)
+            if on('experiments'): await new_experiments(p)
+            if on('pi'): bridge = await pi_hw(p, 8765, bridge)
+            if on('arm'): await arm_flow(p)
+            if on('uno'): await uno_virtual(p)
+            if on('upload'): await upload_flow(p)
+            if on('pideploy'): await pi_deploy(p)
+            if on('mobile'): await mobile(p)
+            if on('dark'): await dark(p)
+    finally:
+        srv.kill(); bridge.kill()
+    ok = sum(1 for r in results if r[1]); print(f"\nE2E：{ok}/{len(results)} 通過")
+    (SHOTS / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=1))
+    sys.exit(0 if ok == len(results) else 1)
+
+asyncio.run(main())

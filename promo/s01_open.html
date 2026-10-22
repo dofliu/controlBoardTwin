@@ -1,0 +1,134 @@
+<!doctype html>
+<!-- intro-video 場景模板:複製本檔改成每一景。
+     規則:1920×1080 固定、動畫一律從頁面載入 t=0 起算(CSS animation / rAF 皆可)、
+     禁止外連資源(CDN 字型/網路圖片都不行,離線 file:// 渲染)。
+     ✅ 本地圖片可以:放在本檔同層的 assets/,用相對路徑 <img src="assets/asset_01.png">。
+        版位用下面的 .shot / .frame / .hero-img / .logo,別自己硬撐寬高(會變形)。
+     內建:深色電影感底 + 極光暈 + 網格 + 暗角 + 鏡頭慢推 + 進場動畫工具類 + 粒子層。
+     每景該改的只有 <title>、.stage 的 --dur、和 <div class="stage"> 內的內容。 -->
+<html lang="zh-Hant"><head><meta charset="utf-8"><title>DofLab 開場</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1920px;height:1080px;overflow:hidden;background:#070d17}
+body{font-family:"Noto Sans CJK TC","Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;color:#e8eef7;position:relative}
+/* ── 背景:深海底 + 極光暈 + 暗角 ── */
+.bg{position:absolute;inset:0;background:
+ radial-gradient(1200px 800px at 24% 18%,rgba(45,212,191,.14),transparent 62%),
+ radial-gradient(1100px 760px at 78% 82%,rgba(139,92,246,.15),transparent 60%),
+ linear-gradient(160deg,#0d1b2e 0%,#070d17 58%,#05070d 100%)}
+.aur{position:absolute;width:1500px;height:1500px;border-radius:50%;filter:blur(90px);opacity:.5;mix-blend-mode:screen}
+.aur.a{background:radial-gradient(circle,rgba(45,212,191,.32),transparent 62%);left:-460px;top:-560px;animation:drift1 22s ease-in-out infinite alternate}
+.aur.b{background:radial-gradient(circle,rgba(139,92,246,.30),transparent 62%);right:-520px;bottom:-620px;animation:drift2 26s ease-in-out infinite alternate}
+@keyframes drift1{to{transform:translate(150px,90px) scale(1.12)}}
+@keyframes drift2{to{transform:translate(-130px,-80px) scale(1.08)}}
+.vig{position:absolute;inset:0;background:radial-gradient(1600px 1000px at 50% 46%,transparent 58%,rgba(0,0,0,.5) 100%);pointer-events:none}
+.grid{position:absolute;inset:0;opacity:.05;background-image:linear-gradient(rgba(232,238,247,.5) 1px,transparent 1px),linear-gradient(90deg,rgba(232,238,247,.5) 1px,transparent 1px);background-size:64px 64px}
+/* ── 鏡頭慢推(--dur 設成本景秒數) ── */
+.stage{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+ --dur:7s;animation:cam var(--dur) ease-in-out both}
+@keyframes cam{from{transform:scale(1)}to{transform:scale(1.055)}}
+/* ── 字體系統 ── */
+.kicker{font-size:30px;font-weight:700;letter-spacing:.55em;text-indent:.55em;color:#2dd4bf;text-transform:uppercase}
+.h1{font-size:112px;font-weight:900;line-height:1.14;text-align:center;letter-spacing:.01em;
+ background:linear-gradient(100deg,#f4f8ff 20%,#9be8db 50%,#c4b5fd 80%);-webkit-background-clip:text;background-clip:text;color:transparent;
+ filter:drop-shadow(0 8px 40px rgba(45,212,191,.18))}
+.sub{font-size:40px;font-weight:400;color:rgba(232,238,247,.78);text-align:center;line-height:1.6}
+.accent{color:#2dd4bf;font-weight:700}
+/* ── 元件 ── */
+.chip{display:inline-flex;align-items:center;gap:16px;padding:20px 38px;border-radius:999px;font-size:36px;font-weight:700;white-space:nowrap;
+ background:rgba(20,32,52,.82);border:1.5px solid rgba(150,200,255,.22);box-shadow:0 14px 40px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.07)}
+.card{background:linear-gradient(165deg,rgba(24,38,62,.92),rgba(12,20,36,.94));border:1.5px solid rgba(150,200,255,.20);
+ border-radius:26px;box-shadow:0 30px 80px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.08)}
+.badge{display:inline-block;padding:12px 26px;border-radius:12px;font-size:28px;font-weight:700;white-space:nowrap;
+ background:rgba(45,212,191,.14);border:1.5px solid rgba(45,212,191,.45);color:#7ff0df}
+/* 字幕列(可選,跟主視覺融合的做法):有旁白逐句稿、或想在畫面上加說明文字時用。
+   left:60px;right:60px 定位(陷阱清單#3),別用 50%+translate。z-index 蓋過 .vig
+   (見下方 body 用法),深色底 + 白字,跟現有卡片/膠囊同一套材質語言。
+   跟 scripts/build_captions.py 產生的燒錄字幕(SRT)是同一份文案的兩種呈現方式,
+   互斥擇一即可 —— 這個做法字幕跟著整景切換,燒錄字幕可以逐句對時間。 */
+.cap-bar{position:absolute;left:60px;right:60px;bottom:64px;z-index:4;
+ background:rgba(6,10,18,.72);border:1.5px solid rgba(150,200,255,.16);
+ border-radius:16px;padding:22px 40px;text-align:center;
+ font-size:38px;font-weight:500;line-height:1.5;color:#f4f8ff;
+ box-shadow:0 20px 50px rgba(0,0,0,.5)}
+/* ── 真實素材版位(圖片放本檔同層的 assets/,相對路徑引用) ──
+   橫圖→.shot(全幅截圖框) 直圖/方圖→.frame(裁切卡片) 主視覺→.hero-img(滿版底圖) 識別→.logo
+   一律靠 object-fit 決定裁切,不要用 width+height 硬撐(人臉/文字會被拉扁)。 */
+.shot{width:1400px;max-height:760px;border-radius:22px;overflow:hidden;background:#0b1220;
+ border:1.5px solid rgba(150,200,255,.22);box-shadow:0 40px 100px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.08)}
+.shot img{display:block;width:100%;height:auto}
+.frame{width:480px;height:480px;border-radius:26px;overflow:hidden;background:#0b1220;
+ border:1.5px solid rgba(150,200,255,.20);box-shadow:0 30px 80px rgba(0,0,0,.55)}
+.frame img{display:block;width:100%;height:100%;object-fit:cover}
+.logo{height:130px;width:auto;object-fit:contain;filter:drop-shadow(0 10px 30px rgba(0,0,0,.5))}
+/* 滿版主視覺:放在 .stage 之前、z-index:0;務必壓一層 .scrim 才看得清字 */
+.hero-img{position:absolute;inset:0;z-index:0;overflow:hidden}
+.hero-img img{width:100%;height:100%;object-fit:cover;transform:scale(1.04);opacity:.38;filter:saturate(.8) contrast(.95)}
+/* 亮圖(白底截圖、戶外照)壓不住字時:把 opacity 再降到 .25,或 .scrim 換成 --scrim:.9 那版 */
+.scrim{position:absolute;inset:0;z-index:1;pointer-events:none;--scrim:.78;
+ background:radial-gradient(1400px 900px at 50% 46%,rgba(5,7,13,calc(var(--scrim)*.55)),transparent 70%),
+ linear-gradient(180deg,rgba(7,13,23,calc(var(--scrim)*.9)),rgba(5,7,13,var(--scrim)))}
+/* ── 進場動畫工具類(--d 控延遲) ──
+   ⚠️ rise/pop 的結尾是 transform:none/scale(1) — 會「蓋掉」元素自己的定位 transform。
+   要絕對置中的元素別用 translate(-50%,-50%) 再掛 .in;改用 left:50%+負 margin、
+   left/right 對稱、或外層 flex 置中(見 references/scene_design.md 陷阱清單)。 */
+.in{opacity:0;animation:rise 1s cubic-bezier(.16,1,.3,1) both;animation-delay:var(--d,0s)}
+@keyframes rise{from{opacity:0;transform:translateY(56px)}to{opacity:1;transform:none}}
+.pop{opacity:0;animation:pop .8s cubic-bezier(.2,1.4,.35,1) both;animation-delay:var(--d,0s)}
+@keyframes pop{from{opacity:0;transform:scale(.55)}to{opacity:1;transform:scale(1)}}
+.glow{animation:glow 2.6s ease-in-out infinite}
+@keyframes glow{0%,100%{filter:drop-shadow(0 0 18px rgba(45,212,191,.25))}50%{filter:drop-shadow(0 0 42px rgba(45,212,191,.55))}}
+/* ⚠️ 同一元素掛兩個動畫類,後面的 animation 簡寫會蓋掉前面的(元素卡在 opacity:0)。
+   常見組合已在下面合併保底;自創組合請用逗號合成單一 animation,或發光掛外層 div。 */
+.in.glow{animation:rise 1s cubic-bezier(.16,1,.3,1) var(--d,0s) both,glow 2.6s ease-in-out infinite}
+.pop.glow{animation:pop .8s cubic-bezier(.2,1.4,.35,1) var(--d,0s) both,glow 2.6s ease-in-out infinite}
+/* ▼▼ 本景專屬 CSS 寫在這 ▼▼ */
+.bg{background:radial-gradient(1200px 800px at 24% 18%,rgba(255,154,60,.13),transparent 62%),radial-gradient(1100px 760px at 78% 82%,rgba(45,190,200,.13),transparent 60%),linear-gradient(160deg,#10202a 0%,#081118 58%,#05080c 100%)}
+.aur.a{background:radial-gradient(circle,rgba(255,150,60,.26),transparent 62%)}
+.aur.b{background:radial-gradient(circle,rgba(40,190,200,.24),transparent 62%)}
+.kicker{color:#ffa955}
+.h1{background:linear-gradient(100deg,#fff7ef 15%,#ffc58a 50%,#8fe3e6 85%);-webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 8px 40px rgba(255,150,60,.18))}
+.accent{color:#ffa955}
+.badge{background:rgba(255,150,60,.12);border-color:rgba(255,150,60,.45);color:#ffc999}
+.logoMark{width:150px;height:150px;border-radius:40px;background:conic-gradient(from 45deg,#e8772e 0 25%,#1d2a33 0 50%,#e8772e 0 75%,#1d2a33 0);box-shadow:0 20px 60px rgba(232,119,46,.35),inset 0 0 0 3px rgba(255,255,255,.08)}
+
+.boards{display:flex;gap:26px;margin-top:64px}
+
+
+/* ▲▲ 本景專屬 CSS 到此 ▲▲ */
+</style></head>
+<body>
+<div class="bg"></div><div class="aur a"></div><div class="aur b"></div><div class="grid"></div>
+<!-- 粒子層:開場/結尾等 hero 景才留,功能景通常拿掉保持乾淨 -->
+<canvas id="fx" style="position:absolute;inset:0;z-index:1;pointer-events:none"></canvas>
+<script>
+const cv=document.getElementById('fx');cv.width=1920;cv.height=1080;const cx=cv.getContext('2d');
+const P=[];for(let i=0;i<80;i++){P.push({x:Math.random()*1920,y:Math.random()*1080,
+ r:.8+Math.random()*2.6,s:.12+Math.random()*.5,o:.12+Math.random()*.4,
+ hue:Math.random()<.6?'255,170,90':'110,215,220',ph:Math.random()*6.28});}
+function draw(){const t=performance.now()/1000;cx.clearRect(0,0,1920,1080);
+ for(const p of P){const y=(p.y-t*38*p.s)%1080,yy=y<0?y+1080:y;
+  const x=p.x+Math.sin(t*.5+p.ph)*26;const tw=.55+.45*Math.sin(t*1.7+p.ph*3);
+  cx.beginPath();cx.arc(x,yy,p.r,0,6.283);
+  cx.fillStyle=`rgba(${p.hue},${(p.o*tw).toFixed(3)})`;cx.fill();}
+ requestAnimationFrame(draw);}
+requestAnimationFrame(draw);
+</script>
+<div class="stage" style="z-index:2">
+
+ <div class="logoMark pop" style="--d:.1s"></div>
+ <div class="kicker in" style="--d:.45s;margin-top:44px">DOFLAB V2.1 · 原型示範</div>
+ <div class="h1 pop" style="--d:.7s;margin-top:22px;font-size:170px">DofLab</div>
+ <div class="sub in" style="--d:1.3s;margin-top:26px">從<span class="accent">電路配置、行為設計、模擬測試</span>，到<span class="accent">真實設備同步</span></div>
+ <div class="boards">
+  <div class="chip in" style="--d:1.9s">Arduino Uno R3</div>
+  <div class="chip in" style="--d:2.1s">ESP32-DevKitC V4</div>
+  <div class="chip in" style="--d:2.3s">Raspberry Pi 4B</div>
+ </div>
+
+</div>
+<!-- 字幕列(可選):要用「跟畫面融合」的字幕就取消下面這行註解、改文字。
+     跟 storyboard.json 裡這一景的 "caption" 欄位是同一份文案來源。 -->
+<!-- <div class="cap-bar in" style="--d:.3s">這裡放字幕文字</div> -->
+<div class="vig" style="z-index:3"></div>
+</body></html>
