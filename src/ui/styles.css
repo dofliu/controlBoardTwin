@@ -55,6 +55,8 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .pill i{width:8px;height:8px;border-radius:50%;background:var(--muted)}
 .pill.sim i{background:var(--sim)} .pill.read{border-color:var(--meas)} .pill.read i{background:var(--meas)}
 .pill.ctl{border-color:var(--cmd);background:var(--accent-soft)} .pill.ctl i{background:var(--cmd);box-shadow:0 0 0 3px color-mix(in srgb,var(--cmd) 30%,transparent)}
+.pill.virt{border-style:dashed;border-color:var(--unk)} .pill.virt i{background:var(--unk)} .pill.virt span::before{content:'⧉ '}
+.ev-virt{display:inline-block;font-size:.68rem;padding:0 5px;margin-right:4px;border-radius:5px;background:var(--unk-soft);color:var(--unk);vertical-align:1px}
 .pill.on i{background:var(--ok)} .pill.lost{border-color:var(--err);background:var(--err-soft)} .pill.lost i{background:var(--err)}
 .actions{display:flex;gap:6px;margin-left:auto}
 

@@ -3,7 +3,7 @@
 // 限制：模擬器不模擬 USB 轉序列晶片與電氣特性；實體 Uno 仍需另行驗收。
 const test = require('node:test'); const assert = require('node:assert');
 const { execFileSync } = require('child_process'); const fs = require('fs'); const os = require('os'); const path = require('path');
-const { DL, solved } = require('./helpers'); const { VirtualUno, RESET } = require('./avr/avrsim');
+const { DL, solved } = require('./helpers'); const { VirtualUno, RESET } = require('../tools/vdev/avrsim');
 require('../src/drivers/stk500.js');
 let hasCli = true; try { execFileSync('arduino-cli', ['version']); } catch (e) { hasCli = false; }
 const OPTI = fs.readFileSync(path.join(__dirname, 'fixtures', 'optiboot_atmega328.hex'), 'utf8');

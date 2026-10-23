@@ -3,7 +3,7 @@
 // 需要 arduino-cli 與 arduino:avr core；找不到時這組測試會標示 skip，而不是假裝通過。
 const test = require('node:test'); const assert = require('node:assert');
 const { execFileSync } = require('child_process'); const fs = require('fs'); const os = require('os'); const path = require('path');
-const { DL, solved, confirm } = require('./helpers'); const { VirtualUno } = require('./avr/avrsim');
+const { DL, solved, confirm } = require('./helpers'); const { VirtualUno } = require('../tools/vdev/avrsim');
 let hasCli = true; try { execFileSync('arduino-cli', ['version']); } catch (e) { hasCli = false; }
 
 function build(code) {

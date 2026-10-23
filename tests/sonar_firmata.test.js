@@ -2,7 +2,7 @@
 // StandardFirmata 沒有超音波功能：驅動要明確回報「不支援」，不送出任何設定。
 const test = require('node:test'); const assert = require('node:assert'); const path = require('path');
 const { DL } = require('./helpers'); require('../src/drivers/drivers.js');
-const { VirtualUno } = require('./avr/avrsim');
+const { VirtualUno } = require('../tools/vdev/avrsim');
 const FIX = f => path.join(__dirname, 'fixtures', f);
 const wait = ms => new Promise(r => setTimeout(r, ms));
 async function until(fn, ms = 6000) { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return true; await wait(20); } return false; }

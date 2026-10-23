@@ -3,7 +3,7 @@
 // 以及 arduino-cli 編譯的真實機器碼在虛擬 Uno（avr8js＋HC-SR04 時序模型）上執行。
 const test = require('node:test'); const assert = require('node:assert');
 const { execFileSync } = require('child_process'); const fs = require('fs'); const path = require('path'); const os = require('os');
-const { DL, solved, runEngine, confirm } = require('./helpers'); const { VirtualUno } = require('./avr/avrsim');
+const { DL, solved, runEngine, confirm } = require('./helpers'); const { VirtualUno } = require('../tools/vdev/avrsim');
 const HOST = path.join(__dirname, 'host'); const P = DL.project;
 let hasCli = true; try { execFileSync('arduino-cli', ['version']); } catch (e) { hasCli = false; }
 const US_EXPS = ['dist-alarm', 'smart-bin', 'parking-gate', 'dist-gauge', 'parking-radar'];

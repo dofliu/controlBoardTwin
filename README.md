@@ -1,4 +1,4 @@
-# DofLab V2.7 原型
+# DofLab V2.8 原型
 
 從電路配置、行為設計、模擬測試，到真實設備同步的教學與開發平台。本版依《DofLab 規劃文件 v0.1》重新開發。
 
@@ -9,6 +9,7 @@
 | 只想看介面、模擬 | 直接用瀏覽器開 `dist/index.html`（Chrome／Edge／Safari 都可） |
 | 要編譯程式、連接 Arduino Uno | 在電腦執行 `python3 dist/doflab_server.py`，開 `http://localhost:8766` |
 | 要連接 Raspberry Pi 4B | 把 `dist/` 整個資料夾複製到樹莓派，執行 `python3 pi_bridge.py`，用同網路電腦開 `http://<樹莓派IP>:8765` |
+| 沒有板子，想走完真機同步的流程 | 在 repo 執行 `npm ci && npm run vdev`（虛擬設備主機），「觀測」頁選「虛擬設備（網址）」連線（見下方「虛擬設備」） |
 
 `dist/vendor/` 內含 three.js 與 Blockly，教室沒有網路也能使用（只有 Google 字型會退回系統字型）。
 
@@ -30,6 +31,32 @@
 2. 從 `http://localhost:8766` 開啟 DofLab（Web Serial 需要 https 或 localhost）。
 3. 到「觀測」頁按「連接 Arduino（USB）」或「連接 ESP32（USB）」，再依序完成：辨識、唯讀觀測、核對接線、授權受控寫入。
 4. 連不上時（V2.6.1）：先關掉 Arduino IDE 的序列埠監控視窗與其他開著 DofLab 的分頁。本頁上一次沒關乾淨的連線會自動關閉；被其他程式占用時會自動重試並說明；板子沒回應時會自動重新啟動板子再試一次。上傳程式前會自動中斷觀測頁的連線，上傳後按「用上次的連接埠重新連線」即可。
+
+### 虛擬設備：沒有板子也能走完數位孿生（V2.8）
+
+虛擬設備是**另一個程式**裡的虛擬 Uno：avr8js 執行真的 DofLabFirmata 機器碼，外面接著「工作台」（按鈕 BTN1 接 D2、LED1 經 220 Ω 接 D13，和「按住閃爍」相同）。介面經網路（WebSocket）連過去，送出與收到的 Firmata 位元組和接 USB 時完全相同。
+
+```bash
+npm ci
+npm run vdev        # = node tools/vdev/server.js，只聽本機 127.0.0.1:8770
+```
+
+1. 從 `http://localhost:8766`（`python3 dist/doflab_server.py`）或 `dist/index.html` 開啟 DofLab，板型選 Uno，載入「按住閃爍」並確認行為。
+2. 「觀測」頁的真機連線選「虛擬設備（網址）」，網址 `ws://127.0.0.1:8770/dev/uno-1`，按「連接虛擬 Uno」。不需要 Web Serial。
+3. 按「開啟工作台」（`http://127.0.0.1:8770/`），在工作台按住 BTN1：介面的量測層顯示按下（唯讀，不送任何命令）。
+4. 核對接線、授權受控寫入、按「▶ 執行」，再到工作台按住 BTN1：工作台上的 LED 依虛擬晶片 D13 的實際電位閃爍。
+5. 停掉 `npm run vdev`：介面回到模擬，未確認的命令作廢、不會重送；重新啟動後再連線，從唯讀開始。
+
+畫面上一律標示「虛擬設備」（模式標籤是紫色虛線框、量測欄寫「量測（虛擬）」、事件紀錄有「虛擬」標籤）。這裡通過的只能寫「**已在虛擬設備驗證，未以實體設備驗證**」：電壓、電流、接觸不良、USB 驅動都沒有模擬。
+
+設備狀態與工作台也可以用 HTTP 讀寫（測試就是這樣操作「介面以外」的世界）：
+
+```bash
+curl http://127.0.0.1:8770/api/devices/uno-1                                   # 腳位、工作台、設備收到的命令紀錄
+curl -X POST -d '{"part":"BTN1","action":"press"}' http://127.0.0.1:8770/api/devices/uno-1/bench
+```
+
+第 1 階段的限制：只在本機、沒有通行碼；同時只接受一個連線；工作台只有按鈕與 LED。後續階段見 `docs/VIRTUAL_DEVICE_PLAN.md`。
 
 ### Raspberry Pi 4B 真機同步
 
@@ -163,24 +190,25 @@ src/core/      與介面無關的核心（Node 與瀏覽器共用同一份檔案
   autowire.js      接線助手：推算缺少的連線、指定腳位、補元件
   arm.js           三自由度手臂：運動學、限位、連續性、限速、伺服映射
   routing.js       自動整線（A* 正交路由）
-src/drivers/   Firmata（Web Serial）與 Pi 閘道（WebSocket）驅動；stk500.js（瀏覽器上傳到 Uno）
+src/drivers/   transport.js（傳輸層：USB 序列埠、虛擬設備的 WebSocket）、Firmata 與 Pi 閘道（WebSocket）驅動；stk500.js（瀏覽器上傳到 Uno）
 src/ui/        Three.js 場景與擬真模型（models.js）、Blockly 積木、五個分頁、手臂（arm.js）、上傳燒錄（upload.js）、教師模式（teacher.js）
 tools/         doflab_server.py（編譯服務）、pi_bridge.py（Pi 閘道 v2）、firmware/DofLabFirmata
-tests/avr/     虛擬 Uno（avr8js）：執行真實 hex（含 Optiboot 開機程式與自我燒錄），驗證驅動、產生的程式與上傳
+tools/vdev/    虛擬設備主機：server.js（WebSocket＋HTTP）、device.js（每台設備一個 worker）、bench.js（工作台）、avrsim.js（虛擬 Uno：執行真實 hex，含 Optiboot 與自我燒錄；測試也用它）
+tests/avr/     pty_uno.js（讓 avrdude 經 pty 上傳到虛擬 Uno）
 tests/         Node 單元與等價測試、Python 測試
 e2e/           Playwright 端到端測試
 ```
 
 建置：`npm ci && npm run build`，輸出到 `dist/`（建置產物不進 git）。也可以用 `npm test`（語法檢查＋建置＋Node＋Python 測試）。
 
-開發說明（架構、規則、已知的坑）在 `CLAUDE.md`；下一步「雲端虛擬硬體」的規劃在 `docs/VIRTUAL_DEVICE_PLAN.md`。
+開發說明（架構、規則、已知的坑）在 `CLAUDE.md`；「雲端虛擬硬體」的規劃與分階段驗收在 `docs/VIRTUAL_DEVICE_PLAN.md`（第 1 階段已完成）。
 
 ## 測試
 
 ```bash
-node --test --test-concurrency=1 tests/*.test.js     # 108 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
+node --test --test-concurrency=1 tests/*.test.js     # 112 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
 python3 -m unittest discover -s tests -p "test_*.py" # 17 項（上傳端到端需要 avrdude 與 socat）
-python3 e2e/e2e.py                                   # 165 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27）
+python3 e2e/e2e.py                                   # 179 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev）
 ```
 
 ### 示範影片

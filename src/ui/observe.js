@@ -169,6 +169,7 @@
   // 3D 畫面要顯示哪一層：模擬時顯示模擬；真機時輸入顯示量測，輸出顯示 ACK／命令，沒有回授就標示未知
   P.visState = function () {
     const vis = {}; const mode = this.twin.mode;
+    const MEAS = this.twin.conn.virtual ? '虛擬量測' : '量測';   // 虛擬設備的量測一律標示
     for (const c of this.p.components) {
       const s = sigOf(c); if (!s) continue; const v = this.twin.view(s);
       if (mode === 'sim') {
@@ -180,11 +181,11 @@
               : { light: this.sim.light[c.id], tag: this.ui.tab === 'observe' ? { cls: 'sim', text: `模擬 ${this.sim.light[c.id]}%` } : null };
         continue;
       }
-      if (c.type === 'US') { const q = v.quality; const m = v.measured; vis[c.id] = { dist: q === 'ok' && m ? m.v : null, tag: { cls: q === 'ok' ? 'meas' : q === 'stale' ? 'stale' : 'unk', text: q === 'ok' ? `量測 ${fmt(c, m.v)}` : q === 'stale' ? '量測已過期' : '未知' } }; continue; }
+      if (c.type === 'US') { const q = v.quality; const m = v.measured; vis[c.id] = { dist: q === 'ok' && m ? m.v : null, tag: { cls: q === 'ok' ? 'meas' : q === 'stale' ? 'stale' : 'unk', text: q === 'ok' ? `${MEAS} ${fmt(c, m.v)}` : q === 'stale' ? '量測已過期' : '未知' } }; continue; }
       if (isBtn(c) || c.type === 'LDR') {
         const q = v.quality; const m = v.measured;
-        vis[c.id] = isBtn(c) ? { pressed: q === 'ok' && m && m.v, tag: { cls: q === 'ok' ? 'meas' : q === 'stale' ? 'stale' : 'unk', text: q === 'ok' ? '量測' : q === 'stale' ? '量測已過期' : '未知' } }
-          : { light: m ? m.v : 50, tag: { cls: q === 'ok' ? 'meas' : q === 'stale' ? 'stale' : 'unk', text: q === 'ok' ? `量測 ${Math.round(m.v)}%` : '未知' } };
+        vis[c.id] = isBtn(c) ? { pressed: q === 'ok' && m && m.v, tag: { cls: q === 'ok' ? 'meas' : q === 'stale' ? 'stale' : 'unk', text: q === 'ok' ? MEAS : q === 'stale' ? '量測已過期' : '未知' } }
+          : { light: m ? m.v : 50, tag: { cls: q === 'ok' ? 'meas' : q === 'stale' ? 'stale' : 'unk', text: q === 'ok' ? `${MEAS} ${Math.round(m.v)}%` : '未知' } };
       } else {
         const a = v.ack, cmd = v.commanded; const has = mode === 'hw-control' && (a || cmd);
         const val = a ? a.v : cmd ? cmd.v : null;
@@ -223,8 +224,9 @@
     host.querySelectorAll('[data-usnear]').forEach(b => b.onclick = () => this.setDistance(b.dataset.usnear, 8));
     host.querySelectorAll('[data-usfar]').forEach(b => b.onclick = () => this.setDistance(b.dataset.usfar, US_FAR));
     host.querySelectorAll('input[id^="ldr-"]').forEach(r => r.oninput = () => { const id = r.id.slice(4); this.sim.light[id] = +r.value; $('ldrv-' + id).textContent = r.value; this.twin.simulate(id + '.level', +r.value); if (this.sim.running) { this.sim.minLight = Math.min(this.sim.minLight, +r.value); this.sim.maxLight = Math.max(this.sim.maxLight, +r.value); } });
-    $('simNote').textContent = this.twin.mode === 'sim' ? '' : this.twin.mode === 'hw-read' ? '唯讀：輸入來自真機量測，行為只推算、不送命令。' : '受控寫入：行為的輸出會送往真機。';
-    $('hintObserve').textContent = p.arm ? '手臂的姿態由「手臂」頁控制；這裡是同一隻手臂的命令姿態（SG90 沒有回授，不是實測）' : this.twin.mode === 'sim' && p.components.some(c => c.type === 'BOOT' || c.type === 'TOUCH') ? '模擬時，按住 3D 板子上的 BOOT 鍵，或按住觸控腳的排針（青色圓圈）' : this.twin.mode === 'sim' ? (p.components.some(c => c.type === 'US') ? '模擬時，用下方的拉桿移動超音波前方的物體（橘色板；畫面上的距離是壓縮過的示意，實際數值看標籤）' : '模擬時，按住場景中的按鈕即可按下') : '真機模式：請操作實體按鈕或移動實體物體；畫面顯示量測到的狀態';
+    const dev = this.twin.conn.virtual ? '虛擬設備' : '真機';
+    $('simNote').textContent = this.twin.mode === 'sim' ? '' : this.twin.mode === 'hw-read' ? `唯讀：輸入來自${dev}量測，行為只推算、不送命令。` : `受控寫入：行為的輸出會送往${dev}。`;
+    $('hintObserve').textContent = p.arm ? '手臂的姿態由「手臂」頁控制；這裡是同一隻手臂的命令姿態（SG90 沒有回授，不是實測）' : this.twin.mode === 'sim' && p.components.some(c => c.type === 'BOOT' || c.type === 'TOUCH') ? '模擬時，按住 3D 板子上的 BOOT 鍵，或按住觸控腳的排針（青色圓圈）' : this.twin.mode === 'sim' ? (p.components.some(c => c.type === 'US') ? '模擬時，用下方的拉桿移動超音波前方的物體（橘色板；畫面上的距離是壓縮過的示意，實際數值看標籤）' : '模擬時，按住場景中的按鈕即可按下') : this.twin.conn.virtual ? '虛擬設備模式：請在虛擬設備的工作台（另開的網頁）按按鈕；畫面顯示經網路量測到的狀態' : '真機模式：請操作實體按鈕或移動實體物體；畫面顯示量測到的狀態';
     this.renderTwin(); this.renderHw(); this.renderEventsIfDirty(true); this.renderSerial();
   };
 
@@ -236,12 +238,13 @@
       const x = mode === 'sim' ? v.simulated : (INPUTS.includes(c.type) ? v.measured : (v.ack || v.commanded || v.simulated));
       rows.push(`<span class="k">${esc(c.id)}</span><span class="v ${mode === 'sim' ? 'sim' : INPUTS.includes(c.type) ? 'meas' : 'cmd'}">${x ? fmt(c, x.v) : '—'}</span>`);
     }
-    const head = `<button type="button" class="hc ${this.sim.running ? 'ok' : ''}" data-card="twinCard"><b>${this.sim.running ? '執行中' : '已暫停'}</b> · ${DL.modeLabel(mode)} · t = ${(this.sim.time / 1000).toFixed(1)} s</button>`;
+    const head = `<button type="button" class="hc ${this.sim.running ? 'ok' : ''}" data-card="twinCard"><b>${this.sim.running ? '執行中' : '已暫停'}</b> · ${DL.modeLabel(mode, this.twin.conn.virtual)} · t = ${(this.sim.time / 1000).toFixed(1)} s</button>`;
     const html = head + (rows.length ? `<div class="vals" data-card="twinCard">${rows.slice(0, 12).join('')}</div>` : '');
     if (html !== this._hudOHtml) { this._hudOHtml = html; el.innerHTML = html; el.querySelectorAll('[data-card]').forEach(b => b.onclick = () => this.focusCard('twinCard')); }
   };
   P.renderTwin = function () {
     const rows = []; const mode = this.twin.mode; const now = Date.now();
+    const th = $('thMeas'); if (th) th.textContent = mode !== 'sim' && this.twin.conn.virtual ? '量測（虛擬）' : '量測';
     const age = x => x ? `<small>${((now - x.t) / 1000).toFixed(1)} s 前${x.seq !== undefined ? ' · #' + x.seq : ''}</small>` : '';
     for (const c of this.p.components) {
       const s = sigOf(c); if (!s) continue; const v = this.twin.view(s); const isOut = ['LED', 'OBLED', 'SERVO'].includes(c.type);
@@ -298,15 +301,22 @@
   P.renderEventsIfDirty = function (force) {
     if (!this._evDirty && !force) return; this._evDirty = false;
     const el = $('eventList'); if (!el) return;
-    el.innerHTML = this.events.slice(0, 120).map(e => `<li class="${e.kind}"><span class="t">${e.simT !== null ? (e.simT / 1000).toFixed(3) + ' s' : new Date(e.t).toLocaleTimeString()}</span><span>${esc(e.text)}</span></li>`).join('') || '<li><span class="t"></span><span class="muted">尚無事件</span></li>';
+    el.innerHTML = this.events.slice(0, 120).map(e => `<li class="${e.kind}"><span class="t">${e.simT !== null ? (e.simT / 1000).toFixed(3) + ' s' : new Date(e.t).toLocaleTimeString()}</span><span>${e.virtual ? '<span class="ev-virt">虛擬</span>' : ''}${esc(e.text)}</span></li>`).join('') || '<li><span class="t"></span><span class="muted">尚無事件</span></li>';
   };
 
   P.onTwinEvent = function (e) {
-    if (e.type === 'mode') { this.log('w', `模式：${DL.modeLabel(e.from)} → ${DL.modeLabel(e.to)}${e.why ? '（' + e.why + '）' : ''}`); this.renderHeader(); this.renderTabs(); if (this.ui.tab === 'observe') this.renderObserve(); }
-    else if (e.type === 'connected') this.log('s', `已連線 ${e.info || e.deviceId}（第 ${e.session} 次連線）`);
+    if (e.type === 'mode') { const vv = this.twin.conn.virtual; this.log('w', `模式：${DL.modeLabel(e.from, vv)} → ${DL.modeLabel(e.to, vv)}${e.why ? '（' + e.why + '）' : ''}`); this.renderHeader(); this.renderTabs(); if (this.ui.tab === 'observe') this.renderObserve(); }
+    else if (e.type === 'connected') this.log('s', `已連線 ${e.info || e.deviceId}（第 ${e.session} 次連線${e.virtual ? '；虛擬設備，不是實體板子' : ''}）`);
     else if (e.type === 'disconnected') this.log('e', `連線中斷：${e.reason || ''}${e.dropped.length ? `；${e.dropped.length} 個未確認命令已作廢，不會重送` : ''}`);
     else if (e.type === 'authorized') this.log('s', `已授權受控寫入：${e.outputs.join('、')}`);
     else if (e.type === 'warn') this.log('w', e.msg);
+    else if (e.type === 'measure') this.noteMeasure(e);
+  };
+  // 核對接線用：每一筆量測都比對上一筆（不靠畫面取樣，快速按放也不會漏掉）
+  P.noteMeasure = function (e) {
+    const id = e.name.split('.')[0]; const ls = this.hw.lastSeen || (this.hw.lastSeen = {});
+    if (ls[id] !== undefined && ls[id] !== e.v) this.hw.sawChange[id] = true;
+    ls[id] = e.v;
   };
 
   /* ---------- 真機連線 ---------- */
@@ -316,30 +326,43 @@
       { ok: !!(this.hw.identity && this.hw.identity.ok), text: '板卡辨識結果與專案板型相符' },
       { ok: a.ok, text: '配置檢查沒有錯誤' },
       (p.arm && !p.behavior.ir.rules.length) ? { ok: this.armConfirmState() === 'current', text: '手臂設定與伺服映射已確認且為最新' } : { ok: this.confirmState() === 'current', text: '行為摘要已確認且為最新' },
-      { ok: Object.keys(a.bindings).every(id => this.hw.checks[id]), text: '每個元件都已勾選「實體接線已核對」' },
+      { ok: Object.keys(a.bindings).every(id => this.hw.checks[id]), text: this.twin.conn.virtual ? '每個元件都已勾選「接線已核對」（虛擬設備：核對的是工作台的接線）' : '每個元件都已勾選「實體接線已核對」' },
       { ok: outs.length > 0, text: '至少有一個輸出元件（LED／伺服）' }
     ];
     if (Object.values(a.bindings).some(b => b.role === 'ultrasonic')) req.push({ ok: !!this.hw.identity && !this.hw.sonarUnsupported, text: '超音波可以讀取（Uno／ESP32 需要 DofLabFirmata）' });
     return { req, ok: req.every(r => r.ok), outs };
   };
+  // 連線來源：USB 序列埠或虛擬設備（只有這個板型支援時）；連線中以實際連線的來源為準
+  P.hwSource = function () {
+    const srcs = DL.drivers.driverFor(this.p.board.type).sources;
+    if (this.hw.driver && this.hw.connSrc) return this.hw.connSrc;
+    return srcs.includes(this.hw.src) ? this.hw.src : srcs[0];
+  };
+  P.vdevUrl = function () { if (this.hw.vdevUrl) return this.hw.vdevUrl; try { const u = localStorage.getItem('doflab.vdevUrl'); if (u) return u; } catch (e) { } return DL.drivers.VDEV_URL; };
+  const benchUrl = ws => { try { const u = new URL(ws); return `${u.protocol === 'wss:' ? 'https:' : 'http:'}//${u.host}/`; } catch (e) { return null; } };
   P.renderHw = function () {
     const el = $('hwBody'); if (!el || !this.p) return;
-    const p = this.p; const board = DL.boards[p.board.type]; const info = DL.drivers.driverFor(p.board.type);
+    const p = this.p; const board = DL.boards[p.board.type]; const src = this.hwSource(); const info = DL.drivers.driverFor(p.board.type, src); const virt = src === 'virtual';
     $('drvStatus').textContent = info.status.split('：')[0]; $('drvStatus').className = 'status-tag ' + (info.cls ? 'st-unver' : 'st-no');
     if (!info.cls) { el.innerHTML = `<p>${esc(info.status)}</p><p class="hint">缺少驅動時，平台會拒絕連線，而不是假裝同步。</p>`; return; }
     const c = this.twin.conn; const connected = c.state === 'connected'; const mode = this.twin.mode;
     const a = this.analysis; const R = this.hwRequirements();
     const urlDefault = (() => { try { const s = localStorage.getItem('doflab.wsUrl'); if (s) return s; } catch (e) { } return location.protocol === 'http:' && location.host && location.port !== '8766' ? `ws://${location.host}/ws` : 'ws://raspberrypi.local:8765/ws'; })();
     const step = (n, title, state, body) => `<li class="${state}"><span class="no">${n}</span><div><b>${title}</b>${body}</div></li>`;
-    const s1 = connected ? `<span>${esc(info.label)} · ${esc(c.info || '')}</span><div class="row"><button class="btn danger" id="hwDisc">中斷連線</button></div>`
-      : `${p.board.type === 'pi4b' ? `<div class="row"><input class="inp mono" id="wsUrl" value="${esc(urlDefault)}" aria-label="樹莓派閘道網址" style="flex:1 1 200px"></div>` : `<span class="hint">${DL.boardFamily(p.board.type) === 'esp32' ? 'ESP32 需先上傳 DofLabFirmata 韌體' : 'Uno 需先上傳 DofLabFirmata（建議）或 StandardFirmata'}，再用 USB 連接電腦；需要電腦版 Chrome／Edge。韌體在下載包的 firmware 資料夾，也可以直接按下面的按鈕上傳。</span>${this.firmataFlashHtml ? this.firmataFlashHtml() : ''}`}
+    const srcSel = !connected && info.sources.length > 1 ? `<div class="row" role="radiogroup" aria-label="連線來源">${info.sources.map(k => `<label class="check"><input type="radio" name="hwSrc" value="${k}" ${k === src ? 'checked' : ''}><span>${k === 'virtual' ? '虛擬設備（網址）' : 'USB 序列埠（實體板子）'}</span></label>`).join('')}</div>` : '';
+    const bu = virt ? benchUrl(connected && this.hw.vdevConnUrl ? this.hw.vdevConnUrl : this.vdevUrl()) : null;
+    const s1 = connected ? `<span>${esc(info.label)} · ${esc(c.info || '')}</span>${virt ? `<span class="hint"><span class="ev-virt">虛擬</span>另一個程序模擬的 Uno，不是實體板子 · <span id="vdevNet">網路來回 ${this.hw.driver && this.hw.driver.transport && this.hw.driver.transport.rtt !== null ? this.hw.driver.transport.rtt + ' ms' : '量測中'}</span>${bu ? ` · <a href="${esc(bu)}" target="_blank" rel="noopener">開啟工作台</a>` : ''}</span>` : ''}<div class="row"><button class="btn danger" id="hwDisc">中斷連線</button></div>`
+      : virt ? `${srcSel}<div class="row"><input class="inp mono" id="vdevUrl" value="${esc(this.vdevUrl())}" aria-label="虛擬設備網址" style="flex:1 1 200px"></div><span class="hint">虛擬設備是另一個程式（<span class="mono">node tools/vdev/server.js</span>）裡以 avr8js 模擬的 Uno，執行真的 DofLabFirmata 機器碼；資料經網路（WebSocket）交換，Firmata 位元組和 USB 完全相同。它<b>不是實體板子</b>：在這裡通過的只算「已在虛擬設備驗證」。不需要 Web Serial，手機也能連。</span>
+         <div class="row"><button class="btn primary" id="hwConn" ${this.hw.busy ? 'disabled' : ''}>連接虛擬 Uno</button></div>
+         ${c.state === 'lost' ? `<span class="hint" style="color:var(--err)">上次連線中斷${this.twin.dropped.length ? `；${this.twin.dropped.length} 個未確認命令已作廢、不會重送` : ''}。重新連線後會從唯讀開始。</span>` : ''}`
+      : `${srcSel}${p.board.type === 'pi4b' ? `<div class="row"><input class="inp mono" id="wsUrl" value="${esc(urlDefault)}" aria-label="樹莓派閘道網址" style="flex:1 1 200px"></div>` : `<span class="hint">${DL.boardFamily(p.board.type) === 'esp32' ? 'ESP32 需先上傳 DofLabFirmata 韌體' : 'Uno 需先上傳 DofLabFirmata（建議）或 StandardFirmata'}，再用 USB 連接電腦；需要電腦版 Chrome／Edge。韌體在下載包的 firmware 資料夾，也可以直接按下面的按鈕上傳。</span>${this.firmataFlashHtml ? this.firmataFlashHtml() : ''}`}
          <div class="row"><button class="btn primary" id="hwConn" ${this.hw.busy ? 'disabled' : ''}>${p.board.type === 'pi4b' ? '連接樹莓派' : (DL.boardFamily(p.board.type) === 'esp32' ? '連接 ESP32（USB）' : '連接 Arduino（USB）')}</button>${p.board.type !== 'pi4b' && this.hw.lastPort ? `<button class="btn" id="hwReconn" ${this.hw.busy ? 'disabled' : ''} title="不用再選連接埠">用上次的連接埠重新連線</button>` : ''}</div>
          ${p.board.type !== 'pi4b' ? '<span class="hint">連不上時：先關掉 Arduino IDE 的序列埠監控視窗與其他 DofLab 分頁。本頁上一次沒關乾淨的連線會自動關閉；板子沒回應時會自動重新啟動板子再試一次。</span>' : ''}
          ${c.state === 'lost' ? `<span class="hint" style="color:var(--err)">上次連線中斷${this.twin.dropped.length ? `；${this.twin.dropped.length} 個未確認命令已作廢、不會重送` : ''}。重新連線後會從唯讀開始。</span>` : ''}`;
-    const s2 = this.hw.identity ? `<span class="${this.hw.identity.ok ? '' : 'muted'}">${this.hw.identity.ok ? '✓' : '✗'} ${esc(this.hw.identity.msg)}</span>${this.hw.identity.mock ? '<span class="hint">這是測試用的模擬腳位，不是實體設備。</span>' : ''}` : '<span class="hint">連線後讀取板卡回報的型號與腳位能力。</span>';
+    const s2 = this.hw.identity ? `<span class="${this.hw.identity.ok ? '' : 'muted'}">${this.hw.identity.ok ? '✓' : '✗'} ${esc(this.hw.identity.msg)}</span>${this.hw.identity.mock ? '<span class="hint">這是測試用的模擬腳位，不是實體設備。</span>' : ''}${(this.hw.identity.virtual ? '<span class="hint">這是虛擬設備（另一個程序模擬的晶片），不是實體設備：在這裡通過只算「已在虛擬設備驗證，未以實體設備驗證」。</span>' : '')}` : '<span class="hint">連線後讀取板卡回報的型號與腳位能力。</span>';
     const bindings = Object.values(a.bindings);
     const hasUs = bindings.some(b => b.role === 'ultrasonic');
-    const s3 = connected ? `<span class="hint">唯讀只會把輸入腳位設為上拉／類比並開啟回報，不改變任何輸出。按一下實體按鈕，確認畫面有反應。${hasUs ? '超音波的 TRIG 是量距離必須的觸發輸出：唯讀時韌體也會每 60 ms 送一次 10 µs 的觸發脈衝，只接到超音波模組。' : ''}</span>${this.hw.sonarUnsupported ? `<span class="hint" style="color:var(--err)">${esc(this.hw.sonarUnsupported)}</span>` : ''}${this.hw.touchUnsupported ? `<span class="hint" style="color:var(--warn)">${esc(this.hw.touchUnsupported)}</span>` : ''}${bindings.map(b => {
+    const s3 = connected ? `<span class="hint">唯讀只會把輸入腳位設為上拉／類比並開啟回報，不改變任何輸出。${virt ? '到虛擬設備的工作台（「開啟工作台」）按一下按鈕' : '按一下實體按鈕'}，確認畫面有反應。${hasUs ? '超音波的 TRIG 是量距離必須的觸發輸出：唯讀時韌體也會每 60 ms 送一次 10 µs 的觸發脈衝，只接到超音波模組。' : ''}</span>${this.hw.sonarUnsupported ? `<span class="hint" style="color:var(--err)">${esc(this.hw.sonarUnsupported)}</span>` : ''}${this.hw.touchUnsupported ? `<span class="hint" style="color:var(--warn)">${esc(this.hw.touchUnsupported)}</span>` : ''}${bindings.map(b => {
       const cc = DL.project.findComp(p, b.comp); const isIn = b.role === 'button' || b.role === 'analog' || b.role === 'ultrasonic';
       return `<label class="check"><input type="checkbox" data-chk="${b.comp}" ${this.hw.checks[b.comp] ? 'checked' : ''}><span>${b.comp} ${isIn ? '←' : '→'} ${esc(b.role === 'ultrasonic' ? `TRIG ${board.pinLabel(board.pinById[b.trig])}、ECHO ${board.pinLabel(board.pinById[b.echo])}` : board.pinLabel(board.pinById[b.pin]))}${b.via && b.via.length ? '（經 ' + b.via.join('、') + '）' : ''}</span>${isIn ? `<span class="ind ${this.hw.sawChange[b.comp] ? 'ok' : ''}" id="saw-${b.comp}">${this.hw.sawChange[b.comp] ? '已偵測到變化' : '等待變化'}</span>` : (mode === 'hw-control' ? `<span class="ind ok">輸出：已授權寫入</span>` : `<span class="ind">輸出：唯讀，未寫入</span>`)}</label>`;
     }).join('')}` : '<span class="hint">連線後在這裡逐一核對實體接線。</span>';
@@ -359,28 +382,32 @@
     const au = $('hwAuth'); if (au) au.onclick = () => this.hwAuthorize();
     const rv = $('hwRevoke'); if (rv) rv.onclick = () => this.hwRevoke('使用者停止寫入');
     el.querySelectorAll('[data-chk]').forEach(cb => cb.onchange = () => { this.hw.checks[cb.dataset.chk] = cb.checked; this.renderHw(); });
+    el.querySelectorAll('input[name="hwSrc"]').forEach(r => r.onchange = () => { if (!r.checked) return; this.hw.src = r.value; try { localStorage.setItem('doflab.hwSrc', r.value); } catch (e) { } this.renderHw(); });
+    const vu = $('vdevUrl'); if (vu) vu.onchange = () => { this.hw.vdevUrl = vu.value.trim(); try { localStorage.setItem('doflab.vdevUrl', this.hw.vdevUrl); } catch (e) { } };
   };
   P.renderHwLive = function () {
+    const net = $('vdevNet'); const t = this.hw.driver && this.hw.driver.transport;
+    if (net && t && t.rtt !== null && t.rtt !== undefined) net.textContent = `網路來回 ${t.rtt} ms`;
     for (const c of this.p.components) {
       if (!INPUTS.includes(c.type)) continue;
-      const v = this.twin.view(sigOf(c));
-      if (v.measured && this.hw.lastSeen && this.hw.lastSeen[c.id] !== undefined && this.hw.lastSeen[c.id] !== v.measured.v && !this.hw.sawChange[c.id]) { this.hw.sawChange[c.id] = true; const el = $('saw-' + c.id); if (el) { el.className = 'ind ok'; el.textContent = '已偵測到變化'; } }
-      this.hw.lastSeen = this.hw.lastSeen || {}; if (v.measured) this.hw.lastSeen[c.id] = v.measured.v;
+      const el = $('saw-' + c.id); if (this.hw.sawChange[c.id] && el && el.className !== 'ind ok') { el.className = 'ind ok'; el.textContent = '已偵測到變化'; }
     }
   };
   P.hwConnect = async function (reuse) {
-    const p = this.p; const info = DL.drivers.driverFor(p.board.type);
+    const p = this.p; const src = this.hwSource(); const info = DL.drivers.driverFor(p.board.type, src);
     if (!info.cls) { this.toast(info.status, 'e'); return; }
-    const url = $('wsUrl') ? $('wsUrl').value.trim() : null;   // 先讀網址，再重繪面板
-    if (url) try { localStorage.setItem('doflab.wsUrl', url); } catch (e) { }
+    // 先讀網址，再重繪面板：樹莓派閘道（wsUrl）或虛擬設備（vdevUrl）；USB 不用網址
+    const url = src === 'virtual' ? ($('vdevUrl') ? $('vdevUrl').value.trim() : this.vdevUrl()) : src === 'pibridge' && $('wsUrl') ? $('wsUrl').value.trim() : null;
+    if (url) try { localStorage.setItem(src === 'virtual' ? 'doflab.vdevUrl' : 'doflab.wsUrl', url); } catch (e) { }
+    if (src === 'virtual') this.hw.vdevUrl = url;
     this.hw.busy = true; this.renderHw();
     const drv = new info.cls(this.twin, { log: (m, k) => { this.log(k || '', m); }, onLost: why => this.hwLost(why) }, p.board.type);
     try {
-      const r = await drv.connect({ url, port: reuse ? this.hw.lastPort : null });
+      const r = await drv.connect(src === 'usb' ? { port: reuse ? this.hw.lastPort : null } : { url });
       if (drv.port) this.hw.lastPort = drv.port;   // 記住連接埠：之後可以不經選擇視窗直接重新連線（瀏覽器已授權過）
       if (this.sim.running) this.toggleRun();
-      this.hw.driver = drv; this.hw.identity = r.identity; this.hw.checks = {}; this.hw.sawChange = {}; this.hw.lastSeen = {};
-      this.twin.connected(r.deviceId, r.info);
+      this.hw.driver = drv; this.hw.connSrc = src; this.hw.vdevConnUrl = src === 'virtual' ? url : null; this.hw.identity = r.identity; this.hw.checks = {}; this.hw.sawChange = {}; this.hw.lastSeen = {};
+      this.twin.connected(r.deviceId, r.info, { virtual: !!r.virtual });
       this.defineSignals();
       const touch = Object.values(this.analysis.bindings).filter(b => b.role === 'touch').map(b => b.comp);
       this.hw.touchUnsupported = touch.length ? `${touch.join('、')}：觸控腳的真機同步本版未支援，量測會一直是「未知」。請改用「程式」頁產生程式並上傳到板子，直接在板子上測試。` : null;
@@ -414,7 +441,7 @@
   };
   P.hwLost = function (why) {
     if (!this.hw.driver) return; this.hw.driver = null; if (this.sim.running) this.toggleRun();
-    this.twin.disconnected(why); this.hw.identity = null; this.toast('真機連線中斷：已回到模擬模式，未確認的命令不會重送。', 'e'); this.renderAll();
+    this.twin.disconnected(why); this.hw.identity = null; this.toast(`${this.twin.conn.virtual ? '虛擬設備' : '真機'}連線中斷：已回到模擬模式，未確認的命令不會重送。`, 'e'); this.renderAll();
   };
 
   /* ---------- 版本狀態表（依規劃文件的標示） ---------- */

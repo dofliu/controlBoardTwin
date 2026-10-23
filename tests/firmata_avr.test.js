@@ -2,7 +2,7 @@
 // 驗證：辨識、唯讀輸入回報、授權後寫入、PIN_STATE 回讀 ACK、伺服脈寬、斷線不重播。
 const test = require('node:test'); const assert = require('node:assert'); const path = require('path');
 const { DL } = require('./helpers'); require('../src/drivers/drivers.js');
-const { VirtualUno } = require('./avr/avrsim');
+const { VirtualUno } = require('../tools/vdev/avrsim');
 const FIX = f => path.join(__dirname, 'fixtures', f);
 const wait = ms => new Promise(r => setTimeout(r, ms));
 async function until(fn, ms = 5000) { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return true; await wait(20); } return false; }

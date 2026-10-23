@@ -1,6 +1,6 @@
 // 瀏覽器端到端測試與示範錄影專用：把虛擬 Uno（avr8js）包成 Web Serial 連接埠，取代 navigator.serial
 // 晶片和實體板子一樣一直在執行（不論連接埠是否開啟）；有 Optiboot 時可以用 STK500 上傳新程式。
-const { VirtualUno } = require('../tests/avr/avrsim');
+const { VirtualUno } = require('../tools/vdev/avrsim');
 window.DofLabVirtual = {
   install(hexText, opts) {
     opts = opts || {};
