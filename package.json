@@ -1,18 +1,24 @@
 {
   "name": "doflab",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "2.7.0",
+  "description": "DofLab：多板教學平台（Uno／ESP32／Raspberry Pi 4B）— 電路配置、行為積木、程式產生、模擬與數位孿生",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "node build.js",
+    "bundle:e2e": "esbuild e2e/virtual_entry.js --bundle --format=iife --external:fs --outfile=e2e/virtual_uno.bundle.js --log-level=warning",
+    "check": "node -e \"const fs=require('fs');const cp=require('child_process');for(const d of ['src/core','src/ui','src/drivers'])for(const f of fs.readdirSync(d))if(f.endsWith('.js'))cp.execFileSync(process.execPath,['--check',d+'/'+f],{stdio:'inherit'})\"",
+    "test:node": "node --test --test-concurrency=1 tests/*.test.js",
+    "test:py": "python3 -m unittest discover -s tests -p \"test_*.py\"",
+    "test:e2e": "npm run build && npm run bundle:e2e && python3 e2e/e2e.py",
+    "test": "npm run check && npm run build && npm run test:node && npm run test:py"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "UNLICENSED",
   "dependencies": {
     "avr8js": "^0.20.1",
     "blockly": "^10.4.3",
     "esbuild": "^0.20.2",
     "three": "^0.148.0"
-  }
+  },
+  "private": true
 }

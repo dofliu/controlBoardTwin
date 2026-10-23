@@ -1,0 +1,11 @@
+# 依賴與建置產物：npm ci && npm run build 就能重新產生
+node_modules/
+dist/
+e2e/virtual_uno.bundle.js
+# Python
+__pycache__/
+*.pyc
+# 測試截圖、暫存
+/shots/
+*.log
+.DS_Store
