@@ -1,4 +1,4 @@
-# DofLab V2.5 原型
+# DofLab V2.6 原型
 
 從電路配置、行為設計、模擬測試，到真實設備同步的教學與開發平台。本版依《DofLab 規劃文件 v0.1》重新開發。
 
@@ -38,9 +38,28 @@ python3 pi_bridge.py              # 實體 GPIO
 python3 pi_bridge.py --mock       # 沒有樹莓派時，用模擬腳位測試流程
 ```
 
+## 只有一張 ESP32 板子（V2.6）
+
+手邊只有 ESP32 DevKit V1（DOIT，30 腳、板上有藍色 LED 的那種），不需要任何零件也能做三個實驗：
+
+| 實驗 | 用到 | 行為 |
+|---|---|---|
+| **BOOT 鍵切換藍燈** | BOOT 鍵、藍燈 | 每按一下 BOOT，藍燈切換亮滅；序列埠印出訊息 |
+| **觸控檯燈** | D4 觸控腳、藍燈 | 手指碰住 D4 排針時藍燈亮，放開熄滅；序列埠印出「碰到了／放開了」 |
+| **BOOT 慢閃、觸控快閃** | BOOT 鍵、D4 觸控腳、藍燈 | 按住 BOOT 慢閃（每 0.5 秒）、碰住 D4 快閃（每 0.1 秒），兩個都按時快閃 |
+
+做法有兩種：
+
+1. **用 DofLab**：板型選「ESP32 DevKit V1（DOIT）」，開始／實驗挑一個（不用接線），在「觀測」頁按 3D 板子上的 BOOT 鍵或碰 D4 排針試模擬，再到「程式」頁確認並產生程式。
+2. **直接上傳範例**：`dist/examples/esp32-devkit-v1/` 裡有三個實驗產生好的 `.ino`，用 Arduino IDE 打開即可。
+
+Arduino IDE 設定：開發板管理員安裝「esp32 by Espressif Systems」，板子選 **DOIT ESP32 DEVKIT V1**，序列埠監控視窗選 **115200** baud。上傳卡在 `Connecting....` 時，按住 BOOT 直到開始寫入再放開。觸控程式開機時會先量 0.1 秒的基準值，這段時間不要碰 D4。
+
+這三個實驗只在模擬與編譯上驗證，還沒有在實體板子上試過；觸控的門檻（預設比基準低 40 %）可能需要依你的板子調整。
+
 ## 引導實驗
 
-「開始／實驗」列出 15 個現成實驗，每個都鎖定元件與行為，學生只負責接線，完成後依任務清單逐項打勾。
+「開始／實驗」列出 18 個現成實驗，每個都鎖定元件與行為，學生只負責接線，完成後依任務清單逐項打勾。
 
 | 實驗 | 元件 | 行為 | 板型 |
 |---|---|---|---|
@@ -59,6 +78,11 @@ python3 pi_bridge.py --mock       # 沒有樹莓派時，用模擬腳位測試�
 | **停車場柵欄**（V2.5） | 超音波、SG90、電阻、綠 LED | 車子近於 10 cm 時柵欄抬到 90°、綠燈亮 | Uno／ESP32／Pi |
 | **超音波距離指針**（V2.5） | 超音波、SG90 | 60 cm 內伺服角度跟著距離（5 cm → 180°、50 cm → 0°），離開時停在最後位置 | Uno／ESP32／Pi |
 | **倒車雷達（麵包板）**（V2.5） | 超音波、2 電阻、黃紅 LED，插在麵包板 | 近於 40 cm 黃燈閃爍，近於 15 cm 紅燈也亮 | Uno／ESP32／Pi |
+| **BOOT 鍵切換藍燈**（V2.6） | 只用板子 | 每按一下 BOOT 切換藍燈 | ESP32 DevKit V1 |
+| **觸控檯燈**（V2.6） | 只用板子 | 碰住 D4 時藍燈亮 | ESP32 DevKit V1 |
+| **BOOT 慢閃、觸控快閃**（V2.6） | 只用板子 | 按住 BOOT 慢閃、碰住 D4 快閃 | ESP32 DevKit V1 |
+
+表中標「ESP32」的實驗，在 ESP32 DevKit V1 上也能用（腳位由接線助手依 30 腳排針重新建議）。
 
 - Raspberry Pi 沒有類比輸入（ADC），用到光敏模組的實驗不提供 Pi 版。
 - 伺服角度是送出的命令，SG90 類伺服沒有位置回授，畫面的量測欄會標示「無回授」。
@@ -151,9 +175,9 @@ e2e/           Playwright 端到端測試
 ## 測試
 
 ```bash
-node --test --test-concurrency=1 tests/*.test.js     # 90 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
-python3 -m unittest discover -s tests -p "test_*.py" # 16 項（上傳端到端需要 avrdude 與 socat）
-python3 e2e/e2e.py                                   # 136 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic）
+node --test --test-concurrency=1 tests/*.test.js     # 97 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
+python3 -m unittest discover -s tests -p "test_*.py" # 17 項（上傳端到端需要 avrdude 與 socat）
+python3 e2e/e2e.py                                   # 143 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard）
 ```
 
 ### 示範影片

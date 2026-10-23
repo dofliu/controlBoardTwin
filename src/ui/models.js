@@ -6,7 +6,7 @@
 (function (root) {
   const DL = root.DL;
   const T = () => root.THREE;
-  const PIN_TOP = { uno: 0.85, esp32: 0.86, pi4b: 0.86 };   // 端點（插針頂端）高於板面多少
+  const PIN_TOP = { uno: 0.85, esp32: 0.86, esp32doit: 0.86, pi4b: 0.86 };   // 端點（插針頂端）高於板面多少
 
   // 決定性亂數：每次畫出來的走線都一樣
   function rng(seed) { let s = seed >>> 0; return () => ((s = Math.imul(s ^ (s >>> 15), 2246822507) + 0x9e3779b9 >>> 0) / 4294967296); }
@@ -188,13 +188,19 @@
 
   /* ======================= ESP32-DevKitC V4（約 55 × 28 mm） ======================= */
   function esp32(b) {
-    const THREE = T(); const { w, h, t } = b.size; const grp = new THREE.Group();
+    const THREE = T(); const { w, h, t } = b.size; const grp = new THREE.Group(); const doit = b.id === 'esp32doit';
     const P = pcb({
-      w, h, t, color: '#18191b', corner: 0.06, seed: 23, traces: 40, trace: 'rgba(255,255,255,0.07)', via: 'rgba(200,170,90,0.8)',
+      w, h, t, color: doit ? '#141a2b' : '#18191b', corner: 0.06, seed: 23, traces: 40, trace: 'rgba(255,255,255,0.07)', via: 'rgba(200,170,90,0.8)',
       draw(g, px, pz, S) {
         for (const [id, pos] of Object.entries(b.layout)) { const pin = b.pinById[id]; const lbl = pin.kind === 'gpio' ? String(pin.num) : pin.kind === 'gnd' ? 'GND' : pin.label; silk(g, lbl, px(pos.x), pz(pos.z) + (pos.side === 'top' ? 44 : -44), 16, { rot: -Math.PI / 2 }); }
-        silk(g, 'EN', px(w / 2 - 0.85), pz(-0.32), 16); silk(g, 'BOOT', px(w / 2 - 0.85), pz(0.32), 16);
-        silk(g, 'ESP32-DevKitC V4', px(1.15), pz(0.62), 22, { weight: 700 });
+        if (doit) {   // DevKit V1：EN／BOOT 鍵在 USB 兩側，藍燈（GPIO2）與紅色電源燈在旁邊
+          const F = b.features; silk(g, 'EN', px(F.en.x - 0.42), pz(F.en.z), 15); silk(g, 'BOOT', px(F.boot.x - 0.48), pz(F.boot.z), 15);
+          silk(g, 'D2', px(F.led.x - 0.3), pz(F.led.z), 14); silk(g, 'PWR', px(F.pwr.x - 0.32), pz(F.pwr.z), 14);
+          silk(g, 'ESP32 DEVKIT V1 · DOIT', px(0.55), pz(0.62), 20, { weight: 700 });
+        } else {
+          silk(g, 'EN', px(w / 2 - 0.85), pz(-0.32), 16); silk(g, 'BOOT', px(w / 2 - 0.85), pz(0.32), 16);
+          silk(g, 'ESP32-DevKitC V4', px(1.15), pz(0.62), 22, { weight: 700 });
+        }
       }
     });
     grp.add(P.group);
@@ -208,13 +214,27 @@
     mod.position.set(mx - 0.1, t, 0); grp.add(mod);
     // micro-USB、按鈕、USB-UART 晶片、穩壓器、LED
     const usb = box(0.6, 0.27, 0.75, metal(), w / 2 - 0.22, t + 0.135, 0); grp.add(usb);
-    grp.add(tact(w / 2 - 0.85, -0.55, 0.36, '#1a1a1a').translateY(t)); grp.add(tact(w / 2 - 0.85, 0.55, 0.36, '#1a1a1a').translateY(t));
+    const buttons = {};
+    if (doit) {
+      const F = b.features;
+      const en = tact(F.en.x, F.en.z, 0.36, '#1a1a1a'); en.translateY(t); grp.add(en);
+      const bt = tact(F.boot.x, F.boot.z, 0.36, '#1a1a1a'); bt.translateY(t); grp.add(bt); buttons.BOOT = bt.children[2];
+      const uart = chip(0.5, 0.5, 0.09, 'qfn', { label: 'CP2102', labelSize: 60 }); uart.position.set(w / 2 - 1.75, t, 0); grp.add(uart);
+      const pwr = smdLed('#ff3b30', F.pwr.x, F.pwr.z); pwr.position.y = t; grp.add(pwr);
+      const usr = smdLed('#3a7bff', F.led.x, F.led.z); usr.position.y = t; grp.add(usr);
+      const halo = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 10), new THREE.MeshBasicMaterial({ color: 0x4d8dff, transparent: true, opacity: 0.5, depthWrite: false })); halo.position.set(F.led.x, t + 0.1, F.led.z); halo.visible = false; halo.raycast = () => { }; grp.add(halo);   // 亮起時的光暈（SMD LED 很小，不然看不出來）
+      const sm = new THREE.Group(); smd(sm, rng(9), [0.3, -0.7, 1.3, 0.7], 12, ['#2b2b2b', '#b48a4a']); sm.position.y = t; grp.add(sm);
+      headers(grp, b, t, 'male');
+      return { group: grp, leds: { PWR: pwr.userData.lens, USER: usr.userData.lens }, halos: { USER: halo }, buttons, pinTop: t + PIN_TOP.esp32doit };
+    }
+    const en = tact(w / 2 - 0.85, -0.55, 0.36, '#1a1a1a'); en.translateY(t); grp.add(en);
+    const bt = tact(w / 2 - 0.85, 0.55, 0.36, '#1a1a1a'); bt.translateY(t); grp.add(bt); buttons.BOOT = bt.children[2];
     const uart = chip(0.5, 0.5, 0.09, 'qfn', { label: 'USB\nUART', labelSize: 70 }); uart.position.set(w / 2 - 1.7, t, 0.25); grp.add(uart);
     const reg = chip(0.65, 0.35, 0.16, 'sot223'); reg.position.set(w / 2 - 1.75, t, -0.5); grp.add(reg);
     const pwr = smdLed('#ff3b30', w / 2 - 1.25, 0.75); pwr.position.y = t; grp.add(pwr);
     const sm = new THREE.Group(); smd(sm, rng(9), [0.7, -0.75, 1.8, 0.75], 14, ['#2b2b2b', '#b48a4a']); sm.position.y = t; grp.add(sm);
     headers(grp, b, t, 'male');
-    return { group: grp, leds: { PWR: pwr.userData.lens }, pinTop: t + PIN_TOP.esp32 };
+    return { group: grp, leds: { PWR: pwr.userData.lens }, buttons, pinTop: t + PIN_TOP.esp32 };
   }
 
   /* ======================= Raspberry Pi 4 Model B（85 × 56 mm） ======================= */
@@ -264,7 +284,7 @@
     return { group: grp, leds: { PWR: pl.userData.lens, ACT: al.userData.lens }, pinTop: t + PIN_TOP.pi4b };
   }
 
-  function board(b) { return b.id === 'uno' ? uno(b) : b.id === 'esp32' ? esp32(b) : pi4(b); }
+  function board(b) { return b.id === 'uno' ? uno(b) : (b.family || b.id) === 'esp32' ? esp32(b) : pi4(b); }
 
   /* ======================= 元件 ======================= */
   function lathe(points, m, seg) { const THREE = T(); const o = new THREE.Mesh(new THREE.LatheGeometry(points.map(([r, y]) => new THREE.Vector2(r, y)), seg || 28), m); o.castShadow = true; return o; }

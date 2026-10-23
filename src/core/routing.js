@@ -21,7 +21,7 @@
     const [W, H] = r === 90 || r === 270 ? [bh, bw] : [bw, bh];
     out.push({ id: 'board', x0: p.board.pos.x - W / 2 - 0.2, x1: p.board.pos.x + W / 2 + 0.2, z0: p.board.pos.z - H / 2 - 0.2, z1: p.board.pos.z + H / 2 + 0.2 });
     for (const c of p.components) {
-      const def = DL.components[c.type]; if (!def) continue;
+      const def = DL.components[c.type]; if (!def || def.onboard) continue;   // 板載元件在板子上，不佔桌面空間
       const f = def.footprint || { w: 1, d: 1 };
       const cr = ((c.rot % 360) + 360) % 360; const [w, d] = cr === 90 || cr === 270 ? [f.d, f.w] : [f.w, f.d];
       const [ox, oz] = rot(f.cx || 0, f.cz || 0, c.rot || 0);

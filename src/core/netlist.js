@@ -81,6 +81,7 @@
       const def = DL.components[c.type];
       if (!def) { add('unknown', 'unknown_component', `${c.id}（${c.type}）不在元件型錄中：未檢查接線與電氣條件。`, [c.id]); continue; }
       if (def.holder) continue;   // 麵包板本身只負責導通
+      if (def.onboard) { checkOnboard(c, def); continue; }   // 板載元件：不需要接線
       // 同一個元件的兩支腳落在同一個節點：元件被短路（例如電阻直插在同一條導通條上）
       const seen = {}; let shorted = null;
       for (const t of def.terminals) { const n = net(c.id, t.id); if (!n) continue; if (seen[n.id] && !shorted) shorted = [seen[n.id], t]; seen[n.id] = t; }
@@ -202,6 +203,31 @@
       if (board.id === 'pi4b') add('info', 'us_pi_timing', `${c.id}：樹莓派在 Linux 上量回波時間，受排程影響，誤差可能有數公分。`, [c.id]);
     }
 
+    // 板載元件：腳位由板型決定（板載 LED、BOOT 鍵），觸控腳由參數選
+    function checkOnboard(c, def) {
+      const ob = def.onboard; const on = board.onboard || {};
+      if (ob === 'touch') {
+        const pin = board.pinById[c.params.pin];
+        if (!pin || !pin.caps.includes('touch')) { add('error', 'no_touch', `${board.short} ${pin ? `的 ${board.pinLabel(pin)} 不是觸控腳` : '沒有電容式觸控腳'}，${c.id} 無法使用。`, [c.id]); return; }
+        const n = net(c.id, 'X') || netOf['board.' + pin.id];
+        if (n && (n.comps.length || n.power.length || n.gnd.length || (n.bb || []).length)) add('warn', 'touch_wired', `${c.id} 的 ${board.pinLabel(pin)} 還接著其他東西：觸控腳只要用手指碰排針（或接一條空的杜邦線當觸控片）。`, [c.id]);
+        claim(pin, c.id);
+        bindings[c.id] = { comp: c.id, role: 'touch', pin: pin.id, num: pin.num, onboard: true, dropPct: Number(c.params.dropPct), debounceMs: c.params.debounceMs };
+        add('info', 'touch_ok', `${c.id}：用手指碰 ${board.pinLabel(pin)} 的排針；讀值比開機基準低 ${c.params.dropPct} % 判定為碰到。`, [c.id]);
+        return;
+      }
+      const pid = on[ob]; const pin = pid && board.pinById[pid];
+      if (!pin) { add('error', 'no_onboard', `${board.short} 沒有${def.name}：請換成有這個功能的板子（例如 ESP32 DevKit V1），或改用外接元件。`, [c.id]); return; }
+      claim(pin, c.id);
+      if (ob === 'led') {
+        bindings[c.id] = { comp: c.id, role: 'led', pin: pin.id, num: pin.num, via: [], onboard: true };
+        add('info', 'obled_ok', `${c.id}：板載 LED 接在 ${board.pinLabel(pin)}，HIGH 亮；不需要接線。`, [c.id]);
+      } else if (ob === 'boot') {
+        bindings[c.id] = { comp: c.id, role: 'button', pin: pin.id, num: pin.num, pull: 'up', activeLow: true, debounceMs: c.params.debounceMs, onboard: true };
+        add('info', 'boot_ok', `${c.id}：BOOT 鍵接在 ${board.pinLabel(pin)}，放開讀到 HIGH、按下讀到 LOW。重置（EN）時不要按住 BOOT，否則會進入下載模式。`, [c.id]);
+      }
+    }
+
     function checkPSU(c) {
       const nG = net(c.id, 'GND');
       if (nG && !nG.gnd.some(g => !g.external)) add('error', 'psu_no_common_gnd', `${c.id} 的 GND 沒有接到控制板 GND：外部電源與控制板沒有共地，訊號沒有共同參考電位。`, [c.id]);
@@ -235,7 +261,8 @@
         add('error', 'pin_conflict', `${board.pinLabel(pin)} 同時被 ${users.join('、')} 使用。`, users);
         for (const u of users) delete bindings[u];
       }
-      for (const n of pin.notes) add(n.level, 'pin_note', `${board.pinLabel(pin)}：${n.text}`, ['board.' + pinId]);
+      const onlyOnboard = users.every(u => bindings[u] && bindings[u].onboard);   // 板子本身的設計（藍燈接 GPIO2、BOOT 接 GPIO0）：開機模式腳的提醒改由元件說明
+      for (const n of pin.notes) if (!(onlyOnboard && n.level === 'warn')) add(n.level, 'pin_note', `${board.pinLabel(pin)}：${n.text}`, ['board.' + pinId]);
     }
 
     const counts = { error: 0, warn: 0, info: 0, unknown: 0 };

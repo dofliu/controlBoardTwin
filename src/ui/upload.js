@@ -57,7 +57,7 @@
     if (up.method === 'server') {
       const ports = up.ports;
       target = `<div class="row"><select class="inp mono" id="upPort" aria-label="序列埠" style="flex:1 1 180px">${ports && ports.length ? ports.map(x => `<option value="${esc(x.address)}" ${x.address === up.port ? 'selected' : ''}>${esc(x.address)}${x.boards && x.boards.length ? '（' + esc(x.boards.map(b => b.name).join('、')) + '）' : x.label ? '（' + esc(x.label) + '）' : ''}</option>`).join('') : `<option value="">${ports ? '找不到序列埠：請接上板子後重新整理' : '按「重新整理」列出序列埠'}</option>`}</select><button class="btn" id="upPorts" ${up.busy ? 'disabled' : ''}>重新整理</button></div>
-        <p class="hint">由編譯服務所在的電腦上傳：${p.board.type === 'esp32' ? 'ESP32 用 esptool；若沒有自動進入下載模式，上傳開始時按住板子上的 BOOT 鍵。' : 'Uno 用 avrdude。'}</p>`;
+        <p class="hint">由編譯服務所在的電腦上傳：${DL.boardFamily(p.board.type) === 'esp32' ? 'ESP32 用 esptool；若沒有自動進入下載模式，上傳開始時按住板子上的 BOOT 鍵。' : 'Uno 用 avrdude。'}</p>`;
     } else if (up.method === 'browser') target = '<p class="hint">按下後選擇 Uno 的連接埠。瀏覽器會讓板子重置進入開機程式（Optiboot），寫入後逐頁讀回比對。</p>';
     else target = `<div class="row"><input class="inp mono" id="upWs" value="${esc(this.upWsUrl())}" aria-label="樹莓派閘道網址" style="flex:1 1 200px"></div><p class="hint">程式存成樹莓派上的 ~/doflab-deploy/main.py 並執行；輸出會顯示在下面。</p>`;
     const reqHtml = `<ul class="issues">${R.req.map(r => `<li class="${r.ok ? 'info' : 'warn'}"><span class="lv ${r.ok ? 'ok' : 'warn'}">${r.ok ? '已符合' : '未符合'}</span><span>${esc(r.text)}</span></li>`).join('')}</ul>`;
@@ -73,7 +73,11 @@
     const lines = up.method === 'pi' && up.pi.lines.length ? `<pre class="raw" id="upOut">${esc(up.pi.lines.slice(-30).join('\n'))}</pre>` : '';
     const log = up.log.length ? `<ul class="uplog">${up.log.slice(-8).map(l => `<li class="${l.kind}"><span class="mono">${esc(l.t)}</span> ${esc(l.msg)}</li>`).join('')}</ul>` : '';
     const last = up.last ? `<p class="hint" style="color:var(--ok)">${esc(up.last)}</p>` : '';
-    el.innerHTML = mSel + target + reqHtml + action + pr + last + log + lines;
+    // 沒有編譯服務時：複製程式到 Arduino IDE 上傳（Arduino IDE 的板子名稱）
+    const ideBoard = { uno: 'Arduino Uno', esp32: 'ESP32 Dev Module', esp32doit: 'DOIT ESP32 DEVKIT V1' }[p.board.type];
+    const ide = ideBoard ? `<details class="hint" style="margin-top:8px"><summary>沒有編譯服務？用 Arduino IDE 上傳</summary><ol style="margin:6px 0 0 18px;padding:0"><li>按「複製程式」，在 Arduino IDE 開新檔案貼上。</li><li>工具 → 開發板選「${esc(ideBoard)}」${DL.boardFamily(p.board.type) === 'esp32' ? '（需先在開發板管理員安裝 esp32）' : ''}，選擇序列埠，按「上傳」。${DL.boardFamily(p.board.type) === 'esp32' ? '一直停在 Connecting… 時，按住 BOOT 鍵直到開始寫入。' : ''}</li><li>程式有序列埠訊息時，開「序列埠監控視窗」並選 115200 bps。</li></ol><div class="row" style="margin-top:6px"><button class="btn sm" id="upCopyCode" ${(p.code.text || '').trim() ? '' : 'disabled'}>複製程式</button></div></details>` : '';
+    el.innerHTML = mSel + target + reqHtml + action + pr + last + log + lines + ide;
+    const cpc = $('upCopyCode'); if (cpc) cpc.onclick = () => this.copy(p.code.text || '', $('code'));
     el.querySelectorAll('[data-upm]').forEach(b => b.onclick = () => { up.method = b.dataset.upm; up.confirm = null; this.renderUpload(); });
     const bp = $('upPorts'); if (bp) bp.onclick = () => this.upListPorts();
     const ps = $('upPort'); if (ps) ps.onchange = () => { up.port = ps.value; };

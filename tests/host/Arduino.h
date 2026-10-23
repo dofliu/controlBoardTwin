@@ -26,3 +26,9 @@ inline void pinMode(int p,int m){ __mode[p]=m; }
 inline int analogRead(int p){ return __adc[p]; }
 inline long map(long x, long in_min, long in_max, long out_min, long out_max){ return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min; }
 template<class T> inline T constrain(T x, T a, T b){ return x < a ? a : (x > b ? b : x); }
+// ESP32：電容式觸控（讀值越小表示碰得越實）、delay、Serial（印到 stderr："SERIAL <millis> <文字>"）
+extern int __touch[64];
+inline int touchRead(int p){ return __touch[p]; }
+inline void delay(unsigned long ms){ __us += (unsigned long long)ms * 1000; }
+struct __SerialStub { void begin(long){} void println(const char *s){ fprintf(stderr, "SERIAL %lu %s\n", (unsigned long)(__us / 1000), s); } };
+extern __SerialStub Serial;

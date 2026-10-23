@@ -203,7 +203,7 @@ test('保存／載入：往返一致、損壞與不相容檔案明確報錯、v1
 test('引導實驗：可建立、解答可通過檢查；Pi 不支援光控夜燈', () => {
   for (const e of DL.experiments.list) for (const b of DL.boardList) {
     const r = DL.experiments.instantiate(e.id, b);
-    if (!e.boards.includes(b)) { assert.strictEqual(r.ok, false); assert.match(r.msg, /ADC/); continue; }
+    if (!DL.experiments.supports(e, b)) { assert.strictEqual(r.ok, false); assert.match(r.msg, /ADC|BOOT|觸控|LED/); continue; }
     assert.ok(r.project.lock.components && r.project.lock.behavior);
     const s = solved(e.id, b); const a = DL.netlist.analyze(s);
     assert.strictEqual(a.counts.error, 0, `${e.id}/${b}: ` + a.issues.filter(i => i.level === 'error').map(i => i.msg).join(';'));

@@ -50,6 +50,15 @@ class Compile(unittest.TestCase):
             r = post(self.port, "esp32", gen(exp, "esp32"))
             self.assertTrue(r["ok"], exp + "\n" + r["raw"][-1500:]); self.assertEqual(r["toolchain"]["fqbn"], "esp32:esp32:esp32")
 
+    def test_esp32doit_board_only_experiments_compile(self):
+        """ESP32 DevKit V1（esp32:esp32:esp32doit-devkit-v1）：只用板子的三個實驗（板載 LED、BOOT、觸控、Serial）與一般實驗都要真的編譯成功"""
+        r = post(self.port, "esp32doit", gen("board-boot-toggle", "esp32doit"))
+        if not r["ok"] and ("not found" in r["raw"] or "not installed" in r["raw"]):
+            self.skipTest("這台機器沒有 ESP32 core")
+        for exp in ["board-boot-toggle", "board-touch-lamp", "board-two-inputs", "hold-blink", "dist-gauge"]:
+            r = post(self.port, "esp32doit", gen(exp, "esp32doit"))
+            self.assertTrue(r["ok"], exp + "\n" + r["raw"][-1500:]); self.assertEqual(r["toolchain"]["fqbn"], "esp32:esp32:esp32doit-devkit-v1")
+
     def test_esp32_error_has_line_numbers(self):
         code = gen("hold-blink", "esp32").replace("pinMode(BTN1_PIN, INPUT_PULLUP);", "pinMode(BTN1_PIN, INPUT_PULLUPX);")
         r = post(self.port, "esp32", code)

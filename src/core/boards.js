@@ -47,12 +47,14 @@
       adcBits: 10, lang: 'arduino', fqbn: 'arduino:avr:uno', libs: { servo: 'Servo' },
       driver: 'firmata', firmataPins: 20, capabilityVersion: '2026.10-1',
       size: { w: W, h: H, t: 0.16 }, color: '#1d5a8a', pins, layout, layoutExtra,
+      onboard: { led: 'D13' }, features: { led: { x: 29.5 / 10 - W / 2, z: H / 2 - 4.56 } },
       notes: ['5V 邏輯；單一腳位建議 20 mA 以下（絕對上限 40 mA）。']
     };
   })();
 
   /* ---------------- ESP32-DevKitC V4 ---------------- */
-  const esp32 = (() => {
+  // ESP32-WROOM-32 的腳位能力（DevKitC V4 與 DevKit V1 共用）；internal：不在排針上的腳位（例如 DevKit V1 的 GPIO0 只接到 BOOT 鍵）
+  function esp32Pins(internal) {
     const pins = [];
     const strap = { 0: '開機模式腳（strapping），上電時被拉低會進入下載模式。', 2: '開機模式腳（strapping），接到會拉低的元件可能影響上傳。', 5: '開機模式腳（strapping）。', 12: '開機模式腳（MTDI），上電時為高電位會把快閃記憶體電壓設錯，避免接上拉。', 15: '開機模式腳（MTDO），影響開機訊息輸出。' };
     const adc2 = [0, 2, 4, 12, 13, 14, 15, 25, 26, 27];
@@ -68,8 +70,13 @@
       if (adc2.includes(n)) notes.push({ level: 'info', text: `GPIO${n} 屬於 ADC2，開啟 Wi-Fi 時無法讀類比值。` });
       if (n === 1 || n === 3) notes.push({ level: 'warn', text: `GPIO${n} 是 USB 序列埠（${n === 1 ? 'TX0' : 'RX0'}），接元件會干擾上傳與序列監控。` });
       const label = n === 36 ? 'VP' : n === 39 ? 'VN' : n === 1 ? 'TX' : n === 3 ? 'RX' : String(n);
-      pins.push(gpio('GPIO' + n, n, caps, { label: n === 36 || n === 39 || n === 1 || n === 3 ? `${label}(${n})` : 'IO' + n, notes }));
+      if ([4, 0, 2, 15, 13, 12, 14, 27, 33, 32].includes(n)) caps.push('touch');   // 電容式觸控 T0–T9
+      pins.push(gpio('GPIO' + n, n, caps, { label: n === 36 || n === 39 || n === 1 || n === 3 ? `${label}(${n})` : 'IO' + n, notes, internal: (internal || []).includes(n) }));
     }
+    return pins;
+  }
+  const esp32 = (() => {
+    const pins = esp32Pins();
     pins.push(power('3V3', 3.3, { label: '3V3' }), power('5V', 5, { label: '5V', notes: [{ level: 'info', text: '5V 來自 USB，只能供電，不能接到任何 GPIO。' }] }));
     pins.push(gnd('GND1'), gnd('GND2'), gnd('GND3'));
     pins.push(other('EN', 'EN', '重置腳'));
@@ -86,8 +93,38 @@
       id: 'esp32', name: 'ESP32-DevKitC V4', short: 'ESP32', mcu: 'ESP32-WROOM-32', logicV: 3.3, maxPinmA: 20, absMaxPinmA: 40,
       adcBits: 12, lang: 'arduino', fqbn: 'esp32:esp32:esp32', libs: { servo: 'ESP32Servo' },
       driver: 'firmata', firmataPins: 40, capabilityVersion: '2026.10-1',
-      size: { w: W, h: H, t: 0.16 }, color: '#2b2f36', pins, layout,
-      notes: ['3.3V 邏輯，GPIO 不耐 5V。', '真機同步需先上傳 DofLabFirmata 韌體（StandardFirmata 不支援 ESP32）。']
+      size: { w: W, h: H, t: 0.16 }, color: '#2b2f36', pins, layout, family: 'esp32',
+      onboard: { boot: 'GPIO0' }, features: { boot: { x: W / 2 - 0.85, z: 0.55 } },
+      notes: ['3.3V 邏輯，GPIO 不耐 5V。', '真機同步需先上傳 DofLabFirmata 韌體（StandardFirmata 不支援 ESP32）。', '板上有 BOOT 鍵（GPIO0）；沒有可程式控制的 LED。']
+    };
+  })();
+
+  /* ---------------- ESP32 DevKit V1（DOIT，30 腳，ESP32-WROOM-32） ----------------
+   * 板上：藍色 LED 接 GPIO2（HIGH 亮）、紅色電源燈、EN（重置）與 BOOT（GPIO0，按下 = LOW，板上有上拉電阻）兩顆按鍵。
+   * GPIO0 不在排針上；兩排相距 0.9 吋（22.86 mm）。 */
+  const esp32doit = (() => {
+    const pins = esp32Pins([0]).filter(p => ![6, 7, 8, 9, 10, 11].includes(p.num));
+    for (const p of pins) if (p.num === 2) p.notes.push({ level: 'info', text: 'GPIO2 接到板上的藍色 LED（HIGH 亮）。' });
+    for (const p of pins) if (p.num === 0) { p.label = 'GPIO0（BOOT）'; p.notes.push({ level: 'info', text: 'GPIO0 只接到板上的 BOOT 鍵，不在排針上。' }); }
+    pins.push(power('3V3', 3.3, { label: '3V3' }), power('5V', 5, { label: 'VIN', notes: [{ level: 'info', text: 'VIN：接 USB 時約 5 V，只能供電，不能接到任何 GPIO。' }] }));
+    pins.push(gnd('GND1'), gnd('GND2'));
+    pins.push(other('EN', 'EN', '重置腳'));
+    const W = 5.14, H = 2.83;
+    // 天線在左（-X），micro-USB 在右（+X）
+    const top = ['GPIO23', 'GPIO22', 'GPIO1', 'GPIO3', 'GPIO21', 'GPIO19', 'GPIO18', 'GPIO5', 'GPIO17', 'GPIO16', 'GPIO4', 'GPIO2', 'GPIO15', 'GND2', '3V3'];
+    const bottom = ['EN', 'GPIO36', 'GPIO39', 'GPIO34', 'GPIO35', 'GPIO32', 'GPIO33', 'GPIO25', 'GPIO26', 'GPIO27', 'GPIO14', 'GPIO12', 'GPIO13', 'GND1', '5V'];
+    const layout = {};
+    top.forEach((id, i) => { layout[id] = { x: -W / 2 + 1.2 + i * P, z: -1.143, side: 'top' }; });
+    bottom.forEach((id, i) => { layout[id] = { x: -W / 2 + 1.2 + i * P, z: 1.143, side: 'bottom' }; });
+    for (const p of pins) if (p.kind === 'gpio' && p.num !== 0 && p.num !== 36 && p.num !== 39 && p.num !== 1 && p.num !== 3) p.label = 'D' + p.num;   // 板上絲印：D2、D4…
+    return {
+      id: 'esp32doit', name: 'ESP32 DevKit V1（DOIT，30 腳）', short: 'ESP32 V1', mcu: 'ESP32-WROOM-32', logicV: 3.3, maxPinmA: 20, absMaxPinmA: 40,
+      adcBits: 12, lang: 'arduino', fqbn: 'esp32:esp32:esp32doit-devkit-v1', libs: { servo: 'ESP32Servo' },
+      driver: 'firmata', firmataPins: 40, capabilityVersion: '2026.10-1', family: 'esp32',
+      size: { w: W, h: H, t: 0.16 }, color: '#1f2a44', pins, layout,
+      onboard: { led: 'GPIO2', boot: 'GPIO0' },
+      features: { led: { x: W / 2 - 1.05, z: 0.42 }, pwr: { x: W / 2 - 1.05, z: -0.42 }, boot: { x: W / 2 - 0.62, z: 0.66 }, en: { x: W / 2 - 0.62, z: -0.66 } },
+      notes: ['3.3V 邏輯，GPIO 不耐 5V。', '板上：藍色 LED（GPIO2）、BOOT 鍵（GPIO0）、EN 重置鍵；觸控腳（T0 = D4 等）用手指碰排針即可。', '腳位編號與 ESP32-DevKitC 相同，程式可以共用。']
     };
   })();
 
@@ -129,7 +166,7 @@
     };
   })();
 
-  const BOARDS = { uno, esp32, pi4b: pi4 };
+  const BOARDS = { uno, esp32, esp32doit, pi4b: pi4 };
   for (const b of Object.values(BOARDS)) {
     b.pinById = {};
     for (const p of b.pins) b.pinById[p.id] = p;
@@ -138,6 +175,7 @@
   }
 
   DL.boards = BOARDS;
-  DL.boardList = ['uno', 'esp32', 'pi4b'];
+  DL.boardList = ['uno', 'esp32', 'esp32doit', 'pi4b'];
+  DL.boardFamily = id => (BOARDS[id] && BOARDS[id].family) || id;   // 同一顆晶片的不同開發板（ESP32 DevKitC／DevKit V1）共用實驗與建議腳位
   if (typeof module !== 'undefined') module.exports = DL;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

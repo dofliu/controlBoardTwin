@@ -82,7 +82,7 @@ test('五個超音波實驗 × 三種板型：建立、鎖定、接線助手從�
     const p = solved(id, b); const a = DL.netlist.analyze(p);
     assert.ok(a.ok, `${id}/${b}：` + errors(p).map(i => i.msg).join('；'));
     assert.ok(DL.behavior.validate(p, a).ok);
-    const sg = r.experiment.suggest[b];
+    const sg = DL.experiments.suggestFor(r.experiment, b);
     assert.strictEqual(a.bindings.US1.trig, sg.US1); assert.strictEqual(a.bindings.US1.echo, sg['US1.ECHO']);
     assert.strictEqual(a.bindings.US1.vcc, b === 'uno' ? 5 : 3.3);
     const ctx = { confirmedCurrent: true, minDist: 3, farAfterNear: true, nearMin: 5, nearMax: 55, presses: 0, maxHoldMs: 0 };

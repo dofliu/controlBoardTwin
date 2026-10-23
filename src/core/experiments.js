@@ -255,10 +255,71 @@
     ]
   });
 
+  /* ---------- V2.6：只用 ESP32 DevKit V1 板上的東西（藍色 LED、BOOT 鍵、觸控腳、序列埠），不需要任何零件 ---------- */
+  const onlyBoard = { esp32doit: {} };
+  const ONLY_V1_MSG = '只用 ESP32 DevKit V1（DOIT）板上的藍燈（GPIO2）、BOOT 鍵與觸控腳；其他板子沒有這些。';
+  const ONLY_V1 = { uno: ONLY_V1_MSG, esp32: ONLY_V1_MSG, pi4b: ONLY_V1_MSG };
+  const serialTask = (n, what) => ({ text: `在「觀測」頁的序列埠監看看到${what}`, check: (p, a, ctx) => (ctx.serialCount || 0) >= n });
+  EXPERIMENTS.unshift(
+    {
+      id: 'board-boot-toggle', title: 'BOOT 鍵切換藍燈（只用板子）', boards: ['esp32doit'], auto: true, noWiring: true,
+      goal: '不用任何零件：每按一下板上的 BOOT 鍵，板上的藍色 LED 就亮、滅切換一次，並從序列埠印出訊息。上傳到板子後，用 Arduino IDE 的序列埠監控視窗（115200）就看得到。',
+      parts: [['OBLED', 0, 0, 0], ['BOOT', 0, 0, 0]], suggest: onlyBoard,
+      unsupported: ONLY_V1,
+      rules: [
+        { type: 'start', actions: [{ type: 'print', text: 'DofLab：準備好了，按 BOOT 切換藍燈' }] },
+        { type: 'event', event: 'press', comp: 'BOOT1', actions: [{ type: 'toggle', comp: 'OBLED1' }, { type: 'print', text: 'BOOT 按下：切換藍燈' }] }
+      ],
+      tasks: [
+        { text: '不需要接線：配置檢查沒有錯誤（藍燈 GPIO2、BOOT 鍵 GPIO0 都在板子上）', check: (p, a) => a.ok && !!a.bindings.OBLED1 && !!a.bindings.BOOT1 },
+        { text: '在「行為」頁確認行為摘要', check: (p, a, ctx) => !!ctx.confirmedCurrent },
+        { text: '在「觀測」頁按 BOOT 兩次，看藍燈亮、滅切換', check: (p, a, ctx) => ctx.presses >= 2 },
+        serialTask(3, '開始訊息與兩次「BOOT 按下」')
+      ]
+    },
+    {
+      id: 'board-touch-lamp', title: '觸控檯燈（只用板子）', boards: ['esp32doit'], auto: true, noWiring: true,
+      goal: '用手指碰住 D4（GPIO4，觸控 T0）的排針時，板上的藍燈亮；放開就熄滅。碰到與放開時從序列埠印出訊息。開機時不要碰，程式會先量觸控的基準值。',
+      parts: [['OBLED', 0, 0, 0], ['TOUCH', 0, 0, 0, { pin: 'GPIO4' }]], suggest: onlyBoard,
+      unsupported: ONLY_V1,
+      rules: [
+        { type: 'while', cond: { type: 'pressed', comp: 'TOUCH1' }, actions: [{ type: 'led', comp: 'OBLED1', on: true }], onEnd: 'off', restart: 'restart' },
+        { type: 'event', event: 'press', comp: 'TOUCH1', actions: [{ type: 'print', text: '碰到了' }] },
+        { type: 'event', event: 'release', comp: 'TOUCH1', actions: [{ type: 'print', text: '放開了' }] }
+      ],
+      tasks: [
+        { text: '不需要接線：配置檢查沒有錯誤（觸控腳 D4、藍燈 GPIO2）', check: (p, a) => a.ok && !!a.bindings.OBLED1 && !!a.bindings.TOUCH1 },
+        { text: '在「行為」頁確認行為摘要', check: (p, a, ctx) => !!ctx.confirmedCurrent },
+        { text: '在「觀測」頁碰住 D4 超過 1.5 秒，看藍燈亮', check: (p, a, ctx) => ctx.maxHoldMs >= 1500 },
+        serialTask(2, '「碰到了」與「放開了」')
+      ]
+    },
+    {
+      id: 'board-two-inputs', title: 'BOOT 慢閃、觸控快閃（只用板子）', boards: ['esp32doit'], auto: true, noWiring: true,
+      goal: '按住 BOOT 時藍燈慢閃（1 Hz）；碰住 D4 時快閃（5 Hz）；兩個同時時快閃優先，因為排在後面的規則優先。練習兩條「持續成立時」規則搶同一顆燈。',
+      parts: [['OBLED', 0, 0, 0], ['BOOT', 0, 0, 0], ['TOUCH', 0, 0, 0, { pin: 'GPIO4' }]], suggest: onlyBoard,
+      unsupported: ONLY_V1,
+      rules: [
+        { type: 'start', actions: [{ type: 'print', text: '按住 BOOT 慢閃，碰住 D4 快閃' }] },
+        { type: 'while', cond: { type: 'pressed', comp: 'BOOT1' }, actions: [{ type: 'blink', comp: 'OBLED1', onMs: 500, offMs: 500 }], onEnd: 'off', restart: 'restart' },
+        { type: 'while', cond: { type: 'pressed', comp: 'TOUCH1' }, actions: [{ type: 'blink', comp: 'OBLED1', onMs: 100, offMs: 100 }], onEnd: 'off', restart: 'restart' }
+      ],
+      tasks: [
+        { text: '不需要接線：配置檢查沒有錯誤', check: (p, a) => a.ok && !!a.bindings.OBLED1 && !!a.bindings.BOOT1 && !!a.bindings.TOUCH1 },
+        { text: '在「行為」頁確認行為摘要（注意：兩條規則同時控制藍燈）', check: (p, a, ctx) => !!ctx.confirmedCurrent },
+        { text: '在「觀測」頁按住 BOOT 超過 1.5 秒，再碰住 D4，比較閃爍快慢', check: (p, a, ctx) => ctx.maxHoldMs >= 1500 && ctx.presses >= 2 },
+        serialTask(1, '開始訊息')
+      ]
+    }
+  );
+
+  // 這個實驗能不能用在這塊板子：同一個晶片家族（ESP32 DevKitC／DevKit V1）共用
+  const supports = (e, boardId) => e.boards.includes(boardId) || e.boards.includes(DL.boardFamily(boardId));
+  const byBoard = (map, boardId) => map && (map[boardId] || map[DL.boardFamily(boardId)]);
   function instantiate(expId, boardId) {
     const e = EXPERIMENTS.find(x => x.id === expId);
     if (!e) throw new Error('找不到實驗 ' + expId);
-    if (!e.boards.includes(boardId)) return { ok: false, msg: (e.unsupported && e.unsupported[boardId]) || '這個實驗不支援此板型。' };
+    if (!supports(e, boardId)) return { ok: false, msg: (e.unsupported && e.unsupported[boardId]) || '這個實驗不支援此板型。' };
     const p = DL.project.create(boardId, { name: `引導：${e.title}（${DL.boards[boardId].short}）`, origin: { kind: 'guided', experimentId: e.id } });
     for (const part of e.parts) {
       const [type, x, z, rot] = part; const params = typeof x === 'object' ? part[3] : part[4]; let r;
@@ -266,7 +327,7 @@
       else r = DL.project.addComponent(p, type, { x, z }, rot);
       if (params && r.ok) Object.assign(r.comp.params, params);   // 例如 LED 顏色、伺服初始角度
     }
-    const bp = e.boardParams && e.boardParams[boardId];   // 依板型調整的參數（例如 3.3 V 板子用 3.3 V 版超音波模組）
+    const bp = byBoard(e.boardParams, boardId);   // 依板型調整的參數（例如 3.3 V 板子用 3.3 V 版超音波模組）
     if (bp) for (const [id, prm] of Object.entries(bp)) { const c = DL.project.findComp(p, id); if (c) Object.assign(c.params, prm); }
     p.behavior.ir = { rules: JSON.parse(JSON.stringify(e.rules)) };
     p.lock = { components: true, behavior: true, board: true };
@@ -291,7 +352,7 @@
     const B = t => ({ comp: 'board', term: t });
     const gnds = DL.boards[boardId].pins.filter(x => x.kind === 'gnd').map(x => x.id);
     const pw = v => DL.boards[boardId].pins.find(x => x.kind === 'power' && x.volts === v).id;
-    const pin = id => r.experiment.suggest[boardId][id].split('（')[0];
+    const pin = id => byBoard(r.experiment.suggest, boardId)[id].split('（')[0];
     if (r.experiment.auto) {   // 新的實驗：解答由接線助手產生（腳位依實驗建議）
       const res = DL.autowire.apply(p, {});
       if (!res.plan.done) throw new Error(`${expId}/${boardId} 的解答沒有接完：` + res.plan.issues.map(i => i.msg).join(' '));
@@ -370,6 +431,6 @@
     const e = EXPERIMENTS.find(x => x.id === o.experimentId); return e ? Object.assign({ allowHints: true }, e) : null;
   }
 
-  DL.experiments = { list: EXPERIMENTS, instantiate, solved, placeOn, fromTeacher, customTasks, forProject, HOLD_BLINK };
+  DL.experiments = { list: EXPERIMENTS, supports, suggestFor: (e, b) => byBoard(e.suggest, b), instantiate, solved, placeOn, fromTeacher, customTasks, forProject, HOLD_BLINK };
   if (typeof module !== 'undefined') module.exports = DL;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

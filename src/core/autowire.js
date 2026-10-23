@@ -53,10 +53,11 @@
         else { pins[key] = pin.id; used.add(pin.id); return; }
       }
       // 引導實驗的建議腳位（老師自訂的實驗也一樣）優先，其次才是板型的建議順序
-      const sug = exp && exp.suggest && exp.suggest[board.id] && exp.suggest[board.id][key];
-      const list = [...(sug ? [String(sug).split('（')[0]] : []), ...((PREF[board.id] && PREF[board.id][need.role]) || [])];
-      let pick = list.find(id => !used.has(id) && ok(board.pinById[id], need));
-      if (!pick) pick = (board.pins.find(x => !used.has(x.id) && ok(x, need) && quiet(x)) || board.pins.find(x => !used.has(x.id) && ok(x, need)) || {}).id;
+      const sg = exp && exp.suggest && (exp.suggest[board.id] || exp.suggest[DL.boardFamily(board.id)]); const sug = sg && sg[key];
+      const pref = PREF[board.id] || PREF[DL.boardFamily(board.id)];
+      const list = [...(sug ? [String(sug).split('（')[0]] : []), ...((pref && pref[need.role]) || [])];
+      let pick = list.find(id => !used.has(id) && ok(board.pinById[id], need) && !board.pinById[id].internal);
+      if (!pick) pick = (board.pins.find(x => !used.has(x.id) && ok(x, need) && !x.internal && quiet(x)) || board.pins.find(x => !used.has(x.id) && ok(x, need) && !x.internal) || {}).id;
       if (!pick) { issues.push({ level: 'error', comp: c.id, msg: need.role === 'analog' && !board.adcBits ? `${board.short} 沒有類比輸入（ADC），無法接 ${c.id}。` : `${board.short} 沒有可用的${ROLE_NAME[need.role]}腳位給 ${label}。` }); return; }
       pins[key] = pick; used.add(pick);
     };

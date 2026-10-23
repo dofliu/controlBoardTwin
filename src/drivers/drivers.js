@@ -33,7 +33,7 @@
         if (Date.now() - t0 > asked * 1500) { asked++; await this.send([0xF9]); await this.send([0xF0, 0x79, 0xF7]); await this.send([0xF0, 0x6B, 0xF7]); await this.send([0xF0, 0x69, 0xF7]); }
         await sleep(100);
       }
-      if (!this.version) { await this.disconnect(true); throw new Error(`6 秒內沒有收到 Firmata 回應。請確認板子已上傳 ${this.board.id === 'esp32' ? 'DofLabFirmata' : 'DofLabFirmata 或 StandardFirmata'}（57600 bps），而且沒有其他程式占用序列埠。`); }
+      if (!this.version) { await this.disconnect(true); throw new Error(`6 秒內沒有收到 Firmata 回應。請確認板子已上傳 ${(this.board.family || this.board.id) === 'esp32' ? 'DofLabFirmata' : 'DofLabFirmata 或 StandardFirmata'}（57600 bps），而且沒有其他程式占用序列埠。`); }
       const pinCount = this.caps ? this.caps.length : null; const want = this.board.firmataPins;
       const fw = `${this.firmware || 'Firmata'} ${this.version}`;
       const identity = pinCount === want ? { ok: true, msg: `${fw}，回報 ${pinCount} 個腳位，與 ${this.board.name} 相符。` } : { ok: false, msg: `${fw}，回報 ${pinCount ?? '未知'} 個腳位，與 ${this.board.name}（${want} 個）不符。` };

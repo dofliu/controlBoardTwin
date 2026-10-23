@@ -11,7 +11,9 @@
   function defineBlocks(app) {
     if (defined) return; defined = true;
     const B = root.Blockly;
-    const compField = (type, name) => ({ type: 'field_dropdown', name: name || 'COMP', options: () => { const l = app.compIds(type); return l.length ? l.map(id => [id, id]) : [[`（沒有${DL.components[type].name}）`, '']]; } });
+    // type 可以是陣列：按鈕類（按鈕、BOOT 鍵、觸控腳）、LED 類（LED、板載 LED）
+    const compField = (type, name) => ({ type: 'field_dropdown', name: name || 'COMP', options: () => { const ts = [].concat(type); const l = ts.flatMap(t => app.compIds(t)); return l.length ? l.map(id => [id, id]) : [[`（沒有${DL.components[ts[0]].name}）`, '']]; } });
+    const BTNS = ['BTN', 'BOOT', 'TOUCH'], LEDS = ['LED', 'OBLED'];
     const RULE = 24, COND = 168, ACT = 212;
     B.defineBlocksWithJsonArray([
       { type: 'dl_rule_while', message0: '當 %1 持續成立時', args0: [{ type: 'input_value', name: 'COND', check: 'DLCond' }],
@@ -19,16 +21,17 @@
         message2: '條件結束時 %1', args2: [{ type: 'field_dropdown', name: 'END', options: [['熄滅／伺服回到初始角度', 'off'], ['保持最後狀態', 'keep']] }],
         message3: '再次成立時 %1', args3: [{ type: 'field_dropdown', name: 'RESTART', options: [['從頭開始（閃爍先亮）', 'restart'], ['接續先前的閃爍相位', 'resume']] }],
         colour: RULE, tooltip: '條件成立期間持續作用；結束與重新開始的處理都要明示。' },
-      { type: 'dl_rule_event', message0: '每當 %1 %2', args0: [compField('BTN'), { type: 'field_dropdown', name: 'EVENT', options: [['被按下', 'press'], ['被放開', 'release']] }],
+      { type: 'dl_rule_event', message0: '每當 %1 %2', args0: [compField(BTNS), { type: 'field_dropdown', name: 'EVENT', options: [['被按下', 'press'], ['被放開', 'release']] }],
         message1: '執行一次 %1', args1: [{ type: 'input_statement', name: 'DO', check: 'DLAction' }], colour: RULE, tooltip: '去彈跳後的按下／放開瞬間執行一次。' },
       { type: 'dl_rule_start', message0: '程式開始時', message1: '執行一次 %1', args1: [{ type: 'input_statement', name: 'DO', check: 'DLAction' }], colour: RULE },
-      { type: 'dl_cond_pressed', message0: '%1 被按住', args0: [compField('BTN')], output: 'DLCond', colour: COND },
+      { type: 'dl_cond_pressed', message0: '%1 被按住／碰著', args0: [compField(BTNS)], output: 'DLCond', colour: COND },
       { type: 'dl_cond_light', message0: '%1 亮度 %2 %3 %%', args0: [compField('LDR'), { type: 'field_dropdown', name: 'OP', options: [['低於', 'lt'], ['高於', 'gt']] }, { type: 'field_number', name: 'VALUE', value: 30, min: 0, max: 100, precision: 1 }], output: 'DLCond', colour: COND },
       { type: 'dl_cond_distance', message0: '%1 量到的距離 %2 %3 cm', args0: [compField('US'), { type: 'field_dropdown', name: 'OP', options: [['小於', 'lt'], ['大於', 'gt']] }, { type: 'field_number', name: 'VALUE', value: 20, min: 2, max: 400, precision: 1 }], output: 'DLCond', colour: COND, tooltip: '超音波每 60 ms 量一次；沒有回波或超出量程時當成 400 cm。' },
-      { type: 'dl_act_led', message0: '%1 %2', args0: [compField('LED'), { type: 'field_dropdown', name: 'STATE', options: [['亮', 'on'], ['熄滅', 'off']] }], previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT },
-      { type: 'dl_act_toggle', message0: '切換 %1（亮↔滅）', args0: [compField('LED')], previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT, tooltip: '單次動作，只能放在事件或開始規則。' },
-      { type: 'dl_act_blink', message0: '%1 閃爍：亮 %2 ms、暗 %3 ms', args0: [compField('LED'), { type: 'field_number', name: 'ON', value: 500, min: 10, max: 60000, precision: 1 }, { type: 'field_number', name: 'OFF', value: 500, min: 10, max: 60000, precision: 1 }], previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT, tooltip: '只能放在「持續成立時」規則裡；不阻塞，等待期間仍能讀按鈕。' },
+      { type: 'dl_act_led', message0: '%1 %2', args0: [compField(LEDS), { type: 'field_dropdown', name: 'STATE', options: [['亮', 'on'], ['熄滅', 'off']] }], previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT },
+      { type: 'dl_act_toggle', message0: '切換 %1（亮↔滅）', args0: [compField(LEDS)], previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT, tooltip: '單次動作，只能放在事件或開始規則。' },
+      { type: 'dl_act_blink', message0: '%1 閃爍：亮 %2 ms、暗 %3 ms', args0: [compField(LEDS), { type: 'field_number', name: 'ON', value: 500, min: 10, max: 60000, precision: 1 }, { type: 'field_number', name: 'OFF', value: 500, min: 10, max: 60000, precision: 1 }], previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT, tooltip: '只能放在「持續成立時」規則裡；不阻塞，等待期間仍能讀按鈕。' },
       { type: 'dl_act_servo', message0: '%1 命令轉到 %2 °', args0: [compField('SERVO'), { type: 'field_number', name: 'ANGLE', value: 90, min: 0, max: 180, precision: 1 }], previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT, tooltip: '送出的是命令角度；SG90 沒有回授。' },
+      { type: 'dl_act_print', message0: '序列埠印出 %1', args0: [{ type: 'field_input', name: 'TEXT', text: '你好' }], previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT, tooltip: '單次動作（開始或事件規則）；以 115200 bps 送出，最多 60 個字。' },
       { type: 'dl_act_servomap', message0: '%1 角度跟著 %2 的距離', args0: [compField('SERVO'), compField('US', 'SRC')],
         message1: '%1 cm → %2 °、%3 cm → %4 °', args1: [{ type: 'field_number', name: 'IN_MIN', value: 5, min: 2, max: 400, precision: 1 }, { type: 'field_number', name: 'OUT_MIN', value: 180, min: 0, max: 180, precision: 1 }, { type: 'field_number', name: 'IN_MAX', value: 50, min: 2, max: 400, precision: 1 }, { type: 'field_number', name: 'OUT_MAX', value: 0, min: 0, max: 180, precision: 1 }],
         previousStatement: 'DLAction', nextStatement: 'DLAction', colour: ACT, tooltip: '只能放在「持續成立時」規則裡；中間線性換算（與 Arduino 的 map() 相同），超出範圍取端點。' }
@@ -40,7 +43,7 @@
     contents: [
       { kind: 'category', name: '規則', colour: '24', contents: [{ kind: 'block', type: 'dl_rule_while' }, { kind: 'block', type: 'dl_rule_event' }, { kind: 'block', type: 'dl_rule_start' }] },
       { kind: 'category', name: '條件', colour: '168', contents: [{ kind: 'block', type: 'dl_cond_pressed' }, { kind: 'block', type: 'dl_cond_light' }, { kind: 'block', type: 'dl_cond_distance' }] },
-      { kind: 'category', name: '動作', colour: '212', contents: [{ kind: 'block', type: 'dl_act_blink' }, { kind: 'block', type: 'dl_act_led' }, { kind: 'block', type: 'dl_act_toggle' }, { kind: 'block', type: 'dl_act_servo' }, { kind: 'block', type: 'dl_act_servomap' }] }
+      { kind: 'category', name: '動作', colour: '212', contents: [{ kind: 'block', type: 'dl_act_blink' }, { kind: 'block', type: 'dl_act_led' }, { kind: 'block', type: 'dl_act_toggle' }, { kind: 'block', type: 'dl_act_servo' }, { kind: 'block', type: 'dl_act_servomap' }, { kind: 'block', type: 'dl_act_print' }] }
     ]
   };
 
@@ -131,6 +134,7 @@
     if (b.type === 'dl_act_toggle') return { type: 'toggle', comp };
     if (b.type === 'dl_act_blink') return { type: 'blink', comp, onMs: Math.round(Number(b.getFieldValue('ON'))), offMs: Math.round(Number(b.getFieldValue('OFF'))) };
     if (b.type === 'dl_act_servo') return { type: 'servo', comp, angle: Number(b.getFieldValue('ANGLE')) };
+    if (b.type === 'dl_act_print') return { type: 'print', text: String(b.getFieldValue('TEXT') || '') };
     if (b.type === 'dl_act_servomap') { const n = k => Math.round(Number(b.getFieldValue(k))); return { type: 'servoMap', comp, src: b.getFieldValue('SRC') || null, inMin: n('IN_MIN'), inMax: n('IN_MAX'), outMin: n('OUT_MIN'), outMax: n('OUT_MAX') }; }
     return null;
   }
@@ -143,6 +147,7 @@
         const blk = a.type === 'led' ? { type: 'dl_act_led', fields: { COMP: a.comp, STATE: a.on ? 'on' : 'off' } }
           : a.type === 'toggle' ? { type: 'dl_act_toggle', fields: { COMP: a.comp } }
             : a.type === 'blink' ? { type: 'dl_act_blink', fields: { COMP: a.comp, ON: a.onMs, OFF: a.offMs } }
+              : a.type === 'print' ? { type: 'dl_act_print', fields: { TEXT: a.text } }
               : a.type === 'servoMap' ? { type: 'dl_act_servomap', fields: { COMP: a.comp, SRC: a.src, IN_MIN: a.inMin, OUT_MIN: a.outMin, IN_MAX: a.inMax, OUT_MAX: a.outMax } }
                 : { type: 'dl_act_servo', fields: { COMP: a.comp, ANGLE: a.angle } };
         if (!head) head = cur = blk; else { cur.next = { block: blk }; cur = blk; }

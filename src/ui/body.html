@@ -1,6 +1,6 @@
 <header class="bar">
   <div class="wrap">
-    <div class="brand"><span class="logo" aria-hidden="true"></span><b>DofLab</b><span class="ver">V2.5 原型</span></div>
+    <div class="brand"><span class="logo" aria-hidden="true"></span><b>DofLab</b><span class="ver">V2.6 原型</span></div>
     <div class="proj"><input id="projName" aria-label="專案名稱" maxlength="80"><span id="projMeta" class="meta">r0</span></div>
     <div class="status">
       <span class="chip" id="boardChip">—</span>
@@ -163,6 +163,10 @@
       <div class="card">
         <h3>孿生狀態 <span class="muted" style="font-weight:500;letter-spacing:0">五層分開，不混用</span></h3>
         <div class="bd flush twinwrap"><table class="twin"><thead><tr><th>訊號</th><th>模擬</th><th>目標</th><th>命令</th><th>確認 ACK</th><th>量測</th></tr></thead><tbody id="twinRows"></tbody></table></div>
+      </div>
+      <div class="card" id="serialCard" hidden>
+        <h3>序列埠監看 <span class="muted" style="font-weight:500;letter-spacing:0">模擬 · 115200 bps</span></h3>
+        <div class="bd"><pre class="raw" id="serialLog" aria-live="polite"></pre><p class="hint">上傳到板子後，Arduino IDE 的「序列埠監控視窗」選 115200 bps 會看到同樣的文字。</p></div>
       </div>
       <div class="card">
         <h3>真機連線 <span id="drvStatus" class="status-tag st-unver"></span></h3>

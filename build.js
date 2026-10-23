@@ -33,4 +33,16 @@ for (const f of fs.readdirSync(nm('blockly/media'))) if (!/\.(mp3|ogg|wav)$/.tes
 for (const f of ['pi_bridge.py', 'doflab_server.py']) fs.copyFileSync(path.join(__dirname, 'tools', f), path.join(__dirname, 'dist', f));
 fs.mkdirSync(path.join(__dirname, 'dist/firmware/DofLabFirmata'), { recursive: true });
 fs.copyFileSync(path.join(__dirname, 'tools/firmware/DofLabFirmata/DofLabFirmata.ino'), path.join(__dirname, 'dist/firmware/DofLabFirmata/DofLabFirmata.ino'));
+// 只用 ESP32 DevKit V1 板子的範例程式：不需要 DofLab，用 Arduino IDE 打開就能上傳
+{
+  for (const f of ['boards', 'breadboard', 'components', 'project', 'netlist', 'behavior', 'engine', 'codegen', 'experiments', 'autowire']) require(path.join(__dirname, 'src/core', f + '.js'));
+  const DL = globalThis.DL;
+  for (const id of ['board-boot-toggle', 'board-touch-lamp', 'board-two-inputs']) {
+    const r = DL.experiments.solved(id, 'esp32doit'); const p = r.project;
+    p.behavior.confirmed = { inputs: DL.project.inputsHash(p, DL.codegen.GENERATOR_VERSION), at: 'build' };
+    const g = DL.codegen.generate(p); if (!g.ok) throw new Error(id + ' ' + g.blockers.join());
+    const dir = path.join(__dirname, 'dist/examples/esp32-devkit-v1', id); fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, id + '.ino'), g.code.replace(/^\/\/ 輸入雜湊：.*\n/m, ''));
+  }
+}
 console.log('dist/app.html', (fs.statSync(path.join(__dirname, 'dist/app.html')).size / 1024).toFixed(0) + ' KB');

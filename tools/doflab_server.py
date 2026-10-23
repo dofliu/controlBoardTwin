@@ -40,7 +40,7 @@ import time
 from aiohttp import web
 
 HERE = pathlib.Path(__file__).resolve().parent
-FQBN = {"uno": "arduino:avr:uno", "esp32": "esp32:esp32:esp32"}
+FQBN = {"uno": "arduino:avr:uno", "esp32": "esp32:esp32:esp32", "esp32doit": "esp32:esp32:esp32doit-devkit-v1"}
 DIAG_ARDUINO = re.compile(r"^(?P<file>[^:\n]*?sketch\.ino):(?P<line>\d+):(?:(?P<col>\d+):)?\s*(?P<sev>fatal error|error|warning|note):\s*(?P<msg>.*)$", re.M)
 DIAG_PY = re.compile(r'File "[^"]*", line (?P<line>\d+)')
 

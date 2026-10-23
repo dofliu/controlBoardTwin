@@ -12,8 +12,8 @@ test('所有引導實驗 × 三種板型：從沒有接線自動完成，檢查�
     const res = AW.apply(p, {});
     assert.deepStrictEqual(errors(p), [], `${e.id}/${b}`);
     assert.ok(res.plan.done, `${e.id}/${b} 計畫應該已完成：` + JSON.stringify(res.plan.issues));
-    assert.ok(p.connections.length > before);
-    const sg = e.suggest[b]; const bd = bind(p);
+    if (!e.noWiring) assert.ok(p.connections.length > before);   // 只用板子的實驗不需要接線
+    const sg = DL.experiments.suggestFor(e, b); const bd = bind(p);
     for (const [id, want] of Object.entries(sg)) assert.strictEqual(bd[id], want.split('（')[0], `${e.id}/${b} ${id}`);
     assert.ok(p.lock.components, '引導實驗仍然鎖定元件');
   }

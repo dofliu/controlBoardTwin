@@ -714,6 +714,77 @@ async def ultrasonic_flow(p, pi_port):
     check("虛擬 Uno 超音波流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
     await b.close()
 
+async def onboard_flow(p):
+    """V2.6 只用 ESP32 DevKit V1 板子的實驗：在 3D 板子上按 BOOT、碰觸控腳；藍燈、序列埠監看、任務、真實編譯（DOIT 板型）、Arduino IDE 上傳說明"""
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 1000})
+    pg = await ctx.new_page(); errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p")
+    sim = lambda sig: ev(pg, f"(doflab.twin.view('{sig}').simulated||{{}}).v")
+    async def wait_sig(sig, val, ms=3000):
+        try: await pg.wait_for_function(f"(doflab.twin.view('{sig}').simulated||{{}}).v === {json.dumps(val)}", timeout=ms); return True
+        except Exception: return False
+    async def press(comp, hold):
+        pt = await ev(pg, f"doflab.scene.compScreen('{comp}')"); await pg.mouse.move(pt['x'], pt['y']); await pg.mouse.down()
+        ok = await wait_sig(comp + '.pressed', True)
+        await pg.wait_for_timeout(int(hold * 1000)); await pg.mouse.up(); await wait_sig(comp + '.pressed', False); return ok
+    async def open_exp(exp):
+        await pg.click('#btnStart'); await pg.click(f'[data-exp="{exp}"][data-board="esp32doit"]'); await pg.wait_for_timeout(500)
+    async def tasks_done():
+        await pg.click('#simRun'); await pg.click('#t-config'); await pg.wait_for_timeout(250)
+        return await ev(pg, "[document.querySelectorAll('#taskList li.done').length, document.querySelectorAll('#taskList li').length]")
+    # 開始對話框：只用板子的實驗排在最前面，只有 ESP32 V1 可以開
+    await pg.click('#btnStart'); await pg.wait_for_timeout(300)
+    first = await ev(pg, "[...document.querySelectorAll('#expList .exp h4')].slice(0,3).map(h=>h.textContent)")
+    btns = await ev(pg, "[...document.querySelectorAll('#expList .exp')][0].querySelectorAll('button:not([disabled])').length")
+    check("只用板子：三個實驗排在最前面，只能用 ESP32 V1（DevKit V1）開啟；ESP32 V1 也能開原本的 ESP32 實驗", all('只用板子' in t for t in first) and btns == 1 and await ev(pg, "!!document.querySelector('[data-exp=\"hold-blink\"][data-board=\"esp32doit\"]')"), json.dumps([first, btns]))
+    await pg.keyboard.press('Escape')
+    # 1. BOOT 鍵切換藍燈
+    await open_exp('board-boot-toggle')
+    st = await ev(pg, "({ok: doflab.analysis.ok, wires: doflab.p.connections.length, b: doflab.analysis.bindings.OBLED1.pin, boot: doflab.analysis.bindings.BOOT1.pin, warn: doflab.analysis.counts.warn, pal: [...document.querySelectorAll('#palette .pal')].map(x=>x.dataset.type)})")
+    check("BOOT 鍵切換藍燈：不需要接線就通過檢查（藍燈 GPIO2、BOOT GPIO0）；元件清單列出板載 LED、BOOT 鍵、觸控腳", st['ok'] and st['wires'] == 0 and st['b'] == 'GPIO2' and st['boot'] == 'GPIO0' and st['warn'] == 0 and all(t in st['pal'] for t in ['OBLED', 'BOOT', 'TOUCH']), json.dumps(st))
+    await pg.click('#t-behavior'); await pg.wait_for_timeout(500)
+    blk = await ev(pg, "doflab.blocks.ws.getAllBlocks(false).map(b=>b.type)")
+    await pg.click('#btnConfirm'); await pg.click('#t-observe'); await pg.wait_for_timeout(400); await pg.click('#simRun'); await pg.wait_for_timeout(200)
+    p1 = await press('BOOT1', 0.25); l1 = await wait_sig('OBLED1.state', 1)
+    p2 = await press('BOOT1', 0.25); l2 = await wait_sig('OBLED1.state', 0)
+    lit = await ev(pg, "doflab.scene.boardModel.leds.USER.material.emissiveIntensity")
+    await pg.wait_for_timeout(300); serial = await pg.inner_text('#serialLog')
+    await pg.screenshot(path=str(SHOTS / "o1_boot_toggle.png"))
+    d = await tasks_done()
+    check("在 3D 板子上點 BOOT 鍵：藍燈亮 → 滅；序列埠監看依序印出開始訊息與兩次「BOOT 按下」；積木有「序列埠印出」；任務全部完成", 'dl_act_print' in blk and p1 and l1 and p2 and l2 and serial.count('BOOT 按下：切換藍燈') == 2 and '準備好了' in serial and d[0] == d[1], json.dumps([p1, l1, p2, l2, serial, d]))
+    # 2. 觸控檯燈
+    await open_exp('board-touch-lamp')
+    await pg.click('#t-behavior'); await pg.wait_for_timeout(400); summ = await pg.inner_text('#summaryList'); await pg.click('#btnConfirm')
+    await pg.click('#t-observe'); await pg.wait_for_timeout(400); await pg.click('#simRun'); await pg.wait_for_timeout(200)
+    pt = await ev(pg, "doflab.scene.compScreen('TOUCH1')"); await pg.mouse.move(pt['x'], pt['y']); await pg.mouse.down()
+    on = await wait_sig('OBLED1.state', 1); await pg.wait_for_timeout(1700)
+    ring = await ev(pg, "doflab.scene.objects.comps.TOUCH1.userData.ref.touchGlow.visible")
+    await pg.screenshot(path=str(SHOTS / "o2_touch_lamp.png"))
+    await pg.mouse.up(); off = await wait_sig('OBLED1.state', 0)
+    await pg.wait_for_timeout(300); serial = await pg.inner_text('#serialLog')
+    d = await tasks_done()
+    check("觸控檯燈：碰住 D4 排針 → 藍燈亮、排針上出現青色光環；放開 → 熄滅；印出「碰到了」「放開了」；摘要寫「被手指碰著」；任務全部完成", on and ring and off and '碰到了' in serial and '放開了' in serial and '被手指碰著' in summ and d[0] == d[1], json.dumps([on, ring, off, serial, d]))
+    # 3. BOOT 慢閃、觸控快閃：真實編譯（DOIT 板型）與 Arduino IDE 上傳說明
+    await open_exp('board-two-inputs')
+    await pg.click('#t-behavior'); await pg.wait_for_timeout(400); await pg.click('#btnConfirm')
+    await pg.click('#t-observe'); await pg.wait_for_timeout(300); await pg.click('#simRun'); await pg.wait_for_timeout(200)
+    # 用模擬時間算閃爍頻率（軟體渲染時畫面更新較慢，取樣會漏掉轉換）：數事件紀錄裡 OBLED1 的輸出變化
+    async def rate(sel):
+        bx = await pg.locator(sel).bounding_box(); await pg.mouse.move(bx['x'] + 10, bx['y'] + 10); await pg.mouse.down()
+        await pg.wait_for_timeout(500); t0 = await ev(pg, "doflab.sim.time"); await pg.wait_for_timeout(2000); t1 = await ev(pg, "doflab.sim.time")
+        n = await ev(pg, f"doflab.events.filter(e => /^OBLED1 →/.test(e.text) && e.simT > {t0} && e.simT <= {t1}).length")
+        await pg.mouse.up(); await pg.wait_for_timeout(300); return n / ((t1 - t0) / 1000)
+    slow = await rate('[data-hold="BOOT1"]'); fast = await rate('[data-hold="TOUCH1"]')
+    check("BOOT 慢閃、觸控快閃：按住 BOOT 每秒約 2 次轉換（1 Hz）、碰住觸控約 10 次（5 Hz）（以模擬時間計算）", 1.5 <= slow <= 2.6 and 8.5 <= fast <= 11, json.dumps([slow, fast]))
+    await pg.click('#simRun'); await pg.click('#t-code'); await pg.click('#btnGen'); await pg.wait_for_timeout(300)
+    code = await ev(pg, "document.getElementById('code').value")
+    await pg.click('#btnCompile'); await pg.wait_for_function("document.querySelector('#btnCompile').textContent==='編譯'", timeout=240000)
+    badge = await pg.inner_text('#buildBadge'); bb = await pg.inner_text('#buildBody'); up = await ev(pg, "document.getElementById('uploadBody').textContent")
+    await pg.screenshot(path=str(SHOTS / "o3_code.png"))
+    check("BOOT 慢閃、觸控快閃：程式含觸控校正與 Serial.begin(115200)，以 esp32doit-devkit-v1 真實編譯成功；上傳卡片有 Arduino IDE 步驟（DOIT ESP32 DEVKIT V1）", 'touchRead(TOUCH1_PIN)' in code and 'Serial.begin(115200)' in code and '成功' in badge and 'DOIT ESP32 DEVKIT V1' in up, badge + ' | ' + bb[:120])
+    check("只用板子的實驗流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    await b.close()
+
 async def main():
     srv = subprocess.Popen([sys.executable, str(DIST / 'doflab_server.py'), '--port', '8766'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(8766)
     bridge = subprocess.Popen([sys.executable, str(DIST / 'pi_bridge.py'), '--mock', '--port', '8765'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(8765)
@@ -727,6 +798,7 @@ async def main():
             if on('experiments'): await new_experiments(p)
             if on('pi'): bridge = await pi_hw(p, 8765, bridge)
             if on('ultrasonic'): await ultrasonic_flow(p, 8765)
+            if on('onboard'): await onboard_flow(p)
             if on('arm'): await arm_flow(p)
             if on('uno'): await uno_virtual(p)
             if on('upload'): await upload_flow(p)

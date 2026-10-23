@@ -10,6 +10,8 @@
  *   action: { type:'led', comp, on } | { type:'toggle', comp } | { type:'blink', comp, onMs, offMs }
  *           | { type:'servo', comp, angle }
  *           | { type:'servoMap', comp, src, inMin, inMax, outMin, outMax }   伺服角度跟著距離（線性換算，只能放在持續條件）
+ *           | { type:'print', text }      從序列埠印出一行訊息（只能放在開始或事件規則）
+ *   「按鈕類」元件：BTN、BOOT（板載）、TOUCH（觸控腳）；「LED 類」：LED、OBLED（板載）
  *
  * 輸出合成：沒有持續規則作用時，元件維持「鎖存值」（由開始／事件規則設定）；
  * 有持續規則作用時，以排在最後、目前成立的那條規則為準。
@@ -17,8 +19,10 @@
 (function (root) {
   const DL = (root.DL = root.DL || {});
 
-  const ACTION_TYPES = { led: 'LED', toggle: 'LED', blink: 'LED', servo: 'SERVO', servoMap: 'SERVO' };
-  const COND_TYPES = { pressed: 'BTN', light: 'LDR', distance: 'US' };
+  const BUTTONS = ['BTN', 'BOOT', 'TOUCH'], LEDS = ['LED', 'OBLED'];
+  const ACTION_TYPES = { led: LEDS, toggle: LEDS, blink: LEDS, servo: 'SERVO', servoMap: 'SERVO', print: null };
+  const COND_TYPES = { pressed: BUTTONS, light: 'LDR', distance: 'US' };
+  const isTouch = (p, id) => { const c = DL.project.findComp(p, id); return !!(c && c.type === 'TOUCH'); };
   const US_MAX = 400, US_MIN = 2;
 
   function validate(p, analysis) {
@@ -29,16 +33,16 @@
     const comp = id => DL.project.findComp(p, id);
     const refs = new Set();
     const needType = (id, type, where, ri) => {
-      const c = comp(id);
+      const c = comp(id); const types = [].concat(type);
       if (!id) { add('error', `規則 ${ri + 1}：${where}沒有選擇元件。`, ri); return false; }
       if (!c) { add('error', `規則 ${ri + 1}：${where}引用的 ${id} 不在配置中（可能已被刪除）。`, ri); return false; }
-      if (c.type !== type) { add('error', `規則 ${ri + 1}：${where}需要${DL.components[type].name}，但 ${id} 是${DL.components[c.type].name}。`, ri); return false; }
+      if (!types.includes(c.type)) { add('error', `規則 ${ri + 1}：${where}需要${types.map(t => DL.components[t].name).join('或')}，但 ${id} 是${DL.components[c.type].name}。`, ri); return false; }
       refs.add(id); return true;
     };
     const whileTargets = {};
     rules.forEach((r, i) => {
       if (r.type === 'event') {
-        needType(r.comp, 'BTN', '事件', i);
+        needType(r.comp, BUTTONS, '事件', i);
         if (!['press', 'release'].includes(r.event)) add('error', `規則 ${i + 1}：不支援的事件 ${r.event}。`, i);
       } else if (r.type === 'while') {
         if (!r.cond) add('error', `規則 ${i + 1}：持續規則缺少條件。`, i);
@@ -53,7 +57,14 @@
       } else if (r.type !== 'start') add('error', `規則 ${i + 1}：不支援的規則類型 ${r.type}。`, i);
       if (!r.actions || !r.actions.length) add('warn', `規則 ${i + 1}：沒有任何動作。`, i);
       for (const a of r.actions || []) {
-        if (!ACTION_TYPES[a.type]) { add('error', `規則 ${i + 1}：不支援的動作 ${a.type}。`, i); continue; }
+        if (!(a.type in ACTION_TYPES)) { add('error', `規則 ${i + 1}：不支援的動作 ${a.type}。`, i); continue; }
+        if (a.type === 'print') {
+          if (r.type === 'while') add('error', `規則 ${i + 1}：「序列埠印出」是單次動作，不能放在持續條件中（會每個迴圈都印）。`, i);
+          if (typeof a.text !== 'string' || !a.text.trim()) add('error', `規則 ${i + 1}：序列埠訊息不能是空的。`, i);
+          else if (a.text.length > 60) add('error', `規則 ${i + 1}：序列埠訊息最多 60 個字。`, i);
+          else if (/[\x00-\x1f]/.test(a.text)) add('error', `規則 ${i + 1}：序列埠訊息不能包含換行或控制字元。`, i);
+          continue;
+        }
         needType(a.comp, ACTION_TYPES[a.type], '動作', i);
         if (a.type === 'blink') {
           if (r.type !== 'while') add('error', `規則 ${i + 1}：「閃爍」需要持續條件（例如「按住時」），單次事件無法持續閃爍。`, i);
@@ -86,7 +97,7 @@
 
   /* ---------------- 行為摘要（給人確認用） ---------------- */
   function condText(c, p) {
-    if (c.type === 'pressed') { const b = DL.project.findComp(p, c.comp); return `${c.comp} 被按住${b ? `（狀態穩定 ${b.params.debounceMs} ms 後才判定，用來去彈跳）` : ''}`; }
+    if (c.type === 'pressed') { const b = DL.project.findComp(p, c.comp); return `${c.comp} ${b && b.type === 'TOUCH' ? '被手指碰著' : '被按住'}${b ? `（狀態穩定 ${b.params.debounceMs} ms 後才判定，用來去彈跳）` : ''}`; }
     if (c.type === 'light') return `${c.comp} 的亮度${c.op === 'lt' ? '低於' : '高於'} ${c.value} %`;
     if (c.type === 'distance') return `${c.comp} 量到的距離${c.op === 'lt' ? '小於' : '大於'} ${c.value} cm`;
     return '（未知條件）';
@@ -95,6 +106,7 @@
     if (a.type === 'led') return `${a.comp} ${a.on ? '亮' : '熄滅'}`;
     if (a.type === 'toggle') return `切換 ${a.comp}（亮↔滅）`;
     if (a.type === 'servo') return `${a.comp} 命令轉到 ${a.angle}°`;
+    if (a.type === 'print') return `序列埠印出「${a.text}」`;
     if (a.type === 'servoMap') return `${a.comp} 的命令角度跟著 ${a.src} 的距離：${a.inMin} cm → ${a.outMin}°、${a.inMax} cm → ${a.outMax}°（中間線性換算，超出範圍取端點）`;
     if (a.type === 'blink') {
       const T = a.onMs + a.offMs; const hz = 1000 / T;
@@ -108,7 +120,7 @@
     rules.forEach((r, i) => {
       const acts = (r.actions || []).map(a => actionText(a, r.type === 'while')).join('；');
       if (r.type === 'start') lines.push({ n: i + 1, kind: '開始', text: `程式開始時：${acts || '（沒有動作）'}。` });
-      else if (r.type === 'event') lines.push({ n: i + 1, kind: '事件', text: `每當 ${r.comp} ${r.event === 'press' ? '被按下' : '被放開'}（去彈跳後）一次：${acts || '（沒有動作）'}。` });
+      else if (r.type === 'event') lines.push({ n: i + 1, kind: '事件', text: `每當 ${r.comp} ${isTouch(p, r.comp) ? (r.event === 'press' ? '被碰到' : '被放開') : (r.event === 'press' ? '被按下' : '被放開')}（去彈跳後）一次：${acts || '（沒有動作）'}。` });
       else if (r.type === 'while') {
         const blinkRestart = (r.actions || []).some(a => a.type === 'blink');
         const end = r.onEnd === 'off' ? '立即熄滅 LED／伺服回到初始角度' : '保持結束當下的狀態';
@@ -118,15 +130,17 @@
     });
     const init = [];
     for (const c of p.components) {
-      if (c.type === 'LED') init.push(`${c.id} 熄滅`);
+      if (c.type === 'LED' || c.type === 'OBLED') init.push(`${c.id} 熄滅`);
       if (c.type === 'SERVO') init.push(`${c.id} 命令角度 ${c.params.initAngle}°`);
     }
     const notes = ['所有計時都不阻塞：閃爍等待期間仍持續讀取按鈕，放開會在下一個迴圈（約數毫秒內）反應。'];
     if (p.components.some(c => c.type === 'SERVO')) notes.push('伺服角度是送出的命令值；SG90 沒有回授，實際角度未知。');
+    if (p.components.some(c => c.type === 'TOUCH')) notes.push('觸控腳：程式開機時先量基準值（開機時不要碰），之後讀值比基準低到設定的百分比就算碰到。');
+    if (rules.some(r => (r.actions || []).some(a => a.type === 'print'))) notes.push('序列埠訊息以 115200 bps 送出：在 Arduino IDE 的「序列埠監控視窗」選 115200 就看得到。');
     if (p.components.some(c => c.type === 'US')) notes.push('超音波每 60 ms 量一次，規則使用「上一次量到」的距離，所以反應會慢 60–120 ms；沒有回波或超出量程時一律當成 400 cm。');
     return { lines, init, notes };
   }
 
-  DL.behavior = { validate, summarize, condText, actionText, ACTION_TYPES, COND_TYPES, US_MAX, US_MIN, US_PERIOD_MS: 60 };
+  DL.behavior = { validate, summarize, condText, actionText, ACTION_TYPES, COND_TYPES, BUTTONS, LEDS, US_MAX, US_MIN, US_PERIOD_MS: 60 };
   if (typeof module !== 'undefined') module.exports = DL;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

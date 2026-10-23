@@ -61,6 +61,13 @@
   function addComponent(p, type, pos, rot) {
     if (p.lock.components) return { ok: false, msg: '這個引導實驗鎖定了元件清單；請先「複製為自訂專案」。' };
     if (!DL.components[type]) return { ok: false, msg: `未知的元件型號「${type}」，無法加入。` };
+    const ob = DL.components[type].onboard;
+    if (ob) {   // 板載元件：板子要有這個功能；板載 LED 與 BOOT 鍵每塊板子只有一個
+      const bd = DL.boards[p.board.type]; const name = DL.components[type].name;
+      const has = ob === 'touch' ? bd.pins.some(x => x.caps.includes('touch')) : !!(bd.onboard || {})[ob];
+      if (!has) return { ok: false, msg: `${bd.short} 沒有${name}。` };
+      if (ob !== 'touch' && p.components.some(c => c.type === type)) return { ok: false, msg: `${bd.short} 上只有一個${name}，已經在專案裡了。` };
+    }
     const c = { id: nextId(p, type), type, model: DL.components[type].model, params: DL.defaultParams(type), pos: { x: round(pos.x), z: round(pos.z) }, rot: norm(rot || 0) };
     p.components.push(c);
     return { ok: true, comp: c };

@@ -58,6 +58,28 @@
       notes: ['TRIG 收到 10 µs 的高電位脈衝後送出超音波；ECHO 的高電位寬度等於聲波來回的時間（約 58 µs／cm）。', 'ECHO 的高電位約等於 VCC：HC-SR04 接 5 V 時會輸出 5 V，不能直接接到 3.3 V 的 ESP32 或樹莓派。', '量測間隔至少 60 ms；兩顆模組同時量測可能互相干擾。'],
       kind: 'input'
     },
+    /* ---- 板載元件：焊在開發板上，不需要接線（onboard: true）；腳位由板型決定 ---- */
+    OBLED: {
+      type: 'OBLED', prefix: 'OBLED', name: '板載 LED', model: '開發板上的 LED（ESP32 DevKit V1 的藍燈 GPIO2、Uno 的 L 燈 D13）',
+      terminals: [], params: {}, footprint: { w: 0.4, d: 0.4 }, onboard: 'led', kind: 'output',
+      notes: ['不需要接線，板上已經有限流電阻。', '這顆 LED 和排針上的同一個腳位相連：用了板載 LED，那個腳位就不能再接別的元件。']
+    },
+    BOOT: {
+      type: 'BOOT', prefix: 'BOOT', name: 'BOOT 鍵', model: 'ESP32 開發板上的 BOOT 鍵（GPIO0，按下 = LOW）',
+      terminals: [], footprint: { w: 0.4, d: 0.4 }, onboard: 'boot', kind: 'input',
+      params: { debounceMs: { label: '去彈跳時間（ms）', type: 'number', min: 0, max: 500, default: 20 } },
+      notes: ['程式執行中可以當一般按鈕用。', '按住 BOOT 再按 EN（重置）會進入下載模式，這是上傳程式用的；要讓程式正常啟動，重置時不要按 BOOT。']
+    },
+    TOUCH: {
+      type: 'TOUCH', prefix: 'TOUCH', name: '觸控腳', model: 'ESP32 電容式觸控（手指直接碰排針）',
+      terminals: [], footprint: { w: 0.4, d: 0.4 }, onboard: 'touch', kind: 'input',
+      params: {
+        pin: { label: '觸控腳位', type: 'select', options: { GPIO4: 'T0 · GPIO4（D4）', GPIO15: 'T3 · GPIO15（D15）', GPIO13: 'T4 · GPIO13（D13）', GPIO14: 'T6 · GPIO14（D14）', GPIO27: 'T7 · GPIO27（D27）', GPIO33: 'T8 · GPIO33（D33）', GPIO32: 'T9 · GPIO32（D32）' }, default: 'GPIO4' },
+        dropPct: { label: '判定為碰到：讀值比開機基準低幾 %', type: 'number', min: 10, max: 80, default: 40, hint: '開機時不要碰觸控腳，程式會先量基準值。' },
+        debounceMs: { label: '去彈跳時間（ms）', type: 'number', min: 0, max: 500, default: 50 }
+      },
+      notes: ['不需要任何零件：用手指碰排針，或接一條杜邦線當觸控片。', 'touchRead() 的讀值會隨板子、濕度與接線長度改變，所以程式在開機時先量基準值。']
+    },
     SERVO: {
       type: 'SERVO', prefix: 'SERVO', name: '伺服馬達', model: 'SG90 類三線伺服（無位置回授）',
       terminals: [T('GND', 'GND（棕）', -0.254, 2.6, 'gnd'), T('VCC', 'VCC（紅）', 0, 2.6, 'vcc'), T('SIG', 'SIG 訊號（橘）', 0.254, 2.6, 'pwm_in')],

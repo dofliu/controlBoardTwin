@@ -17,7 +17,7 @@
       this.ui = { tab: 'config', selected: null, mode: 'idle', placingType: null, wiringFrom: null, confirm: null };
       this.twin = DL.createTwin();
       this.events = [];
-      this.sim = { running: false, time: 0, speed: 1, engine: null, held: {}, holdStart: {}, maxHoldMs: 0, minLight: 101, maxLight: -1, presses: 0, last: null, dist: {}, minDist: 999, nearMin: 999, nearMax: -1, farAfterNear: false };
+      this.sim = { running: false, time: 0, speed: 1, engine: null, held: {}, holdStart: {}, maxHoldMs: 0, minLight: 101, maxLight: -1, presses: 0, last: null, dist: {}, minDist: 999, nearMin: 999, nearMax: -1, farAfterNear: false, serial: [], serialCount: 0 };
       this.hw = { driver: null, identity: null, checks: {}, sawChange: {}, busy: false };
       this.trace = [];
       this.saved = null;
@@ -60,7 +60,7 @@
       this.ui.selected = null; this.cancelModes();
       this.twin.reset(); this.events = []; this.trace = [];
       this.hw.checks = {}; this.hw.sawChange = {};
-      this.sim.maxHoldMs = 0; this.sim.minLight = 101; this.sim.maxLight = -1; this.sim.presses = 0; this.sim.minDist = 999; this.sim.nearMin = 999; this.sim.nearMax = -1; this.sim.farAfterNear = false;
+      this.sim.maxHoldMs = 0; this.sim.minLight = 101; this.sim.maxLight = -1; this.sim.presses = 0; this.sim.minDist = 999; this.sim.nearMin = 999; this.sim.nearMax = -1; this.sim.farAfterNear = false; this.sim.serialCount = 0;
       this.analysis = DL.netlist.analyze(p);
       this.resetSim();
       this.scene.build(p, this.analysis);
@@ -309,9 +309,14 @@
         PSU: '<svg viewBox="0 0 34 28"><rect x="3" y="6" width="28" height="17" rx="2" fill="#2b6b3a"/><rect x="5" y="9" width="9" height="11" rx="1" fill="#1b1d20"/><rect x="18" y="12" width="11" height="8" rx="1" fill="#1f9a4f"/><circle cx="21" cy="16" r="1.8" fill="#c3c8cc"/><circle cx="26" cy="16" r="1.8" fill="#c3c8cc"/></svg>',
         BB: '<svg viewBox="0 0 34 28"><rect x="2" y="4" width="30" height="20" rx="1.5" fill="#f1efe8" stroke="#c9c5ba"/><path d="M4 7h26M4 21h26" stroke="#d63a32" stroke-width=".8"/><path d="M4 8.6h26M4 19.4h26" stroke="#2b5fc4" stroke-width=".8"/><rect x="2" y="13.4" width="30" height="1.2" fill="#c9c5ba"/>' + [0, 1, 2, 3, 4, 5, 6, 7, 8].map(i => `<rect x="${5 + i * 3}" y="10.6" width="1.2" height="1.2" fill="#444"/><rect x="${5 + i * 3}" y="16.2" width="1.2" height="1.2" fill="#444"/>`).join('') + '</svg>',
         SERVO: '<svg viewBox="0 0 34 28"><rect x="4" y="9" width="20" height="14" rx="1.5" fill="#2f6fbf"/><circle cx="18" cy="9" r="3" fill="#2f6fbf"/><rect x="16" y="6.5" width="15" height="4" rx="2" fill="#f2f2f2"/></svg>',
+        OBLED: '<svg viewBox="0 0 34 28"><rect x="3" y="7" width="28" height="15" rx="2" fill="#141a2b"/><rect x="18" y="12" width="6" height="4" rx="1" fill="#3a7bff"/><circle cx="21" cy="14" r="6" fill="#3a7bff" opacity=".25"/><rect x="7" y="12" width="6" height="4" rx="1" fill="#ff3b30"/></svg>',
+        BOOT: '<svg viewBox="0 0 34 28"><rect x="3" y="7" width="28" height="15" rx="2" fill="#141a2b"/><rect x="11" y="9" width="11" height="11" rx="1.5" fill="#2a2d31"/><circle cx="16.5" cy="14.5" r="3.4" fill="#cfd6dc"/></svg>',
+        TOUCH: '<svg viewBox="0 0 34 28"><rect x="3" y="15" width="28" height="7" rx="1" fill="#141a2b"/><rect x="15" y="9" width="3" height="8" fill="#c9a64b"/><path d="M16.5 3c-2.2 0-3.5 1.6-3.5 3.6V12h7V6.6C20 4.6 18.7 3 16.5 3z" fill="#e8b48f"/><circle cx="16.5" cy="12" r="6.5" fill="none" stroke="#31c3c7" stroke-width="1.4"/></svg>',
         US: '<svg viewBox="0 0 34 28"><rect x="1.5" y="7" width="31" height="14" rx="1.5" fill="#1f62a8"/><circle cx="9.5" cy="14" r="5.6" fill="#c9ced3"/><circle cx="9.5" cy="14" r="3.6" fill="#3a3f45"/><circle cx="24.5" cy="14" r="5.6" fill="#c9ced3"/><circle cx="24.5" cy="14" r="3.6" fill="#3a3f45"/><path d="M14 23v4M16 23v4M18 23v4M20 23v4" stroke="#c9a64b" stroke-width="1.2"/></svg>'
       };
-      el.innerHTML = Object.values(DL.components).map(d => `<button class="pal" data-type="${d.type}" ${locked ? 'disabled' : ''} aria-pressed="${this.ui.placingType === d.type}">${icons[d.type] || ''}<span><b>${d.name}</b><small>${esc(d.model)}</small></span></button>`).join('') + (locked ? '<p class="hint">引導實驗鎖定了元件清單。</p>' : '');
+      const bd = DL.boards[this.p.board.type];
+      const fits = d => !d.onboard || (d.onboard === 'touch' ? bd.pins.some(x => x.caps.includes('touch')) : !!(bd.onboard || {})[d.onboard]);   // 只列出這塊板子有的板載元件
+      el.innerHTML = Object.values(DL.components).filter(fits).map(d => `<button class="pal" data-type="${d.type}" ${locked ? 'disabled' : ''} aria-pressed="${this.ui.placingType === d.type}">${icons[d.type] || ''}<span><b>${d.name}</b><small>${esc(d.model)}</small></span></button>`).join('') + (locked ? '<p class="hint">引導實驗鎖定了元件清單。</p>' : '');
       el.querySelectorAll('.pal').forEach(b => b.addEventListener('pointerdown', e => this.paletteDown(e, b.dataset.type)));
     }
     // 從清單拖到場景（滑鼠與觸控共用）；沒有移動就視為「先選元件、再點位置」
@@ -408,7 +413,7 @@
       $('wireList').querySelectorAll('li.ins').forEach(li => li.onclick = e => { if (e.target.dataset.unmount) return; this.ui.selected = { kind: 'comp', id: li.dataset.comp }; this.renderInspector(); this.renderWires(); });
       $('wireList').querySelectorAll('li[data-id]').forEach(li => li.onclick = e => { if (e.target.dataset.del) { DL.project.removeConnection(p, e.target.dataset.del); this.ui.selected = null; this.changed('circuit', `已移除 ${e.target.dataset.del}`); return; } this.ui.selected = { kind: 'wire', id: li.dataset.id }; this.renderInspector(); this.renderWires(); });
     }
-    taskCtx() { return { confirmedCurrent: this.confirmState() === 'current', maxHoldMs: this.sim.maxHoldMs, minLight: this.sim.minLight, maxLight: this.sim.maxLight, minDist: this.sim.minDist, nearMin: this.sim.nearMin, nearMax: this.sim.nearMax, farAfterNear: this.sim.farAfterNear, presses: this.sim.presses, armConfirmed: !!(this.p.arm && this.armConfirmState() === 'current'), armSawInvalid: !!(this.arm && this.arm.sawInvalid) }; }
+    taskCtx() { return { confirmedCurrent: this.confirmState() === 'current', maxHoldMs: this.sim.maxHoldMs, minLight: this.sim.minLight, maxLight: this.sim.maxLight, minDist: this.sim.minDist, nearMin: this.sim.nearMin, nearMax: this.sim.nearMax, farAfterNear: this.sim.farAfterNear, serialCount: this.sim.serialCount || 0, presses: this.sim.presses, armConfirmed: !!(this.p.arm && this.armConfirmState() === 'current'), armSawInvalid: !!(this.arm && this.arm.sawInvalid) }; }
     renderTasks() {
       const p = this.p; const card = $('taskCard');
       const e = p.origin.kind === 'guided' && DL.experiments.forProject(p);
@@ -418,7 +423,7 @@
       $('taskGoal').textContent = e.goal;
       $('taskCount').textContent = `${done.filter(Boolean).length} / ${done.length}`;
       $('taskList').innerHTML = e.tasks.map((t, i) => `<li class="${done[i] ? 'done' : ''}">${esc(t.text)}</li>`).join('');
-      const sg = e.suggest && e.suggest[p.board.type]; const bd = DL.boards[p.board.type];
+      const sg0 = e.custom ? e.suggest && e.suggest[p.board.type] : DL.experiments.suggestFor(e, p.board.type); const sg = sg0 && Object.keys(sg0).length ? sg0 : null; const bd = DL.boards[p.board.type];
       $('taskSuggest').textContent = sg ? (e.custom && e.custom.strictPins ? '指定腳位：' : '建議腳位：') + Object.entries(sg).map(([k, v]) => `${k.replace(/\.ECHO$/, ' ECHO')}${p.components.some(c => c.id === k && c.type === 'US') ? ' TRIG' : ''} → ${bd.pinById[v] ? bd.pinLabel(bd.pinById[v]) : v}`).join('、') + (e.custom && e.custom.strictPins ? '。' : '。其他相容腳位也可以。') : '';
     }
 
@@ -597,7 +602,7 @@
 
     /* =========================== 開始對話框、引導實驗 =========================== */
     openStart() {
-      $('expList').innerHTML = DL.experiments.list.map(e => `<div class="exp"><h4>${esc(e.title)}</h4><p>${esc(e.goal)}</p><div class="row">${DL.boardList.map(b => e.boards.includes(b) ? `<button class="btn sm" data-exp="${e.id}" data-board="${b}">${DL.boards[b].short}</button>` : `<button class="btn sm" disabled title="${esc((e.unsupported || {})[b] || '不支援')}">${DL.boards[b].short}</button>`).join('')}</div>${Object.values(e.unsupported || {}).map(u => `<p>${esc(u)}</p>`).join('')}</div>`).join('');
+      $('expList').innerHTML = DL.experiments.list.map(e => `<div class="exp"><h4>${esc(e.title)}</h4><p>${esc(e.goal)}</p><div class="row">${DL.boardList.map(b => DL.experiments.supports(e, b) ? `<button class="btn sm" data-exp="${e.id}" data-board="${b}">${DL.boards[b].short}</button>` : `<button class="btn sm" disabled title="${esc((e.unsupported || {})[b] || '不支援')}">${DL.boards[b].short}</button>`).join('')}</div>${[...new Set(Object.values(e.unsupported || {}))].map(u => `<p>${esc(u)}</p>`).join('')}</div>`).join('');
       $('expList').querySelectorAll('[data-exp]').forEach(b => b.onclick = () => { const r = DL.experiments.instantiate(b.dataset.exp, b.dataset.board); if (!r.ok) { this.toast(r.msg, 'e'); return; } $('dlgStart').close(); this.load(r.project, { note: '依右側「引導任務」完成接線，再到「行為」確認、到「觀測」模擬。' }); this.setTab('config'); });
       if (this.renderMyExps) this.renderMyExps();
       $('newList').innerHTML = DL.boardList.map(b => `<button class="btn" data-new="${b}">新專案 · ${DL.boards[b].name}</button>`).join('');

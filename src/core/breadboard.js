@@ -100,7 +100,7 @@
   }
   // 元件放下或旋轉後呼叫：在麵包板上就插入；離開麵包板就拔出
   function settle(p, compId) {
-    const c = DL.project.findComp(p, compId); if (!c || c.type === 'BB') return { changed: false };
+    const c = DL.project.findComp(p, compId); if (!c || c.type === 'BB' || (DL.components[c.type] || {}).onboard) return { changed: false };
     const was = mountOf(p, compId);
     const boards = p.components.filter(x => x.type === 'BB');
     let fail = null;

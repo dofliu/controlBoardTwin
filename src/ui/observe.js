@@ -4,13 +4,15 @@
   const $ = id => document.getElementById(id);
   const P = App.prototype;
 
-  const sigOf = c => ({ BTN: c.id + '.pressed', LDR: c.id + '.level', LED: c.id + '.state', SERVO: c.id + '.angle', US: c.id + '.distance' }[c.type]);
-  const INPUTS = ['BTN', 'LDR', 'US'];
+  const sigOf = c => ({ BTN: c.id + '.pressed', BOOT: c.id + '.pressed', TOUCH: c.id + '.pressed', LDR: c.id + '.level', LED: c.id + '.state', OBLED: c.id + '.state', SERVO: c.id + '.angle', US: c.id + '.distance' }[c.type]);
+  const INPUTS = ['BTN', 'BOOT', 'TOUCH', 'LDR', 'US'];
+  const isBtn = c => ['BTN', 'BOOT', 'TOUCH'].includes(c.type), isLed = c => ['LED', 'OBLED'].includes(c.type);
   const US_FAR = 400;   // 沒有回波／超出量程
   const fmt = (c, v) => {
     if (v === null || v === undefined) return '—';
-    if (c.type === 'BTN') return v ? '按下' : '放開';
-    if (c.type === 'LED') return v ? '亮' : '滅';
+    if (c.type === 'TOUCH') return v ? '碰到' : '放開';
+    if (isBtn(c)) return v ? '按下' : '放開';
+    if (isLed(c)) return v ? '亮' : '滅';
     if (c.type === 'SERVO') return Math.round(v) + '°';
     if (c.type === 'LDR') return Math.round(v) + ' %';
     if (c.type === 'US') return v >= US_FAR ? '沒有回波（≥ 400 cm）' : Math.round(v) + ' cm';
@@ -32,7 +34,7 @@
     }
   };
   P.resetSim = function () {
-    this.sim.running = false; this.sim.time = 0; this.sim.acc = 0; this.sim.last = null;
+    this.sim.running = false; this.sim.time = 0; this.sim.acc = 0; this.sim.last = null; this.sim.serial = []; this._serialDirty = true;
     this.sim.engine = DL.createEngine(this.p);
     this.sim.light = this.sim.light || {};
     for (const c of this.p.components) if (c.type === 'LDR' && this.sim.light[c.id] === undefined) this.sim.light[c.id] = 60;
@@ -41,7 +43,7 @@
     this.defineSignals();
     const out = this.sim.engine.snapshot().out;
     const armIds = this.armServoIds ? this.armServoIds() : [];
-    for (const c of this.p.components) { const s = sigOf(c); if (!s || armIds.includes(c.id)) continue; if (c.type === 'BTN') this.twin.simulate(s, !!this.sim.held[c.id]); else if (c.type === 'LDR') this.twin.simulate(s, this.sim.light[c.id]); else if (c.type === 'US') this.twin.simulate(s, this.sim.dist[c.id]); else this.twin.simulate(s, out[c.id]); }
+    for (const c of this.p.components) { const s = sigOf(c); if (!s || armIds.includes(c.id)) continue; if (isBtn(c)) this.twin.simulate(s, !!this.sim.held[c.id]); else if (c.type === 'LDR') this.twin.simulate(s, this.sim.light[c.id]); else if (c.type === 'US') this.twin.simulate(s, this.sim.dist[c.id]); else this.twin.simulate(s, out[c.id]); }
     if (this.ui && $('simRun')) { $('simRun').textContent = '▶ 執行'; $('simRun').classList.add('primary'); }
   };
   P.toggleRun = function () {
@@ -69,7 +71,7 @@
       this.sim.time++;
       const t = this.sim.time;
       for (const c of p.components) {
-        if (c.type === 'BTN') {
+        if (isBtn(c)) {
           if (mode === 'sim') e.setButton(c.id, !!this.sim.held[c.id]);
           else { const s = this.twin.view(c.id + '.pressed'); e.setButton(c.id, s.quality === 'ok' ? !!(s.measured && s.measured.v) : false); }
         } else if (c.type === 'LDR') {
@@ -81,7 +83,10 @@
         }
       }
       const r = e.tick(t);
-      for (const ev of r.events) this.log(ev.kind === 'output' ? '' : 's', ev.text, t);
+      for (const ev of r.events) {
+        if (ev.kind === 'serial') { this.serialLine(ev.text, t); continue; }
+        this.log(ev.kind === 'output' ? '' : 's', ev.text, t);
+      }
       for (const c of p.components) {
         const s = sigOf(c); if (!s || !(c.id in r.out) || armIds.includes(c.id)) continue;   // 手臂關節的伺服由手臂分頁控制
         const v = r.out[c.id];
@@ -94,7 +99,7 @@
         }
       }
       for (const c of p.components) {
-        if (c.type === 'BTN' && mode === 'sim') this.twin.simulate(c.id + '.pressed', !!this.sim.held[c.id]);
+        if (isBtn(c) && mode === 'sim') this.twin.simulate(c.id + '.pressed', !!this.sim.held[c.id]);
         if (c.type === 'LDR' && mode === 'sim') this.twin.simulate(c.id + '.level', this.sim.light[c.id]);
         if (c.type === 'US' && mode === 'sim') this.twin.simulate(c.id + '.distance', this.sim.dist[c.id]);
       }
@@ -119,6 +124,20 @@
     if (this.sim.running) this.noteDistance(cm);
   };
 
+  // 序列埠監看（模擬）：產生的程式用 Serial.println 印出同樣的文字
+  P.serialLine = function (text, t) {
+    const s = this.sim; s.serial = s.serial || []; s.serial.push({ t, text }); if (s.serial.length > 200) s.serial.shift(); s.serialCount = (s.serialCount || 0) + 1;
+    this.log('s', `序列埠：${text}`, t); this._serialDirty = true;
+  };
+  P.renderSerial = function () {
+    const card = $('serialCard'); if (!card) return;
+    const used = (this.p.behavior.ir.rules || []).some(r => (r.actions || []).some(a => a.type === 'print'));
+    card.hidden = !used; if (!used) return;
+    const el = $('serialLog'); const lines = (this.sim.serial || []).slice(-60);
+    el.textContent = lines.length ? lines.map(l => `[${(l.t / 1000).toFixed(3)}] ${l.text}`).join('\n') : '（還沒有訊息：按「▶ 執行」開始模擬）';
+    el.scrollTop = el.scrollHeight; this._serialDirty = false;
+  };
+
   /* ---------- 每幀 ---------- */
   P.frame = function () {
     const now = performance.now();
@@ -135,7 +154,7 @@
     if (this.scene.ok) { this.scene.setVis(this.visState()); this.scene.frame(); }
     if (this.ui.tab === 'observe') {
       this.drawTrace(now);
-      if (!this._lastObs || now - this._lastObs > 120) { this._lastObs = now; this.renderTwin(); this.renderEventsIfDirty(); $('simTime').textContent = `t = ${(this.sim.time / 1000).toFixed(3)} s`; this.renderHwLive(); }
+      if (!this._lastObs || now - this._lastObs > 120) { this._lastObs = now; this.renderTwin(); this.renderEventsIfDirty(); if (this._serialDirty) this.renderSerial(); $('simTime').textContent = `t = ${(this.sim.time / 1000).toFixed(3)} s`; this.renderHwLive(); }
     }
     if (!this._lastTask || now - this._lastTask > 500) { this._lastTask = now; if (this.p.origin.kind === 'guided') this.renderTasks(); }
   };
@@ -147,27 +166,29 @@
       const s = sigOf(c); if (!s) continue; const v = this.twin.view(s);
       if (mode === 'sim') {
         const val = v.simulated ? v.simulated.v : null;
-        vis[c.id] = c.type === 'BTN' ? { pressed: !!this.sim.held[c.id], tag: this.ui.tab === 'observe' ? { cls: 'sim', text: '模擬' } : null }
-          : c.type === 'LED' ? { on: !!val, tag: this.ui.tab === 'observe' ? { cls: 'sim', text: '模擬' } : null }
+        vis[c.id] = isBtn(c) ? { pressed: !!this.sim.held[c.id], tag: this.ui.tab === 'observe' ? { cls: 'sim', text: '模擬' } : null }
+          : isLed(c) ? { on: !!val, tag: this.ui.tab === 'observe' ? { cls: 'sim', text: '模擬' } : null }
             : c.type === 'SERVO' ? { angle: val, tag: this.ui.tab === 'observe' ? { cls: 'sim', text: '模擬命令角度' } : null }
               : c.type === 'US' ? { dist: this.ui.tab === 'observe' ? this.sim.dist[c.id] : null, tag: this.ui.tab === 'observe' ? { cls: 'sim', text: `模擬 ${fmt(c, this.sim.dist[c.id])}` } : null }
               : { light: this.sim.light[c.id], tag: this.ui.tab === 'observe' ? { cls: 'sim', text: `模擬 ${this.sim.light[c.id]}%` } : null };
         continue;
       }
       if (c.type === 'US') { const q = v.quality; const m = v.measured; vis[c.id] = { dist: q === 'ok' && m ? m.v : null, tag: { cls: q === 'ok' ? 'meas' : q === 'stale' ? 'stale' : 'unk', text: q === 'ok' ? `量測 ${fmt(c, m.v)}` : q === 'stale' ? '量測已過期' : '未知' } }; continue; }
-      if (c.type === 'BTN' || c.type === 'LDR') {
+      if (isBtn(c) || c.type === 'LDR') {
         const q = v.quality; const m = v.measured;
-        vis[c.id] = c.type === 'BTN' ? { pressed: q === 'ok' && m && m.v, tag: { cls: q === 'ok' ? 'meas' : q === 'stale' ? 'stale' : 'unk', text: q === 'ok' ? '量測' : q === 'stale' ? '量測已過期' : '未知' } }
+        vis[c.id] = isBtn(c) ? { pressed: q === 'ok' && m && m.v, tag: { cls: q === 'ok' ? 'meas' : q === 'stale' ? 'stale' : 'unk', text: q === 'ok' ? '量測' : q === 'stale' ? '量測已過期' : '未知' } }
           : { light: m ? m.v : 50, tag: { cls: q === 'ok' ? 'meas' : q === 'stale' ? 'stale' : 'unk', text: q === 'ok' ? `量測 ${Math.round(m.v)}%` : '未知' } };
       } else {
         const a = v.ack, cmd = v.commanded; const has = mode === 'hw-control' && (a || cmd);
         const val = a ? a.v : cmd ? cmd.v : null;
-        if (c.type === 'LED') vis[c.id] = has ? { on: !!val, dim: !a, tag: a ? { cls: 'ack', text: '已確認（非實測）' } : { cls: 'cmd', text: '命令未確認' } } : { on: null, unknown: true, tag: { cls: 'unk', text: '未知：無回授' } };
+        if (isLed(c)) vis[c.id] = has ? { on: !!val, dim: !a, tag: a ? { cls: 'ack', text: '已確認（非實測）' } : { cls: 'cmd', text: '命令未確認' } } : { on: null, unknown: true, tag: { cls: 'unk', text: '未知：無回授' } };
         else vis[c.id] = has ? { angle: val, tag: { cls: a ? 'ack' : 'cmd', text: `命令 ${Math.round(val)}°（非實測）` } } : { angle: null, tag: { cls: 'unk', text: '角度未知' } };
       }
     }
     // 板上 L 燈（Uno D13）：跟著接在 D13 的 LED 輸出
-    const l13 = Object.values(this.analysis.bindings).find(b => b.pin === 'D13' && b.role === 'led');
+    // 板上的 LED（Uno 的 L 燈 D13、DevKit V1 的藍燈 GPIO2）：跟著接在那個腳位的 LED 輸出
+    const ledPin = (DL.boards[this.p.board.type].onboard || {}).led;
+    const l13 = ledPin && Object.values(this.analysis.bindings).find(b => b.pin === ledPin && b.role === 'led');
     vis.__board = { L: !!(l13 && vis[l13.comp] && vis[l13.comp].on) };
     return vis;
   };
@@ -178,7 +199,7 @@
     const p = this.p; const host = $('simInputs'); if (!host) return;
     const items = [];
     for (const c of p.components) {
-      if (c.type === 'BTN') items.push(`<div class="in"><span class="mono" style="font-weight:700">${c.id}</span><button class="btn hold" data-hold="${c.id}" aria-pressed="${!!this.sim.held[c.id]}" ${this.twin.mode !== 'sim' ? 'disabled' : ''}>按住 ${c.id}</button></div>`);
+      if (isBtn(c)) { const bd = DL.boards[p.board.type]; const lab = c.type === 'TOUCH' ? `碰住 ${bd.pinById[c.params.pin] ? bd.pinLabel(bd.pinById[c.params.pin]) : c.id}` : c.type === 'BOOT' ? '按住 BOOT' : `按住 ${c.id}`; items.push(`<div class="in"><span class="mono" style="font-weight:700">${c.id}</span><button class="btn hold" data-hold="${c.id}" aria-pressed="${!!this.sim.held[c.id]}" ${this.twin.mode !== 'sim' ? 'disabled' : ''}>${esc(lab)}</button></div>`); }
       if (c.type === 'US') { const d = this.sim.dist[c.id]; items.push(`<div class="in"><label class="mono" style="font-weight:700" for="us-${c.id}">${c.id} 前方物體 <span id="usv-${c.id}">${d >= US_FAR ? '沒有物體' : d + ' cm'}</span></label><input type="range" id="us-${c.id}" min="2" max="200" value="${Math.min(200, d)}" ${this.twin.mode !== 'sim' ? 'disabled' : ''}><div class="row"><button class="btn sm" data-usnear="${c.id}" ${this.twin.mode !== 'sim' ? 'disabled' : ''}>靠近（8 cm）</button><button class="btn sm" data-usfar="${c.id}" ${this.twin.mode !== 'sim' ? 'disabled' : ''}>移走物體（沒有回波）</button></div></div>`); }
       if (c.type === 'LDR') items.push(`<label class="in" for="ldr-${c.id}"><span class="mono" style="font-weight:700">${c.id} 亮度 <span id="ldrv-${c.id}">${this.sim.light[c.id]}</span> %</span><input type="range" id="ldr-${c.id}" min="0" max="100" value="${this.sim.light[c.id]}" ${this.twin.mode !== 'sim' ? 'disabled' : ''}></label>`);
     }
@@ -196,15 +217,15 @@
     host.querySelectorAll('[data-usfar]').forEach(b => b.onclick = () => this.setDistance(b.dataset.usfar, US_FAR));
     host.querySelectorAll('input[id^="ldr-"]').forEach(r => r.oninput = () => { const id = r.id.slice(4); this.sim.light[id] = +r.value; $('ldrv-' + id).textContent = r.value; this.twin.simulate(id + '.level', +r.value); if (this.sim.running) { this.sim.minLight = Math.min(this.sim.minLight, +r.value); this.sim.maxLight = Math.max(this.sim.maxLight, +r.value); } });
     $('simNote').textContent = this.twin.mode === 'sim' ? '' : this.twin.mode === 'hw-read' ? '唯讀：輸入來自真機量測，行為只推算、不送命令。' : '受控寫入：行為的輸出會送往真機。';
-    $('hintObserve').textContent = this.twin.mode === 'sim' ? (p.components.some(c => c.type === 'US') ? '模擬時，用下方的拉桿移動超音波前方的物體（橘色板；畫面上的距離是壓縮過的示意，實際數值看標籤）' : '模擬時，按住場景中的按鈕即可按下') : '真機模式：請操作實體按鈕或移動實體物體；畫面顯示量測到的狀態';
-    this.renderTwin(); this.renderHw(); this.renderEventsIfDirty(true);
+    $('hintObserve').textContent = this.twin.mode === 'sim' && p.components.some(c => c.type === 'BOOT' || c.type === 'TOUCH') ? '模擬時，按住 3D 板子上的 BOOT 鍵，或按住觸控腳的排針（青色圓圈）' : this.twin.mode === 'sim' ? (p.components.some(c => c.type === 'US') ? '模擬時，用下方的拉桿移動超音波前方的物體（橘色板；畫面上的距離是壓縮過的示意，實際數值看標籤）' : '模擬時，按住場景中的按鈕即可按下') : '真機模式：請操作實體按鈕或移動實體物體；畫面顯示量測到的狀態';
+    this.renderTwin(); this.renderHw(); this.renderEventsIfDirty(true); this.renderSerial();
   };
 
   P.renderTwin = function () {
     const rows = []; const mode = this.twin.mode; const now = Date.now();
     const age = x => x ? `<small>${((now - x.t) / 1000).toFixed(1)} s 前${x.seq !== undefined ? ' · #' + x.seq : ''}</small>` : '';
     for (const c of this.p.components) {
-      const s = sigOf(c); if (!s) continue; const v = this.twin.view(s); const isOut = ['LED', 'SERVO'].includes(c.type);
+      const s = sigOf(c); if (!s) continue; const v = this.twin.view(s); const isOut = ['LED', 'OBLED', 'SERVO'].includes(c.type);
       const sim = v.simulated ? `<span class="v sim">${fmt(c, v.simulated.v)}</span>${mode !== 'sim' && isOut ? '<small>推算</small>' : ''}` : '<span class="na">—</span>';
       const tgt = isOut ? (v.target ? `<span class="v">${fmt(c, v.target.v)}</span>` : '<span class="na">—</span>') : '<span class="na">不適用</span>';
       const cmd = isOut ? (v.commanded ? `<span class="v cmd">${fmt(c, v.commanded.v)}</span><small class="mono">${v.commanded.id}</small>` : '<span class="na">—</span>') : '<span class="na">不適用</span>';
@@ -292,13 +313,13 @@
     const urlDefault = (() => { try { const s = localStorage.getItem('doflab.wsUrl'); if (s) return s; } catch (e) { } return location.protocol === 'http:' && location.host && location.port !== '8766' ? `ws://${location.host}/ws` : 'ws://raspberrypi.local:8765/ws'; })();
     const step = (n, title, state, body) => `<li class="${state}"><span class="no">${n}</span><div><b>${title}</b>${body}</div></li>`;
     const s1 = connected ? `<span>${esc(info.label)} · ${esc(c.info || '')}</span><div class="row"><button class="btn danger" id="hwDisc">中斷連線</button></div>`
-      : `${p.board.type === 'pi4b' ? `<div class="row"><input class="inp mono" id="wsUrl" value="${esc(urlDefault)}" aria-label="樹莓派閘道網址" style="flex:1 1 200px"></div>` : `<span class="hint">${p.board.type === 'esp32' ? 'ESP32 需先上傳 DofLabFirmata 韌體' : 'Uno 需先上傳 DofLabFirmata（建議）或 StandardFirmata'}，再用 USB 連接電腦；需要電腦版 Chrome／Edge。韌體在下載包的 firmware 資料夾，也可以直接按下面的按鈕上傳。</span>${this.firmataFlashHtml ? this.firmataFlashHtml() : ''}`}
-         <div class="row"><button class="btn primary" id="hwConn" ${this.hw.busy ? 'disabled' : ''}>${p.board.type === 'pi4b' ? '連接樹莓派' : (p.board.type === 'esp32' ? '連接 ESP32（USB）' : '連接 Arduino（USB）')}</button></div>
+      : `${p.board.type === 'pi4b' ? `<div class="row"><input class="inp mono" id="wsUrl" value="${esc(urlDefault)}" aria-label="樹莓派閘道網址" style="flex:1 1 200px"></div>` : `<span class="hint">${DL.boardFamily(p.board.type) === 'esp32' ? 'ESP32 需先上傳 DofLabFirmata 韌體' : 'Uno 需先上傳 DofLabFirmata（建議）或 StandardFirmata'}，再用 USB 連接電腦；需要電腦版 Chrome／Edge。韌體在下載包的 firmware 資料夾，也可以直接按下面的按鈕上傳。</span>${this.firmataFlashHtml ? this.firmataFlashHtml() : ''}`}
+         <div class="row"><button class="btn primary" id="hwConn" ${this.hw.busy ? 'disabled' : ''}>${p.board.type === 'pi4b' ? '連接樹莓派' : (DL.boardFamily(p.board.type) === 'esp32' ? '連接 ESP32（USB）' : '連接 Arduino（USB）')}</button></div>
          ${c.state === 'lost' ? `<span class="hint" style="color:var(--err)">上次連線中斷${this.twin.dropped.length ? `；${this.twin.dropped.length} 個未確認命令已作廢、不會重送` : ''}。重新連線後會從唯讀開始。</span>` : ''}`;
     const s2 = this.hw.identity ? `<span class="${this.hw.identity.ok ? '' : 'muted'}">${this.hw.identity.ok ? '✓' : '✗'} ${esc(this.hw.identity.msg)}</span>${this.hw.identity.mock ? '<span class="hint">這是測試用的模擬腳位，不是實體設備。</span>' : ''}` : '<span class="hint">連線後讀取板卡回報的型號與腳位能力。</span>';
     const bindings = Object.values(a.bindings);
     const hasUs = bindings.some(b => b.role === 'ultrasonic');
-    const s3 = connected ? `<span class="hint">唯讀只會把輸入腳位設為上拉／類比並開啟回報，不改變任何輸出。按一下實體按鈕，確認畫面有反應。${hasUs ? '超音波的 TRIG 是量距離必須的觸發輸出：唯讀時韌體也會每 60 ms 送一次 10 µs 的觸發脈衝，只接到超音波模組。' : ''}</span>${this.hw.sonarUnsupported ? `<span class="hint" style="color:var(--err)">${esc(this.hw.sonarUnsupported)}</span>` : ''}${bindings.map(b => {
+    const s3 = connected ? `<span class="hint">唯讀只會把輸入腳位設為上拉／類比並開啟回報，不改變任何輸出。按一下實體按鈕，確認畫面有反應。${hasUs ? '超音波的 TRIG 是量距離必須的觸發輸出：唯讀時韌體也會每 60 ms 送一次 10 µs 的觸發脈衝，只接到超音波模組。' : ''}</span>${this.hw.sonarUnsupported ? `<span class="hint" style="color:var(--err)">${esc(this.hw.sonarUnsupported)}</span>` : ''}${this.hw.touchUnsupported ? `<span class="hint" style="color:var(--warn)">${esc(this.hw.touchUnsupported)}</span>` : ''}${bindings.map(b => {
       const cc = DL.project.findComp(p, b.comp); const isIn = b.role === 'button' || b.role === 'analog' || b.role === 'ultrasonic';
       return `<label class="check"><input type="checkbox" data-chk="${b.comp}" ${this.hw.checks[b.comp] ? 'checked' : ''}><span>${b.comp} ${isIn ? '←' : '→'} ${esc(b.role === 'ultrasonic' ? `TRIG ${board.pinLabel(board.pinById[b.trig])}、ECHO ${board.pinLabel(board.pinById[b.echo])}` : board.pinLabel(board.pinById[b.pin]))}${b.via && b.via.length ? '（經 ' + b.via.join('、') + '）' : ''}</span>${isIn ? `<span class="ind ${this.hw.sawChange[b.comp] ? 'ok' : ''}" id="saw-${b.comp}">${this.hw.sawChange[b.comp] ? '已偵測到變化' : '等待變化'}</span>` : (mode === 'hw-control' ? `<span class="ind ok">輸出：已授權寫入</span>` : `<span class="ind">輸出：唯讀，未寫入</span>`)}</label>`;
     }).join('')}` : '<span class="hint">連線後在這裡逐一核對實體接線。</span>';
@@ -339,6 +360,9 @@
       this.hw.driver = drv; this.hw.identity = r.identity; this.hw.checks = {}; this.hw.sawChange = {}; this.hw.lastSeen = {};
       this.twin.connected(r.deviceId, r.info);
       this.defineSignals();
+      const touch = Object.values(this.analysis.bindings).filter(b => b.role === 'touch').map(b => b.comp);
+      this.hw.touchUnsupported = touch.length ? `${touch.join('、')}：觸控腳的真機同步本版未支援，量測會一直是「未知」。請改用「程式」頁產生程式並上傳到板子，直接在板子上測試。` : null;
+      if (this.hw.touchUnsupported) this.log('w', this.hw.touchUnsupported);
       const inputs = Object.values(this.analysis.bindings).filter(b => b.role === 'button' || b.role === 'analog' || b.role === 'ultrasonic').map(b => b.role === 'ultrasonic' ? { signal: b.comp + '.distance', num: b.trigNum, echo: b.echoNum, kind: 'sonar' } : { signal: b.comp + (b.role === 'button' ? '.pressed' : '.level'), num: b.num, kind: b.role === 'button' ? 'button' : 'analog' });
       this.hw.sonarUnsupported = null;
       const w = await drv.watch(inputs);

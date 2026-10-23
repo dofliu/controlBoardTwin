@@ -162,8 +162,30 @@
     }
     applyBoardTransform(g, bd) { g.position.set(bd.pos.x, 0, bd.pos.z); g.rotation.y = -bd.rot * Math.PI / 180; }
 
+    // 板載元件（板載 LED、BOOT 鍵、觸控腳）：沒有自己的模型，在板子上的位置放一個可點選的標記，跟著板子移動
+    buildOnboard(c, def) {
+      const THREE = T(); const b = DL.boards[this.project.board.type]; const F = b.features || {};
+      let pos = def.onboard === 'touch' ? b.layout[c.params.pin] : F[def.onboard];
+      const g = new THREE.Group(); const body = []; const ref = { onboard: def.onboard };
+      if (!pos) pos = { x: 0, z: 0 };   // 這塊板子沒有（電路檢查會報錯）
+      const top = def.onboard === 'touch' ? this.pinTop + 0.05 : b.size.t + 0.05;
+      g.position.set(pos.x, top, pos.z);
+      const hit = new THREE.Mesh(new THREE.BoxGeometry(def.onboard === 'touch' ? 0.34 : 0.6, 0.9, def.onboard === 'touch' ? 0.34 : 0.6), new THREE.MeshBasicMaterial({ visible: false }));
+      hit.position.y = 0.3; hit.userData = { kind: 'comp', comp: c.id, onboard: true }; g.add(hit); this.pick.push(hit); body.push(hit);
+      if (def.onboard === 'touch') {   // 碰到時在排針上方出現青色光環（手指）
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.04, 8, 24), new THREE.MeshBasicMaterial({ color: 0x31c3c7, transparent: true, opacity: 0.9 }));
+        ring.rotation.x = Math.PI / 2; ring.position.y = 0.12; ring.raycast = () => { }; g.add(ring); ref.ring = ring;
+        const glow = new THREE.Mesh(new THREE.SphereGeometry(0.16, 16, 10), new THREE.MeshBasicMaterial({ color: 0x31c3c7, transparent: true, opacity: 0.35 }));
+        glow.position.y = 0.12; glow.visible = false; glow.raycast = () => { }; g.add(glow); ref.touchGlow = glow;
+      }
+      g.userData = { kind: 'compGroup', comp: c.id, ref, body, mounted: false, onboard: true };
+      this.objects.board.add(g); this.objects.comps[c.id] = g;
+      this.label(c.id, c.id);
+    }
+
     buildComp(c) {
       const THREE = T(); const def = DL.components[c.type]; const BBm = DL.breadboard;
+      if (def && def.onboard) return this.buildOnboard(c, def);
       // 插在麵包板上：算出每支腳的孔在元件本地座標的位置，模型的腳直接插進孔裡
       const mount = c.type !== 'BB' && BBm.mountOf(this.project, c.id); let ins = null;
       if (mount) { const bb = DL.project.findComp(this.project, mount.bb); ins = {}; for (const h of mount.holes) { const w = BBm.holeWorld(bb, h.hole); const [lx, lz] = DL.rotXZ(w.x - c.pos.x, w.z - c.pos.z, 360 - (c.rot || 0)); (ins[h.term] = ins[h.term] || []).push([lx, lz]); } }
@@ -291,6 +313,8 @@
         if (ref.lens) { const on = v.on; const e = on === null || on === undefined ? 0 : on ? 1 : 0; ref.lens.material.emissive = e ? ref.glowColor : new THREE.Color(0x000000); ref.lens.material.emissiveIntensity = v.dim ? 0.6 : 1.4; ref.lens.material.opacity = v.unknown ? 0.45 : 0.82; ref.glow.intensity = e ? (v.dim ? 0.8 : 2.0) : 0; }
         if (ref.cap) ref.cap.position.y = v.pressed ? 0.39 : 0.45;
         if (ref.horn) ref.horn.rotation.y = ((v.angle === null || v.angle === undefined ? 90 : v.angle) - 90) * Math.PI / 180;
+        if (ref.onboard === 'boot' && this.boardModel.buttons && this.boardModel.buttons.BOOT) { const cap = this.boardModel.buttons.BOOT; if (cap.userData.y0 === undefined) cap.userData.y0 = cap.position.y; cap.position.y = cap.userData.y0 - (v.pressed ? 0.06 : 0); }
+        if (ref.touchGlow) { ref.touchGlow.visible = !!v.pressed; ref.ring.material.opacity = v.pressed ? 1 : 0.55; }
         if (ref.ldr) { const l = v.light === undefined ? 50 : v.light; ref.ldr.emissive = new THREE.Color(0xffc060); ref.ldr.emissiveIntensity = l / 160; }
         if (ref.obstacle) {   // 超音波前方的物體：沒有數值或沒有回波時不畫
           const o = ref.obstacle; const d = v.dist; const show = d !== null && d !== undefined && d < 400;
@@ -312,7 +336,7 @@
         }
       }
       // 板上 LED：電源燈常亮；Uno 的 L 燈跟著 D13
-      if (this.boardModel) for (const [k, lens] of Object.entries(this.boardModel.leds || {})) { const on = k === 'ON' || k === 'PWR' || (k === 'L' && this.vis.__board && this.vis.__board.L); lens.material.emissive = on ? lens.material.color : new THREE.Color(0); lens.material.emissiveIntensity = on ? 1.6 : 0; }
+      if (this.boardModel) for (const [k, lens] of Object.entries(this.boardModel.leds || {})) { const on = k === 'ON' || k === 'PWR' || ((k === 'L' || k === 'USER') && this.vis.__board && this.vis.__board.L); lens.material.emissive = on ? lens.material.color : new THREE.Color(0); lens.material.emissiveIntensity = on ? (k === 'USER' ? 3 : 1.6) : 0; const halo = this.boardModel.halos && this.boardModel.halos[k]; if (halo) halo.visible = !!on; }
       this.renderer.render(this.scene, this.camera);
       this.placeLabels();
     }
@@ -341,7 +365,8 @@
       };
       const bd = this.project.board; const b = DL.boards[bd.type];
       put('board', new THREE.Vector3(bd.pos.x, b.size.t + 0.2, bd.pos.z + b.size.h / 2 + 0.6));
-      for (const c of this.project.components) { const g = this.objects.comps[c.id]; if (g) put(c.id, c.type === 'BB' ? new THREE.Vector3(g.position.x - DL.breadboard.SIZE.w / 2 + 0.6, DL.breadboard.TOP + 0.1, g.position.z - DL.breadboard.SIZE.d / 2 - 0.35) : new THREE.Vector3(g.position.x, g.position.y + (c.type === 'SERVO' ? 1.9 : 1.25), g.position.z)); }
+      const wp = new THREE.Vector3();
+      for (const c of this.project.components) { const g = this.objects.comps[c.id]; if (g && g.userData.onboard) { g.getWorldPosition(wp); put(c.id, wp.clone().setY(wp.y + (c.type === 'BOOT' ? 1.15 : 0.55))); continue; } /* BOOT 鍵與藍燈很近：標籤錯開高度 */ if (g) put(c.id, c.type === 'BB' ? new THREE.Vector3(g.position.x - DL.breadboard.SIZE.w / 2 + 0.6, DL.breadboard.TOP + 0.1, g.position.z - DL.breadboard.SIZE.d / 2 - 0.35) : new THREE.Vector3(g.position.x, g.position.y + (c.type === 'SERVO' ? 1.9 : 1.25), g.position.z)); }
     }
 
     /* ------------------------- 點選與拖曳 ------------------------- */
@@ -349,6 +374,8 @@
     hit(e) {
       const n = this.ndc(e); this.scene.updateMatrixWorld(true); this.ray.setFromCamera(n, this.camera);   // 新建的網格要先更新矩陣，否則下一幀前點不到
       const hits = this.ray.intersectObjects(this.pick, false);
+      // 觀測時：板載的 BOOT 鍵、觸控腳優先（觸控腳就在排針上，不然會點到腳位）
+      if (this.app.sceneMode() === 'observe') { const ob = hits.find(h => h.object.userData.onboard); if (ob) return ob; }
       // 端點優先於元件本體與導線
       const ep = hits.find(h => h.object.userData.kind === 'ep');
       if (ep) return ep;
@@ -386,7 +413,7 @@
       if (this.pointers.size > 2) return;
       const h = this.hit(e); const mode = this.app.sceneMode();
       const g = { kind: 'pending', x: e.clientX, y: e.clientY, button: e.button, shift: e.shiftKey, hit: h, moved: false, theta: this.cam.theta, phi: this.cam.phi, target: this.cam.target.clone() };
-      if (mode === 'observe' && h && h.object.userData.kind === 'comp') { const c = DL.project.findComp(this.project, h.object.userData.comp); if (c && c.type === 'BTN') { g.kind = 'press'; g.comp = c.id; this.app.scenePress(c.id, true); } }
+      if (mode === 'observe' && h && h.object.userData.kind === 'comp') { const c = DL.project.findComp(this.project, h.object.userData.comp); if (c && DL.behavior.BUTTONS.includes(c.type)) { g.kind = 'press'; g.comp = c.id; this.app.scenePress(c.id, true); } }
       this.gesture = g;
     }
     move(e) {
@@ -403,7 +430,7 @@
         g.moved = true;
         const k = g.hit && g.hit.object.userData.kind; const mode = this.app.sceneMode();
         if (mode === 'edit' && k === 'ep' && g.button === 0) { g.kind = 'wire'; this.app.sceneWireStart(g.hit.object.userData.ep); }
-        else if (mode === 'edit' && (k === 'comp' || k === 'board') && g.button === 0 && !g.shift) { const id = k === 'board' ? 'board' : g.hit.object.userData.comp; g.kind = 'drag'; g.id = id; const pp = this.planePoint(e, id); const o = id === 'board' ? this.project.board.pos : DL.project.findComp(this.project, id).pos; g.off = pp ? { x: o.x - pp.x, z: o.z - pp.z } : { x: 0, z: 0 }; g.orig = { x: o.x, z: o.z }; if (id !== 'board' && DL.project.isBB(this.project, id)) g.riders = this.project.components.filter(c => { const m = DL.breadboard.mountOf(this.project, c.id); return m && m.bb === id; }).map(c => ({ id: c.id, x: this.objects.comps[c.id].position.x, z: this.objects.comps[c.id].position.z })); this.app.sceneSelect({ kind: id === 'board' ? 'board' : 'comp', id }); }
+        else if (mode === 'edit' && (k === 'comp' || k === 'board') && g.button === 0 && !g.shift) { const oc = k === 'comp' && DL.project.findComp(this.project, g.hit.object.userData.comp); const id = k === 'board' || (oc && DL.components[oc.type].onboard) ? 'board' : g.hit.object.userData.comp; /* 拖曳板載元件＝拖曳整塊板子 */ g.kind = 'drag'; g.id = id; const pp = this.planePoint(e, id); const o = id === 'board' ? this.project.board.pos : DL.project.findComp(this.project, id).pos; g.off = pp ? { x: o.x - pp.x, z: o.z - pp.z } : { x: 0, z: 0 }; g.orig = { x: o.x, z: o.z }; if (id !== 'board' && DL.project.isBB(this.project, id)) g.riders = this.project.components.filter(c => { const m = DL.breadboard.mountOf(this.project, c.id); return m && m.bb === id; }).map(c => ({ id: c.id, x: this.objects.comps[c.id].position.x, z: this.objects.comps[c.id].position.z })); this.app.sceneSelect({ kind: id === 'board' ? 'board' : 'comp', id }); }
         else g.kind = (g.button === 2 || g.shift) ? 'pan' : 'orbit';
       }
       if (g.kind === 'orbit' || g.kind === 'pan') this.userMoved = true;
@@ -501,7 +528,7 @@
     }
     // 測試與輔助功能：端點在畫面上的座標（client px）
     screenOf(ep) { const w = ep === 'comp' ? null : this.epWorld(ep); return w ? this.toClient(w) : null; }
-    compScreen(id) { const g = this.objects.comps[id]; if (!g) return null; const v = g.position.clone(); v.y += 0.35; return this.toClient(v); }
+    compScreen(id) { const T3 = T(); const g = this.objects.comps[id]; if (!g) return null; const v = g.getWorldPosition(new T3.Vector3()); v.y += g.userData.onboard ? 0.05 : 0.35; return this.toClient(v); }
     toClient(v) { this.syncSize(); this.updateCamera(); this.camera.updateMatrixWorld(); this.scene.updateMatrixWorld(true); const p = v.clone().project(this.camera); const r = this.renderer.domElement.getBoundingClientRect(); return { x: r.left + (p.x + 1) / 2 * r.width, y: r.top + (1 - p.y) / 2 * r.height }; }
 
   }

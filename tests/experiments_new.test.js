@@ -30,13 +30,13 @@ const flips = (rows, i, a, b) => { let n = 0; for (let t = a + 1; t < b; t++) if
 test('五個新實驗：可建立、元件與行為鎖定；解答（接線助手）沒有錯誤；行為驗證通過；三種語言都能產生程式；Pi 不支援光感實驗', () => {
   for (const id of NEW) for (const b of DL.boardList) {
     const r = DL.experiments.instantiate(id, b); const e = DL.experiments.list.find(x => x.id === id);
-    if (!e.boards.includes(b)) { assert.strictEqual(r.ok, false); assert.match(r.msg, /ADC/); continue; }
+    if (!DL.experiments.supports(e, b)) { assert.strictEqual(r.ok, false); assert.match(r.msg, /ADC/); continue; }
     assert.ok(r.project.lock.components && r.project.lock.behavior);
     assert.strictEqual(r.project.connections.filter(w => w.kind !== 'insert').length, 0, '學生從沒有接線開始');
     const p = solved(id, b); const a = DL.netlist.analyze(p);
     assert.ok(a.ok, `${id}/${b}：` + a.issues.filter(i => i.level === 'error').map(i => i.msg).join('；'));
     assert.ok(DL.behavior.validate(p, a).ok, `${id}/${b} 行為`);
-    for (const [comp, pin] of Object.entries(e.suggest[b])) assert.strictEqual(a.bindings[comp].pin, pin, `${id}/${b} ${comp}`);
+    for (const [comp, pin] of Object.entries(DL.experiments.suggestFor(e, b))) assert.strictEqual(a.bindings[comp].pin, pin, `${id}/${b} ${comp}`);
     for (const c of p.components.filter(c => c.type === 'LED')) assert.strictEqual(a.bindings[c.id].via.length, 1, `${c.id} 有自己的限流電阻`);
     const g = DL.codegen.generate(p); assert.ok(g.ok, (g.blockers || []).join());
     const ctx = { confirmedCurrent: true, maxHoldMs: 2000, presses: 3, minLight: 10, maxLight: 90, armConfirmed: true };

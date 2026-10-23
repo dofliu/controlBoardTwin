@@ -150,6 +150,8 @@
   const v = id => id.toLowerCase();             // LED1 → led1
   const cap = id => id.charAt(0) + id.slice(1).toLowerCase();   // SERVO1 → Servo1
   const initialOf = (p, id) => { const c = DL.project.findComp(p, id); return c && c.type === 'SERVO' ? Number(c.params.initAngle) : 0; };
+  const usedAny = (p, types) => p.components.filter(c => types.includes(c.type) && p.behavior.ir.rules.some(r => refsComp(r, c.id)));
+  const hasPrint = rules => (rules || []).some(r => (r.actions || []).some(a => a.type === 'print'));
   const used = (p, type) => p.components.filter(c => c.type === type && p.behavior.ir.rules.some(r => refsComp(r, c.id)));
   function refsComp(r, id) { return r.comp === id || (r.cond && r.cond.comp === id) || (r.actions || []).some(a => a.comp === id || a.src === id); }
 
@@ -173,7 +175,8 @@
   function genArduino(p, board, prep) {
     const B = prep.analysis.bindings;
     const rules = p.behavior.ir.rules;
-    const btns = used(p, 'BTN'), leds = p.components.filter(c => c.type === 'LED' && B[c.id]), ldrs = used(p, 'LDR'), servos = p.components.filter(c => c.type === 'SERVO' && B[c.id]), uss = used(p, 'US');
+    const btns = usedAny(p, DL.behavior.BUTTONS), leds = p.components.filter(c => DL.behavior.LEDS.includes(c.type) && B[c.id]), ldrs = used(p, 'LDR'), servos = p.components.filter(c => c.type === 'SERVO' && B[c.id]), uss = used(p, 'US');
+    const touches = btns.filter(c => c.type === 'TOUCH'); const serial = hasPrint(rules);
     const adcMax = (1 << board.adcBits) - 1;
     const libs = [];
     const L = headerLines(p, board, prep, '//');
@@ -183,6 +186,9 @@
     const pinComment = (c) => {
       const b = B[c.id]; const pin = board.pinById[b.pin];
       if (c.type === 'BTN') return `${c.id}：${board.pinLabel(pin)} ↔ 按鈕 ↔ GND，內建上拉，按下 = LOW`;
+      if (c.type === 'BOOT') return `${c.id}：板上的 BOOT 鍵（${board.pinLabel(pin)}），按下 = LOW；不需要接線`;
+      if (c.type === 'TOUCH') return `${c.id}：觸控腳 ${board.pinLabel(pin)}，用手指碰排針；不需要接線`;
+      if (c.type === 'OBLED') return `${c.id}：板上的 LED（${board.pinLabel(pin)}），HIGH 亮；不需要接線`;
       if (c.type === 'LED') return `${c.id}：${board.pinLabel(pin)} → ${b.via.join('、')} → LED → GND`;
       if (c.type === 'LDR') return `${c.id}：AO → ${board.pinLabel(pin)}（0–${adcMax}）`;
       if (c.type === 'SERVO') return `${c.id}：SIG → ${board.pinLabel(pin)}（只送出命令角度，沒有回授）`;
@@ -198,6 +204,7 @@
     }
     if (btns.length || uss.length) { L.push(''); L.push('// ---- 參數 ----'); }
     for (const c of btns) L.push(`const unsigned long ${c.id}_DEBOUNCE_MS = ${c.params.debounceMs};   // 去彈跳時間（實驗設定）`);
+    for (const c of touches) L.push(`const int ${c.id}_DROP_PCT = ${c.params.dropPct};             // 讀值比開機基準低這麼多 % 就算碰到`);
     if (uss.length) {
       L.push('const unsigned long US_PERIOD_MS = 60;       // 超音波量測間隔（HC-SR04 建議至少 60 ms）');
       L.push('const unsigned long US_TIMEOUT_US = 30000;   // 30 ms 內沒有回波＝超出量程');
@@ -212,6 +219,7 @@
       L.push(`bool ${v(c.id)}Pressed = false;         // 這一輪剛按下`);
       L.push(`bool ${v(c.id)}Released = false;        // 這一輪剛放開`);
     }
+    for (const c of touches) L.push(`int ${v(c.id)}Threshold = 0;            // 開機時量到的基準值 × (100 − ${c.id}_DROP_PCT) %`);
     for (const c of uss) {
       const n = v(c.id);
       L.push(`int ${n}Cm = US_MAX_CM;                 // 規則使用的距離（cm）：上一次量到的結果`);
@@ -229,7 +237,8 @@
       const n = v(c.id);
       L.push(`// 讀取 ${c.id} 並去彈跳：原始讀值要穩定 ${c.id}_DEBOUNCE_MS 才更新狀態`);
       L.push(`void read${c.id}(unsigned long now) {`);
-      L.push(`  bool raw = (digitalRead(${c.id}_PIN) == LOW);   // 接 GND＋上拉：按下讀到 LOW`);
+      if (c.type === 'TOUCH') L.push(`  bool raw = (touchRead(${c.id}_PIN) < ${v(c.id)}Threshold);   // 手指碰到時讀值變小`);
+      else L.push(`  bool raw = (digitalRead(${c.id}_PIN) == LOW);   // ${c.type === 'BOOT' ? '板上的上拉電阻：按下 BOOT 讀到 LOW' : '接 GND＋上拉：按下讀到 LOW'}`);
       L.push(`  ${n}Pressed = false;`);
       L.push(`  ${n}Released = false;`);
       L.push(`  if (raw != ${n}LastRaw) { ${n}LastRaw = raw; ${n}ChangedAt = now; }`);
@@ -269,6 +278,7 @@
       if (a.type === 'led') return `${ind}${v(a.comp)}Latched = ${a.on ? 'true' : 'false'};`;
       if (a.type === 'toggle') return `${ind}${v(a.comp)}Latched = !${v(a.comp)}Latched;`;
       if (a.type === 'servo') return `${ind}${v(a.comp)}Latched = ${a.angle};`;
+      if (a.type === 'print') return `${ind}Serial.println(${JSON.stringify(a.text)});`;
     };
     const valueExpr = (a, i) => {
       if (a.type === 'led') return a.on ? 'true' : 'false';
@@ -280,7 +290,13 @@
     const initial = id => { const c = DL.project.findComp(p, id); return c.type === 'SERVO' ? String(c.params.initAngle) : 'false'; };
 
     L.push('void setup() {');
-    for (const c of btns) L.push(`  pinMode(${c.id}_PIN, INPUT_PULLUP);`);
+    if (serial) L.push('  Serial.begin(115200);              // 序列埠監控視窗請選 115200 bps');
+    for (const c of btns) if (c.type !== 'TOUCH') L.push(`  pinMode(${c.id}_PIN, INPUT_PULLUP);`);
+    for (const c of touches) {
+      L.push(`  // ${c.id} 校正：開機時不要碰觸控腳，取 16 次讀值的平均當基準`);
+      L.push(`  { long sum = 0; for (int i = 0; i < 16; i++) { sum += touchRead(${c.id}_PIN); delay(5); }`);
+      L.push(`    ${v(c.id)}Threshold = sum / 16 * (100 - ${c.id}_DROP_PCT) / 100; }`);
+    }
     for (const c of leds) { L.push(`  pinMode(${c.id}_PIN, OUTPUT);`); L.push(`  digitalWrite(${c.id}_PIN, LOW);`); }
     for (const c of servos) L.push(`  ${v(c.id)}Servo.attach(${c.id}_PIN);`);
     for (const c of uss) { L.push(`  pinMode(${c.id}_TRIG_PIN, OUTPUT);`); L.push(`  digitalWrite(${c.id}_TRIG_PIN, LOW);`); L.push(`  pinMode(${c.id}_ECHO_PIN, INPUT);`); }
@@ -426,6 +442,7 @@
       if (a.type === 'led') return `${ind}${v(a.comp)}_latched = ${a.on ? 'True' : 'False'}`;
       if (a.type === 'toggle') return `${ind}${v(a.comp)}_latched = not ${v(a.comp)}_latched`;
       if (a.type === 'servo') return `${ind}${v(a.comp)}_latched = ${a.angle}`;
+      if (a.type === 'print') return `${ind}print(${JSON.stringify(a.text)}, flush=True)`;
     };
     const valueExpr = (a, i) => {
       if (a.type === 'led') return a.on ? 'True' : 'False';

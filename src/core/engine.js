@@ -21,11 +21,11 @@
       rule: rules.map(() => ({ active: false, startedAt: 0, offset: 0, mapLast: {} }))
     };
     for (const c of p.components) {
-      if (c.type === 'BTN') st.btn[c.id] = { input: false, lastRaw: false, stable: false, changedAt: 0, debounce: Number(c.params.debounceMs) || 0, press: false, release: false };
+      if (c.type === 'BTN' || c.type === 'BOOT' || c.type === 'TOUCH') st.btn[c.id] = { input: false, lastRaw: false, stable: false, changedAt: 0, debounce: Number(c.params.debounceMs) || 0, press: false, release: false };
       if (c.type === 'LDR') st.adc[c.id] = Math.round(adcMax / 2);
       // 超音波：input＝現在實際的距離；pending＝這一輪正在量的結果；used＝規則使用的值（上一輪量到的）
       if (c.type === 'US') st.us[c.id] = { input: US_MAX, pending: US_MAX, used: US_MAX, due: 0 };
-      if (c.type === 'LED') { st.latched[c.id] = 0; st.out[c.id] = 0; }
+      if (c.type === 'LED' || c.type === 'OBLED') { st.latched[c.id] = 0; st.out[c.id] = 0; }
       if (c.type === 'SERVO') { st.latched[c.id] = Number(c.params.initAngle); st.out[c.id] = Number(c.params.initAngle); }
     }
     const initial = id => (comps[id] && comps[id].type === 'SERVO' ? Number(comps[id].params.initAngle) : 0);
@@ -64,6 +64,9 @@
       else if (a.type === 'servo') st.latched[a.comp] = a.angle;
     }
 
+    // 單次動作依序執行；序列埠訊息記成 serial 事件（與產生程式的 Serial.println 順序相同）
+    function run(actions, t, events) { for (const a of actions) { if (a.type === 'print') events.push({ t, kind: 'serial', text: a.text }); else applyInstant(a); } }
+
     /* ---- 單步 ---- */
     function tick(t) {
       const events = [];
@@ -82,15 +85,15 @@
       // 2. 開始規則
       if (!st.started) {
         st.started = true;
-        rules.forEach((r, i) => { if (r.type === 'start') { r.actions.forEach(applyInstant); events.push({ t, kind: 'rule', rule: i + 1, text: `規則 ${i + 1}：開始時動作` }); } });
+        rules.forEach((r, i) => { if (r.type === 'start') { events.push({ t, kind: 'rule', rule: i + 1, text: `規則 ${i + 1}：開始時動作` }); run(r.actions, t, events); } });
       }
       // 3. 事件規則
       rules.forEach((r, i) => {
         if (r.type !== 'event') return;
         const b = st.btn[r.comp]; if (!b) return;
         if ((r.event === 'press' && b.press) || (r.event === 'release' && b.release)) {
-          r.actions.forEach(applyInstant);
           events.push({ t, kind: 'rule', rule: i + 1, text: `規則 ${i + 1}：${r.comp} ${r.event === 'press' ? '按下' : '放開'}事件` });
+          run(r.actions, t, events);
         }
       });
       // 4. 持續規則
