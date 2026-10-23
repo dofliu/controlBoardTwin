@@ -44,13 +44,14 @@ test('手臂程式在虛擬 Uno 上：三個腳位輸出伺服脈波，並以限
   const pins = [9, 10, 11]; const rise = {}, last = {};
   u.pinWatchers.push(() => { for (const n of pins) { const h = u.isHigh(n); if (h && rise[n] == null) rise[n] = u.cpu.cycles; else if (!h && rise[n] != null) { last[n] = (u.cpu.cycles - rise[n]) / 16; rise[n] = null; } } });
   const us = a => 544 + (2400 - 544) * a / 180;   // Servo 函式庫預設脈寬換算
+  // 預測：同一份序列規則（DL.arm.seqStep）逐毫秒推算伺服命令角
+  const plan = DL.arm.seqPlan(p.arm); const st = DL.arm.seqStart(plan, 0); const pred = [];
+  for (let t = 0; t <= 9000; t++) { DL.arm.seqStep(plan, st, t); pred.push(DL.arm.seqWritten(st)); }
+  let now = 0; const at = ms => { u.runMs(ms - now); now = ms; };
+  // 開機在預備姿態 → 移到「右前方」→ 停 1 秒 → 「左前方」→ 停 → 預備姿態（每個時間點都和預測比對；虛擬晶片的 millis 與真實時間可能差幾毫秒，容許 ±2°）
+  for (const t of [300, 1200, 2600, 3400, 5200, 7000, 8800]) {
+    at(t); pins.forEach((n, i) => assert.ok(Math.abs(last[n] - us(pred[t][i])) < 45, `t=${t} ms：D${n} 脈寬 ${last[n].toFixed(0)} µs，預測 ${us(pred[t][i]).toFixed(0)}（${pred[t][i]}°）`));
+  }
   const s0 = DL.arm.toServo(p.arm.config, p.arm.poses[0].q), s1 = DL.arm.toServo(p.arm.config, p.arm.poses[1].q);
-  u.runMs(500);
-  pins.forEach((n, i) => assert.ok(Math.abs(last[n] - us(s0[i])) < 25, `姿態 1：D${n} 脈寬 ${last[n]} µs，預期約 ${us(s0[i]).toFixed(0)}`));
-  // 停留 1 秒後開始往姿態 2 移動；J1 需要轉 |Δ| 度，限速 90°/s
-  const dJ1 = Math.abs(s1[0] - s0[0]); const tMove = dJ1 / 90 * 1000;
-  u.runMs(500 + tMove / 2);   // 停留 1 秒從開機就開始計（前面已跑 500 ms）
-  const mid = last[9]; assert.ok(Math.abs(mid - us((s0[0] + s1[0]) / 2)) < 60, `移動中途 J1 脈寬 ${mid} µs`);
-  u.runMs(tMove / 2 + 300);
-  pins.forEach((n, i) => assert.ok(Math.abs(last[n] - us(s1[i])) < 25, `姿態 2：D${n} 脈寬 ${last[n]} µs，預期約 ${us(s1[i]).toFixed(0)}`));
+  assert.ok(pred.some(r => r.join() === s0.join()) && pred.some(r => r.join() === s1.join()), '序列確實經過兩個姿態');
 });

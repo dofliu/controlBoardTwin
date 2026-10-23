@@ -261,3 +261,82 @@ textarea.json{width:100%;min-height:180px;font-family:var(--font-mono);font-size
 .toast{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:60;background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:9px;font-size:.86rem;max-width:calc(100vw - 32px);box-shadow:0 6px 24px rgba(0,0,0,.2)}
 .toast.e{background:var(--err);color:#fff}
 @media (prefers-reduced-motion:no-preference){.toast{animation:tin .18s ease-out}@keyframes tin{from{transform:translate(-50%,8px);opacity:.4}}}
+
+/* 手臂動作序列（行為頁） */
+.seq{list-style:none;margin:0 0 8px;padding:0;display:grid;gap:4px}
+.seq li{display:grid;grid-template-columns:28px 1fr auto;gap:8px;align-items:center;font-size:.86rem;padding:6px 8px;border-radius:6px;background:var(--surface-2)}
+.seq li.home{background:transparent;border:1px dashed var(--line)}
+.seq .no{font-family:var(--mono, monospace);font-weight:700;text-align:center;color:var(--accent, #b4581c)}
+.seq .sh{display:inline-flex;align-items:center;gap:4px;font-size:.8rem}
+.seq .sh input{width:62px;padding:2px 6px}
+
+/* ================= V2.7 緊湊版面：主畫面（板子配置圖）最大，其他資訊收得更密、可收合、重點浮在主畫面上 ================= */
+body{font-size:13.5px;line-height:1.45}
+.wrap{max-width:none}
+.bar .wrap{padding-block:5px;gap:6px 10px}
+.brand b{font-size:1.05rem}
+.btn{padding:3px 10px}
+.btn.sm{padding:1px 8px}
+.banner .wrap{padding-block:4px;font-size:.84rem}
+.tabs button{padding:6px 13px 5px}
+main{padding-block:8px 14px}
+.panel,.col{gap:8px}
+.card > h3,.card > .hd{padding:5px 10px;font-size:.78rem}
+.card .bd{padding:8px 10px;gap:6px}
+.issues li{padding:4px 7px;font-size:.82rem}
+.inputs{gap:6px}
+.inputs .in{padding:5px 8px}
+#tab-config{grid-template-columns:210px minmax(0,1fr) 300px}
+#tab-behavior,#tab-code{grid-template-columns:minmax(0,1fr) 360px}
+#tab-observe{grid-template-columns:minmax(0,1fr) 380px}
+#tab-arm{grid-template-columns:minmax(0,1fr) 350px}
+@media (max-width:1250px){#tab-config{grid-template-columns:210px minmax(0,1fr) 280px} #tab-config > .col-r{grid-column:auto;display:grid;grid-template-columns:none}}
+@media (max-width:1100px){#tab-config{grid-template-columns:200px minmax(0,1fr)} #tab-config > .col-r{grid-column:1 / -1;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}}
+/* 可收合的卡片：點標題列收起來，下面的卡片往上補 */
+.card > h3{cursor:pointer;user-select:none}
+.card > h3 .cx{border:0;background:none;padding:0 4px 0 0;margin:0;cursor:pointer;color:var(--muted);font-size:.7rem;line-height:1;transition:transform .15s}
+.card > h3 .ttl{display:flex;align-items:center;gap:2px;margin-right:auto;min-width:0}
+.card.collapsed > :not(h3){display:none!important}
+.card.collapsed > h3{border-bottom:0}
+.card.collapsed > h3 .cx{transform:rotate(-90deg)}
+.card.flash{box-shadow:0 0 0 2px var(--accent)}
+/* 元件清單：兩欄小圖示（說明放在滑鼠提示） */
+.palette{grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}
+.pal{grid-template-columns:26px 1fr;gap:5px;padding:4px 6px}
+.pal svg{width:26px;height:22px}
+.pal b{font-size:.8rem;line-height:1.25}
+.pal small{display:none}
+/* 主畫面上的浮動資訊（HUD）：右上角，點一下跳到右側對應的卡片 */
+.hud{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;align-items:flex-end;gap:4px;max-width:46%;pointer-events:none;z-index:2}
+.hud .hc{pointer-events:auto;display:inline-flex;align-items:center;gap:6px;font-size:.76rem;padding:2px 9px;border-radius:7px;border:1px solid var(--line);background:color-mix(in srgb,var(--surface) 92%,transparent);cursor:pointer;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.hud .hc b{font-weight:700}
+.hud .hc.ok{border-color:color-mix(in srgb,var(--ok) 55%,var(--line))} .hud .hc.ok b{color:var(--ok)}
+.hud .hc.err{border-color:var(--err);background:color-mix(in srgb,var(--err-soft) 92%,transparent)} .hud .hc.err b{color:var(--err)}
+.hud .hc.warn{border-color:var(--warn)} .hud .hc.warn b{color:var(--warn)}
+.hud .vals{pointer-events:auto;display:grid;grid-template-columns:auto auto;gap:1px 10px;font-size:.74rem;padding:5px 9px;border-radius:7px;border:1px solid var(--line);background:color-mix(in srgb,var(--surface) 92%,transparent);font-variant-numeric:tabular-nums}
+.hud .vals .k{font-family:var(--font-mono);font-weight:600}
+.hud .vals .v{text-align:right}
+.vp-tools{right:auto;max-width:54%}
+.vp-hint.top{top:44px;bottom:auto}
+/* 觀測頁：執行控制與輸入浮在主畫面底部（窄螢幕時回到畫面下方） */
+.stage{position:relative}
+.stage-ov{display:grid;gap:6px;margin-top:6px}
+.simbar{margin-top:0}
+@media (min-width:1051px){
+  .viewport,#vpArm{height:max(380px,calc(100vh - var(--chrome-h,130px) - 26px))}
+  #tab-observe .viewport{height:max(320px,calc(100vh - var(--chrome-h,130px) - 200px))}
+  .stage-ov{position:absolute;left:8px;right:8px;bottom:8px;margin:0;pointer-events:none}
+  .stage-ov > *{pointer-events:auto}
+  .stage-ov .simbar{background:color-mix(in srgb,var(--surface) 92%,transparent);border:1px solid var(--line);border-radius:8px;padding:4px 6px;justify-self:start}
+  .stage-ov .inputs{grid-template-columns:repeat(auto-fill,minmax(170px,210px));justify-content:start}
+  .stage-ov .inputs .in{background:color-mix(in srgb,var(--surface) 92%,transparent)}
+  canvas.trace{height:110px}
+  .blockly-host{height:max(380px,calc(100vh - var(--chrome-h,130px) - 50px))}
+  .editor textarea{height:max(360px,calc(100vh - var(--chrome-h,130px) - 120px))}
+  /* 側欄獨立捲動：整頁不用往下捲，主畫面一直在 */
+  #tab-config > .col-l,#tab-config > .col-r,#tab-behavior > .col:last-child,#tab-code > .col:last-child,#tab-observe > .col:last-child,#armSide{max-height:calc(100vh - var(--chrome-h,130px) - 22px);overflow:auto;position:sticky;top:calc(var(--sticky-h,48px) + 8px);scrollbar-width:thin;padding-right:2px}
+}
+@media (max-width:640px){.hud{display:none}.vp-tools{max-width:none}}
+.card > h3 .ttl{white-space:nowrap;flex:0 0 auto;margin-right:auto}
+.card > h3 > .muted{font-size:.72rem;text-align:right;min-width:0}
+@media (min-width:1051px){.viewport,#vpArm{height:max(380px,calc(100vh - var(--chrome-h,130px) - 34px))}}

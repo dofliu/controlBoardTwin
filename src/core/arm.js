@@ -127,6 +127,42 @@
     return { rMin, rMax };
   }
 
-  DL.arm = { defaultConfig, fk, ik, ikContinuous, candidates, stepToward, toServo, fromServo, validateConfig, reachAtHeight, inLimits, wrap };
+  /* ---------- 行為序列：開始執行 → 預備姿態 → A → B → C →（回到預備姿態）→ 反覆 ----------
+   * 模擬與產生的程式用同一套規則（每 1 ms 一輪、每個關節限速、到位後停留、32 位元浮點數），
+   * 讓畫面上的動作和板子上跑的程式一樣。角度都是伺服命令角（0–180°）。 */
+  const HOME_T = { x: 10, y: 8, z: 0 };   // 預備姿態（手臂頁「回到預備姿態」也是這個點）
+  const HOLD_MIN = 0, HOLD_MAX = 60000, HOLD_DEFAULT = 1000;
+  const holdOf = v => (Number.isFinite(+v) ? Math.max(HOLD_MIN, Math.min(HOLD_MAX, Math.round(+v))) : HOLD_DEFAULT);
+  function homeQ(cfg) { const s = ik(cfg, HOME_T, [0, 90, 90]); return s.ok ? s.q : [0, 90, 90]; }
+  function seqOptions(arm) { const q = (arm && arm.seq) || {}; return { returnHome: q.returnHome !== false, loop: q.loop !== false, homeHoldMs: holdOf(q.homeHoldMs === undefined ? HOLD_DEFAULT : q.homeHoldMs) }; }
+  function seqPlan(arm) {
+    const cfg = arm.config; const o = seqOptions(arm); const home = toServo(cfg, homeQ(cfg));
+    const way = (arm.poses || []).map(ps => ({ name: ps.name, s: toServo(cfg, ps.q), hold: holdOf(ps.holdMs === undefined ? HOLD_DEFAULT : ps.holdMs), t: ps.t }));
+    if (way.length && o.returnHome) way.push({ name: '預備姿態', s: home, hold: o.homeHoldMs, t: HOME_T, home: true });
+    return { way, home, loop: o.loop, maxSpeed: cfg.maxSpeed, opts: o };
+  }
+  const f32 = Math.fround;
+  // cur：開始時的伺服角（預設＝預備姿態，等同板子上電）；now：毫秒
+  function seqStart(plan, now, cur) { return { cur: (cur || plan.home).map(f32), idx: 0, holding: false, holdStart: 0, last: now || 0, done: !plan.way.length, loops: 0 }; }
+  function seqStep(plan, st, now) {
+    const step = f32(f32(f32(plan.maxSpeed) * f32(now - st.last)) / 1000); st.last = now;
+    if (st.done) return st;
+    const w = plan.way[st.idx]; let arrived = true;
+    for (let i = 0; i < 3; i++) {
+      const d = f32(w.s[i] - st.cur[i]);
+      if (d > step) { st.cur[i] = f32(st.cur[i] + step); arrived = false; }
+      else if (d < -step) { st.cur[i] = f32(st.cur[i] - step); arrived = false; }
+      else st.cur[i] = f32(w.s[i]);
+    }
+    if (arrived && !st.holding) { st.holding = true; st.holdStart = now; }
+    if (st.holding && now - st.holdStart >= w.hold) {
+      st.holding = false; st.idx++;
+      if (st.idx >= plan.way.length) { st.loops++; if (plan.loop) st.idx = 0; else { st.idx = plan.way.length - 1; st.done = true; } }
+    }
+    return st;
+  }
+  const seqWritten = st => st.cur.map(v => Math.floor(v + 0.5));   // 與 C++ 的 (int)(x + 0.5) 相同（角度不為負）
+
+  DL.arm = { defaultConfig, fk, ik, ikContinuous, candidates, stepToward, toServo, fromServo, validateConfig, reachAtHeight, inLimits, wrap, HOME_T, homeQ, seqOptions, seqPlan, seqStart, seqStep, seqWritten, holdOf };
   if (typeof module !== 'undefined') module.exports = DL;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

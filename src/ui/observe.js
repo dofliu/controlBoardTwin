@@ -44,12 +44,14 @@
     const out = this.sim.engine.snapshot().out;
     const armIds = this.armServoIds ? this.armServoIds() : [];
     for (const c of this.p.components) { const s = sigOf(c); if (!s || armIds.includes(c.id)) continue; if (isBtn(c)) this.twin.simulate(s, !!this.sim.held[c.id]); else if (c.type === 'LDR') this.twin.simulate(s, this.sim.light[c.id]); else if (c.type === 'US') this.twin.simulate(s, this.sim.dist[c.id]); else this.twin.simulate(s, out[c.id]); }
+    if (this.armReset) this.armReset();
     if (this.ui && $('simRun')) { $('simRun').textContent = '▶ 執行'; $('simRun').classList.add('primary'); }
   };
   P.toggleRun = function () {
     const v = DL.behavior.validate(this.p, null);
     if (!this.sim.running && v.issues.some(i => i.level === 'error')) { this.toast('行為有錯誤，無法執行：' + v.issues.find(i => i.level === 'error').msg, 'e'); return; }
     this.sim.running = !this.sim.running; this.sim.last = null;
+    if (this.sim.running && this.p.arm && this.armOnRun) this.armOnRun();
     $('simRun').textContent = this.sim.running ? '❚❚ 暫停' : '▶ 執行'; $('simRun').classList.toggle('primary', !this.sim.running);
     this.log(this.sim.running ? 's' : 'w', this.sim.running ? `${this.twin.mode === 'hw-control' ? '開始以行為控制真機' : this.twin.mode === 'hw-read' ? '開始執行（唯讀：只推算，不送命令）' : '開始模擬'}` : '已暫停', this.sim.time);
     this.renderTabs();
@@ -67,9 +69,11 @@
   P.advance = function (ms) {
     const e = this.sim.engine; const mode = this.twin.mode; const p = this.p;
     const bnd = this.analysis.bindings; const board = DL.boards[p.board.type]; const armIds = this.armServoIds ? this.armServoIds() : [];
+    const armAuto = !!(p.arm && this.arm && this.arm.mode === 'auto' && this.armHasSeq());
     for (let i = 0; i < ms; i++) {
       this.sim.time++;
       const t = this.sim.time;
+      if (armAuto) this.armSeqTick(t);   // 手臂行為序列（與產生的程式同一套規則）
       for (const c of p.components) {
         if (isBtn(c)) {
           if (mode === 'sim') e.setButton(c.id, !!this.sim.held[c.id]);
@@ -104,6 +108,7 @@
         if (c.type === 'US' && mode === 'sim') this.twin.simulate(c.id + '.distance', this.sim.dist[c.id]);
       }
     }
+    if (armAuto) this.armSeqSync();
     // 任務用的觀察紀錄
     for (const [id, t0] of Object.entries(this.sim.holdStart)) { if (t0 === null) this.sim.holdStart[id] = this.sim.time; else this.sim.maxHoldMs = Math.max(this.sim.maxHoldMs, this.sim.time - t0); }
     for (const c of p.components) if (c.type === 'LDR' && mode === 'sim') { this.sim.minLight = Math.min(this.sim.minLight, this.sim.light[c.id]); this.sim.maxLight = Math.max(this.sim.maxLight, this.sim.light[c.id]); }
@@ -157,6 +162,8 @@
       if (!this._lastObs || now - this._lastObs > 120) { this._lastObs = now; this.renderTwin(); this.renderEventsIfDirty(); if (this._serialDirty) this.renderSerial(); $('simTime').textContent = `t = ${(this.sim.time / 1000).toFixed(3)} s`; this.renderHwLive(); }
     }
     if (!this._lastTask || now - this._lastTask > 500) { this._lastTask = now; if (this.p.origin.kind === 'guided') this.renderTasks(); }
+    if (this.ui.tab === 'config' && (!this._lastHud || now - this._lastHud > 250)) { this._lastHud = now; this.renderHud(); }
+    if (this.ui.tab === 'observe' && (!this._lastHudO || now - this._lastHudO > 150)) { this._lastHudO = now; this.renderHudObserve(); }
   };
 
   // 3D 畫面要顯示哪一層：模擬時顯示模擬；真機時輸入顯示量測，輸出顯示 ACK／命令，沒有回授就標示未知
@@ -221,6 +228,18 @@
     this.renderTwin(); this.renderHw(); this.renderEventsIfDirty(true); this.renderSerial();
   };
 
+  // 觀測頁主畫面右上角：每個元件目前的值（模擬或量測，依模式），點一下跳到右側的孿生狀態表
+  P.renderHudObserve = function () {
+    const el = $('hudObserve'); if (!el) return; const mode = this.twin.mode; const rows = [];
+    for (const c of this.p.components) {
+      const s = sigOf(c); if (!s) continue; const v = this.twin.view(s);
+      const x = mode === 'sim' ? v.simulated : (INPUTS.includes(c.type) ? v.measured : (v.ack || v.commanded || v.simulated));
+      rows.push(`<span class="k">${esc(c.id)}</span><span class="v ${mode === 'sim' ? 'sim' : INPUTS.includes(c.type) ? 'meas' : 'cmd'}">${x ? fmt(c, x.v) : '—'}</span>`);
+    }
+    const head = `<button type="button" class="hc ${this.sim.running ? 'ok' : ''}" data-card="twinCard"><b>${this.sim.running ? '執行中' : '已暫停'}</b> · ${DL.modeLabel(mode)} · t = ${(this.sim.time / 1000).toFixed(1)} s</button>`;
+    const html = head + (rows.length ? `<div class="vals" data-card="twinCard">${rows.slice(0, 12).join('')}</div>` : '');
+    if (html !== this._hudOHtml) { this._hudOHtml = html; el.innerHTML = html; el.querySelectorAll('[data-card]').forEach(b => b.onclick = () => this.focusCard('twinCard')); }
+  };
   P.renderTwin = function () {
     const rows = []; const mode = this.twin.mode; const now = Date.now();
     const age = x => x ? `<small>${((now - x.t) / 1000).toFixed(1)} s 前${x.seq !== undefined ? ' · #' + x.seq : ''}</small>` : '';

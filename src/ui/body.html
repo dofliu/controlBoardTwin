@@ -1,6 +1,6 @@
 <header class="bar">
   <div class="wrap">
-    <div class="brand"><span class="logo" aria-hidden="true"></span><b>DofLab</b><span class="ver">V2.6.1 原型</span></div>
+    <div class="brand"><span class="logo" aria-hidden="true"></span><b>DofLab</b><span class="ver">V2.7 原型</span></div>
     <div class="proj"><input id="projName" aria-label="專案名稱" maxlength="80"><span id="projMeta" class="meta">r0</span></div>
     <div class="status">
       <span class="chip" id="boardChip">—</span>
@@ -37,11 +37,11 @@
           <p class="hint" id="boardNotes"></p>
         </div>
       </div>
-      <div class="card">
+      <div class="card" id="paletteCard">
         <h3>元件 <span class="muted" style="font-weight:500;letter-spacing:0">拖到場景，或點一下再點位置</span></h3>
         <div class="bd"><div class="palette" id="palette"></div></div>
       </div>
-      <div class="card">
+      <div class="card" id="inspectCard">
         <h3>選取項目</h3>
         <div class="bd" id="inspector"></div>
       </div>
@@ -54,6 +54,7 @@
           </div>
           <div class="grp"><button id="tglWire" aria-pressed="true" title="自動以最佳路徑整線；關閉時改用弧線">整齊走線</button><button id="tglUsed" aria-pressed="false">高亮已用腳位</button></div>
         </div>
+        <div class="hud" id="hudConfig" aria-label="狀態摘要"></div>
         <div class="vp-hint"><span id="hintConfig">拖曳空白處旋轉 · 右鍵或雙指平移 · 滾輪／雙指縮放</span></div>
       </div>
     </div>
@@ -66,11 +67,11 @@
         <h3>引導任務 <span class="n" id="taskCount"></span></h3>
         <div class="bd"><p class="hint" id="taskGoal"></p><ol class="tasks" id="taskList"></ol><p class="hint" id="taskSuggest"></p></div>
       </div>
-      <div class="card">
+      <div class="card" id="issueCard">
         <h3>電路檢查 <span class="counts" id="issueCounts"></span></h3>
         <div class="bd"><ul class="issues" id="issueList"></ul></div>
       </div>
-      <div class="card">
+      <div class="card" id="wireCard">
         <h3>連線（網表）<span class="n" id="wireCount"></span></h3>
         <div class="bd"><ul class="wires" id="wireList"></ul><p class="hint">連線只由這張表決定；移動或旋轉元件不會改變導通。</p></div>
       </div>
@@ -80,8 +81,9 @@
   <!-- ================= 行為 ================= -->
   <section class="panel" id="tab-behavior" role="tabpanel" aria-labelledby="t-behavior" hidden>
     <div class="col">
+      <div class="card" id="armSeqCard" hidden><h3>手臂動作序列 <span class="muted" style="font-weight:500;letter-spacing:0">按「▶ 執行」後自動依序移動</span></h3><div class="bd" id="armSeqBody"></div></div>
       <div class="blockly-host" id="blocklyHost"><div class="nogl" id="blocklyFallback" hidden></div></div>
-      <p class="hint">規則由上到下排列，依序評估；積木裡的元件名稱直接對應「配置」頁的元件。沒有放進規則裡的積木會被忽略。</p>
+      <p class="hint" id="blocklyHint">規則由上到下排列，依序評估；積木裡的元件名稱直接對應「配置」頁的元件。沒有放進規則裡的積木會被忽略。</p>
     </div>
     <div class="col">
       <div class="card">
@@ -137,13 +139,16 @@
   <!-- ================= 觀測 ================= -->
   <section class="panel" id="tab-observe" role="tabpanel" aria-labelledby="t-observe" hidden>
     <div class="col">
-      <div>
+      <div class="stage">
         <div class="viewport" id="vpObserve">
           <div class="vp-tools">
             <div class="grp" role="group" aria-label="快捷視角"><button data-view="iso">等角</button><button data-view="top">俯視</button><button data-view="front">正面</button></div>
           </div>
-          <div class="vp-hint"><span id="hintObserve">模擬時，按住場景中的按鈕即可按下</span></div>
+          <div class="hud" id="hudObserve" aria-label="即時數值"></div>
+          <div class="vp-hint top"><span id="hintObserve">模擬時，按住場景中的按鈕即可按下</span></div>
         </div>
+        <div class="stage-ov">
+        <div class="inputs" id="simInputs"></div>
         <div class="simbar">
           <button class="btn primary" id="simRun">▶ 執行</button>
           <button class="btn" id="simStep" title="前進 10 ms">單步 +10 ms</button>
@@ -152,15 +157,15 @@
           <span class="simtime" id="simTime">t = 0.000 s</span>
           <span class="muted" id="simNote" style="font-size:.8rem"></span>
         </div>
-        <div class="inputs" id="simInputs"></div>
+        </div>
       </div>
-      <div class="card">
+      <div class="card" id="traceCard">
         <h3>訊號波形（最近 6 秒）</h3>
         <div class="bd"><canvas class="trace" id="trace" aria-label="訊號波形"></canvas></div>
       </div>
     </div>
     <div class="col">
-      <div class="card">
+      <div class="card" id="twinCard">
         <h3>孿生狀態 <span class="muted" style="font-weight:500;letter-spacing:0">五層分開，不混用</span></h3>
         <div class="bd flush twinwrap"><table class="twin"><thead><tr><th>訊號</th><th>模擬</th><th>目標</th><th>命令</th><th>確認 ACK</th><th>量測</th></tr></thead><tbody id="twinRows"></tbody></table></div>
       </div>
@@ -188,8 +193,10 @@
           <div class="vp-tools">
             <div class="grp" role="group" aria-label="快捷視角"><button data-aview="iso" aria-pressed="true">等角</button><button data-aview="top">俯視</button><button data-aview="front">正面</button><button data-aview="side">側面</button></div>
             <div class="grp" role="group" aria-label="拖曳平面"><button data-plane="xz">水平 XZ</button><button data-plane="xy">垂直 XY</button></div>
+            <div class="grp" role="group" aria-label="手臂模式"><button data-amode="auto" title="依「行為」頁的動作序列自動移動">自動（序列）</button><button data-amode="manual" title="拖曳、滑桿或輸入座標">手動</button></div>
+            <button class="btn primary sm" id="armRun">▶ 執行序列</button>
           </div>
-          <div class="vp-hint"><span id="armHint">拖曳橘色球移動目標</span></div>
+          <div class="vp-hint"><span id="armModeNote"></span><span id="armHint">拖曳橘色球移動目標</span></div>
         </div>
       </div>
     </div>

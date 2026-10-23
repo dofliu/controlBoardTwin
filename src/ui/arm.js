@@ -139,10 +139,15 @@
     hover(e) { if (!this.handle) return; this.ray.setFromCamera(this.ndc(e), this.camera); this.renderer.domElement.style.cursor = this.ray.intersectObject(this.handle).length ? 'grab' : 'default'; }
   }
 
+  const poseName = k => k < 26 ? String.fromCharCode(65 + k) : '姿態 ' + (k + 1);   // A、B、C…
+
   /* ======================= App：手臂狀態與分頁 ======================= */
   const P = App.prototype;
   P.armInit = function () {
-    this.arm = { q: [0, 90, 90], qT: [0, 90, 90], t: { x: 10, y: 8, z: 0 }, attempt: null, status: { ok: true, msg: '' }, plane: 'xz', allowJump: false, stream: false, lastSent: [null, null, null], lastSendAt: [0, 0, 0], degenerate: false };
+    this.arm = { q: [0, 90, 90], qT: [0, 90, 90], t: { x: 10, y: 8, z: 0 }, attempt: null, status: { ok: true, msg: '' }, plane: 'xz', allowJump: false, stream: false, lastSent: [null, null, null], lastSendAt: [0, 0, 0], degenerate: false,
+      mode: 'auto', seqSt: null, plan: null, seqFrom: null, loopsSeen: 0 };   // mode：auto＝依行為序列（按「▶ 執行」），manual＝手動拖曳／滑桿
+    document.querySelectorAll('#tab-arm [data-amode]').forEach(b => b.onclick = () => { if (b.dataset.amode === 'auto') this.armRunSeq(); else this.armManual('切換到手動'); });
+    const rb = $('armRun'); if (rb) rb.onclick = () => { if (this.sim.running && this.arm.mode === 'auto') this.toggleRun(); else this.armRunSeq(); this.renderArmMode(); };
     this.armScene = new ArmScene(this);
     document.querySelectorAll('#tab-arm [data-aview]').forEach(b => b.onclick = () => { this.armScene.setView(b.dataset.aview); document.querySelectorAll('#tab-arm [data-aview]').forEach(x => x.setAttribute('aria-pressed', String(x === b))); });
     document.querySelectorAll('#tab-arm [data-plane]').forEach(b => b.onclick = () => { this.arm.plane = b.dataset.plane; this.renderArm(); });
@@ -164,12 +169,12 @@
     const d = new THREE.Vector3(); camera.getWorldDirection(d); d.y = 0; if (d.lengthSq() < 1e-6) d.set(0, 0, -1); d.normalize();
     return new THREE.Plane().setFromNormalAndCoplanarPoint(d.negate(), pos.clone());
   };
-  P.armDragStart = function () { this.arm.dragging = true; };
+  P.armDragStart = function () { this.armManual('拖曳目標'); this.arm.dragging = true; };
   P.armDragEnd = function () { this.arm.dragging = false; this.arm.attempt = null; this.arm.degenerate = false; this.armPersist(); this.renderArm(); };
   P.armDragDegenerate = function (on) { if (this.arm.degenerate !== on) { this.arm.degenerate = on; this.renderArmStatus(); } };
   P.armDragTo = function (pt) { this.armSetTarget(pt, { continuous: true }); };
   P.armSetTarget = function (pt, opts) {
-    const p = this.p; if (!p.arm) return { ok: false };
+    const p = this.p; if (!p.arm) return { ok: false }; this.armManual('設定目標');
     const cfg = p.arm.config; const a = this.arm;
     const t = { x: Math.round(pt.x * 10) / 10, y: Math.round(pt.y * 10) / 10, z: Math.round(pt.z * 10) / 10 };
     const s = opts && opts.continuous ? A.ikContinuous(cfg, t, a.qT, { allowJump: a.allowJump }) : A.ik(cfg, t, a.qT);
@@ -180,7 +185,7 @@
     return s;
   };
   P.armSetJoint = function (i, v) {
-    const p = this.p; const cfg = p.arm.config; const a = this.arm; const q = a.qT.slice(); q[i] = v;
+    this.armManual('調整關節'); const p = this.p; const cfg = p.arm.config; const a = this.arm; const q = a.qT.slice(); q[i] = v;
     const f = A.fk(cfg, q);
     if (f.y < cfg.floorY) { a.status = { ok: false, msg: `這個關節角度會讓末端低於桌面（${f.y.toFixed(1)} cm），已拒絕。`, reason: 'floor' }; this.renderArmStatus(); this.renderArmJoints(); return false; }
     a.qT = q; a.t = { x: Math.round(f.x * 10) / 10, y: Math.round(f.y * 10) / 10, z: Math.round(f.z * 10) / 10 }; a.attempt = null; a.status = { ok: true, msg: '由關節角直接設定' };
@@ -188,6 +193,47 @@
   };
   P.armPersist = function () { if (!this.p.arm) return; this.p.arm.target = Object.assign({}, this.arm.t); this.p.arm.q = this.arm.qT.slice(); this.renderHeader(); };
   P.armServoIds = function () { return this.p.arm ? this.p.arm.config.joints.map(j => j.servo) : []; };
+
+  /* ---------- 兩種模式：自動（行為序列）／手動 ---------- */
+  P.armHasSeq = function () { return !!(this.p.arm && (this.p.arm.poses || []).length); };
+  // 手動操作（拖曳、滑桿、輸入、移到姿態）→ 自動切到手動；序列暫停在目前的姿勢
+  P.armManual = function (why) {
+    const a = this.arm; if (!this.p.arm || a.mode === 'manual') return;
+    a.mode = 'manual'; a.seqSt = null; a.qT = a.q.slice();
+    if (this.sim.running) this.toggleRun();   // 暫停：「▶ 執行」按鈕回到可按的狀態，按下就回到行為序列
+    this.log('w', `${why || '手動操作'}：手臂切換到「手動」，行為序列暫停；按「▶ 執行」回到行為序列`, this.sim.time);
+    this.renderArmMode(); this.renderTabs && this.renderTabs();
+  };
+  // 按「▶ 執行」（觀測頁或手臂頁）：回到行為序列
+  P.armOnRun = function () {
+    const a = this.arm; if (!this.p.arm) return;
+    if (!this.armHasSeq()) { this.toast('動作序列還沒有姿態：先在「手臂」頁移到想要的位置，按「記下目前姿態」。'); return; }
+    if (this.sim.time > 0 && a.mode !== 'auto') { a.mode = 'auto'; a.seqSt = null; a.seqFrom = A.toServo(this.p.arm.config, a.q); this.log('s', '回到行為序列：從目前的姿勢移到第 1 步', this.sim.time); }
+    else if (this.sim.time === 0 && !a.seqSt) { a.mode = 'auto'; const q = A.homeQ(this.p.arm.config); a.q = q.slice(); a.qT = q.slice(); a.t = Object.assign({}, A.HOME_T); a.seqFrom = null; this.log('s', '開始：手臂在預備姿態（實際板子上電時伺服也會直接轉到這個角度）', 0); }
+    this.renderArmMode();
+  };
+  P.armRunSeq = function () { if (!this.armHasSeq()) { this.armOnRun(); return; } if (this.arm.mode !== 'auto' || !this.sim.running) { if (this.sim.running) this.armOnRun(); else this.toggleRun(); } };
+  P.armReset = function () { const a = this.arm; if (!a) return; a.seqSt = null; a.seqFrom = null; a.loopsSeen = 0; this.sim.armLoops = 0; };
+  // 模擬每 1 ms 呼叫一次（與產生的程式同一套規則）
+  P.armSeqTick = function (t) {
+    const a = this.arm;
+    if (!a.seqSt) { a.plan = A.seqPlan(this.p.arm); a.seqSt = A.seqStart(a.plan, t - 1, a.seqFrom); a.seqFrom = null; a.loopsSeen = 0; }
+    A.seqStep(a.plan, a.seqSt, t);
+    if (a.seqSt.loops > a.loopsSeen) { a.loopsSeen = a.seqSt.loops; this.sim.armLoops = (this.sim.armLoops || 0) + 1; this.log('s', a.plan.loop ? `手臂序列走完第 ${a.loopsSeen} 輪，從第 1 步重新開始` : '手臂序列走完一輪，停在最後的姿勢', t); }
+  };
+  // 每次推進模擬後：把序列的姿勢交給畫面
+  P.armSeqSync = function () {
+    const a = this.arm; const st = a.seqSt; if (!st) return; const cfg = this.p.arm.config;
+    const q = A.fromServo(cfg, st.cur); a.q = q.slice(); a.qT = q.slice(); a.attempt = null;
+    const f = A.fk(cfg, q); a.t = { x: Math.round(f.x * 10) / 10, y: Math.round(f.y * 10) / 10, z: Math.round(f.z * 10) / 10 };
+    const w = a.plan.way[st.idx]; a.status = { ok: true, msg: st.done ? `序列走完，停在「${w.name}」` : `自動：第 ${st.idx + 1}／${a.plan.way.length} 步「${w.name}」${st.holding ? '（停留中）' : '（移動中）'}` };
+  };
+  P.renderArmMode = function () {
+    const a = this.arm; const auto = a.mode === 'auto';
+    document.querySelectorAll('#tab-arm [data-amode]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.amode === a.mode)));
+    const el = $('armModeNote'); if (el) el.textContent = !this.p.arm ? '' : auto ? (this.sim.running && a.seqSt ? a.status.msg : this.armHasSeq() ? '自動：按「▶ 執行序列」依行為頁的序列移動' : '自動：序列還沒有姿態') : '手動：拖曳橘色球、滑桿或輸入座標；按「▶ 執行序列」回到行為序列';
+    const rb = $('armRun'); if (rb) { rb.textContent = this.sim.running && auto ? '❚❚ 暫停' : '▶ 執行序列'; rb.classList.toggle('primary', !(this.sim.running && auto)); }
+  };
 
   // 每幀：限速逼近目標 → 模擬層；受控寫入且開啟同步時 → 命令
   P.armTick = function (dt) {
@@ -205,7 +251,7 @@
       }
     });
     if (this.ui.tab === 'arm' && this.armScene.ok) { this.armScene.pose(a.q, a.t, a.attempt); this.armScene.frame({ q: a.q, t: a.t }); }
-    if (this.ui.tab === 'arm' && (!this._armUi || now - this._armUi > 150)) { this._armUi = now; this.renderArmLive(); }
+    if (this.ui.tab === 'arm' && (!this._armUi || now - this._armUi > 150)) { this._armUi = now; this.renderArmLive(); if (a.mode === 'auto' && this.sim.running) { this.renderArmStatus(); this.renderArmJoints(); } this.renderArmMode(); }
   };
 
   /* ---------- 面板 ---------- */
@@ -252,7 +298,7 @@
   P.renderArmPoses = function () {
     const p = this.p; const list = $('armPoses'); const poses = p.arm.poses || [];
     list.innerHTML = poses.length ? poses.map((ps, i) => `<li><span class="mono">${i + 1}</span><span>${esc(ps.name)} <span class="muted mono">(${ps.t.x}, ${ps.t.y}, ${ps.t.z})</span></span><span class="row"><button class="btn sm" data-go="${i}">移到</button><button class="btn sm" data-del="${i}">刪除</button></span></li>`).join('') : '<li><span></span><span class="muted">還沒有姿態。移到想要的位置後按「記下目前姿態」。產生程式時會依序播放這些姿態。</span><span></span></li>';
-    list.querySelectorAll('[data-go]').forEach(b => b.onclick = () => { const ps = poses[+b.dataset.go]; this.arm.qT = ps.q.slice(); this.arm.t = Object.assign({}, ps.t); this.arm.status = { ok: true, msg: `移到姿態「${ps.name}」（依限速移動）` }; this.armPersist(); this.renderArm(); });
+    list.querySelectorAll('[data-go]').forEach(b => b.onclick = () => { this.armManual('移到姿態'); const ps = poses[+b.dataset.go]; this.arm.qT = ps.q.slice(); this.arm.t = Object.assign({}, ps.t); this.arm.status = { ok: true, msg: `移到姿態「${ps.name}」（依限速移動）` }; this.armPersist(); this.renderArm(); });
     list.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { poses.splice(+b.dataset.del, 1); this.changed('arm'); this.renderArm(); });
   };
   P.renderArmConfig = function () {
@@ -278,9 +324,47 @@
   P.bindArm = function () {
     $('armApply').onclick = () => { const t = { x: +$('armTx').value, y: +$('armTy').value, z: +$('armTz').value }; if ([t.x, t.y, t.z].some(v => !Number.isFinite(v))) { this.toast('請輸入數字', 'e'); return; } this.armSetTarget(t, { continuous: false }); };
     $('armJump').onchange = e => { this.arm.allowJump = e.target.checked; };
-    $('armSavePose').onclick = () => { const p = this.p; const n = (p.arm.poses || []).length + 1; p.arm.poses = p.arm.poses || []; p.arm.poses.push({ name: '姿態 ' + n, t: Object.assign({}, this.arm.t), q: this.arm.qT.slice() }); this.changed('arm'); this.renderArmPoses(); };
+    $('armSavePose').onclick = () => { const p = this.p; p.arm.poses = p.arm.poses || []; const used = new Set(p.arm.poses.map(x => x.name)); let k = 0; while (used.has(poseName(k))) k++; p.arm.poses.push({ name: poseName(k), t: Object.assign({}, this.arm.t), q: this.arm.qT.slice() }); this.changed('arm'); this.renderArmPoses(); this.toast(`已記下姿態「${poseName(k)}」：在「行為」頁可以調整順序與停留時間`); };
     $('armHome').onclick = () => this.armSetTarget({ x: 10, y: 8, z: 0 }, { continuous: false });
     $('armStream').onchange = e => { if (this.twin.mode !== 'hw-control') { e.target.checked = false; return; } const R = this.hwRequirements(); if (!R.ok) { e.target.checked = false; this.toast('還有條件未符合，不能送出手臂命令。', 'e'); return; } this.arm.stream = e.target.checked; this.arm.warned = false; this.log(this.arm.stream ? 's' : 'w', this.arm.stream ? '開始把手臂命令送往設備（限速）' : '停止送出手臂命令'); };
   };
+  /* ---------- 行為頁：手臂動作序列（取代積木） ---------- */
+  // 一輪需要多久：用同一套序列規則推算（最多算 10 分鐘）
+  function cycleMs(plan) { if (!plan.way.length) return 0; const st = A.seqStart(plan, 0); for (let t = 1; t <= 600000; t++) { A.seqStep(plan, st, t); if (st.loops >= 1) return t; } return null; }
+  P.renderArmSeqBehavior = function () {
+    const p = this.p; const arm = p.arm; const poses = arm.poses || []; const o = A.seqOptions(arm); const plan = A.seqPlan(arm);
+    const key = DL.hash({ cfg: arm.config, poses: poses.map(x => [x.q, x.holdMs]), seq: arm.seq || null }); if (this._cycKey !== key) { this._cycKey = key; this._cyc = cycleMs(plan); }
+    const H = A.HOME_T; const sec = ms => (ms / 1000).toFixed(1);
+    $('armSeqBody').innerHTML = `<ol class="seq">
+      <li class="home"><span class="no">▶</span><span><b>開始：預備姿態</b> <span class="muted mono">(${H.x}, ${H.y}, ${H.z})</span><br><span class="hint">實際板子上電時，伺服直接轉到這個姿勢</span></span><span></span></li>
+      ${poses.map((ps, i) => `<li><span class="no">${i + 1}</span><span><b>${esc(ps.name)}</b> <span class="muted mono">(${ps.t.x}, ${ps.t.y}, ${ps.t.z})</span></span>
+        <span class="row"><label class="sh">停留 <input class="inp mono" type="number" min="0" max="60" step="0.1" data-shold="${i}" value="${sec(A.holdOf(ps.holdMs === undefined ? 1000 : ps.holdMs))}"> 秒</label>
+        <button class="btn sm" data-up="${i}" ${i ? '' : 'disabled'} aria-label="往前">↑</button><button class="btn sm" data-dn="${i}" ${i < poses.length - 1 ? '' : 'disabled'} aria-label="往後">↓</button><button class="btn sm" data-sdel="${i}">刪除</button></span></li>`).join('')}
+      ${poses.length && o.returnHome ? `<li class="home"><span class="no">${poses.length + 1}</span><span><b>預備姿態</b> <span class="muted">（回到原點）</span></span><span class="row"><label class="sh">停留 <input class="inp mono" type="number" min="0" max="60" step="0.1" id="seqHomeHold" value="${sec(o.homeHoldMs)}"> 秒</label></span></li>` : ''}
+    </ol>
+    ${poses.length ? '' : '<p class="hint" style="color:var(--warn)">還沒有姿態。到「手臂」頁把手臂移到想要的位置（A），按「記下目前姿態」；再移到 B、C…，每記一個就多一步。</p>'}
+    <label class="check"><input type="checkbox" id="seqHome" ${o.returnHome ? 'checked' : ''}><span>最後回到預備姿態（原點）</span></label>
+    <label class="check"><input type="checkbox" id="seqLoop" ${o.loop ? 'checked' : ''}><span>反覆執行（不勾：走完一輪後停住）</span></label>
+    <div class="row"><button class="btn" id="seqGoArm">到「手臂」頁記下姿態</button></div>`;
+    const set = fn => { fn(); this.changed('arm'); };
+    const body = $('armSeqBody');
+    body.querySelectorAll('[data-shold]').forEach(inp => inp.onchange = () => { const v = +inp.value; if (!Number.isFinite(v)) return; set(() => { poses[+inp.dataset.shold].holdMs = A.holdOf(v * 1000); }); });
+    body.querySelectorAll('[data-up]').forEach(b => b.onclick = () => set(() => { const i = +b.dataset.up; [poses[i - 1], poses[i]] = [poses[i], poses[i - 1]]; }));
+    body.querySelectorAll('[data-dn]').forEach(b => b.onclick = () => set(() => { const i = +b.dataset.dn; [poses[i + 1], poses[i]] = [poses[i], poses[i + 1]]; }));
+    body.querySelectorAll('[data-sdel]').forEach(b => b.onclick = () => set(() => { poses.splice(+b.dataset.sdel, 1); }));
+    const hh = $('seqHomeHold'); if (hh) hh.onchange = () => { const v = +hh.value; if (Number.isFinite(v)) set(() => { arm.seq = Object.assign({}, arm.seq, { homeHoldMs: A.holdOf(v * 1000) }); }); };
+    $('seqHome').onchange = e => set(() => { arm.seq = Object.assign({}, arm.seq, { returnHome: e.target.checked }); });
+    $('seqLoop').onchange = e => set(() => { arm.seq = Object.assign({}, arm.seq, { loop: e.target.checked }); });
+    $('seqGoArm').onclick = () => this.setTab('arm');
+    // 右側摘要：就是產生的程式會做的事
+    $('summaryList').innerHTML = poses.length ? `<li><span class="rn">序列</span><span>${esc(DL.codegen.armSeqText(plan))}。</span></li>` : '<li><span class="rn">—</span><span class="muted">序列還沒有姿態。</span></li>';
+    $('summaryInit').textContent = poses.length ? `每個關節限速 ${arm.config.maxSpeed} °/s，三個關節都到位後才開始停留計時。${this._cyc ? `一輪約 ${sec(this._cyc)} 秒。` : ''}按「▶ 執行」從預備姿態開始；手動操作手臂（拖曳、滑桿、輸入）會自動切到手動模式，再按「▶ 執行」就回到這個序列。` : '';
+    $('behaviorIssues').innerHTML = poses.length ? '' : '<li class="warn"><span class="lv warn">注意</span><span>序列沒有姿態：產生程式前至少要記下一個姿態。</span></li>';
+    const conf = this.armConfirmState(); const box = $('confirmBox');
+    box.className = 'confirmbox' + (conf === 'current' ? ' ok' : conf === 'stale' ? ' stale' : '');
+    box.innerHTML = `<span class="state">${conf === 'current' ? '手臂設定已確認' : '手臂設定尚未確認'}</span><span class="hint">手臂專案的程式由這個序列產生；手臂的尺寸、範圍與伺服映射在「手臂」頁確認後，就可以到「程式」頁產生。</span><div class="row"><button class="btn ${conf === 'current' ? '' : 'primary'}" id="seqGoConfirm">${conf === 'current' ? '前往「程式」產生程式' : '到「手臂」頁確認設定'}</button></div>`;
+    $('seqGoConfirm').onclick = () => this.setTab(conf === 'current' ? 'code' : 'arm');
+  };
+
   DL.ui.ArmScene = ArmScene;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

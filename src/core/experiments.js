@@ -251,7 +251,8 @@
       { text: '外部電源 GND 與控制板 GND 相連（共地），檢查沒有錯誤', check: (p, a) => a.ok },
       { text: '在「手臂」頁確認設定與伺服映射', check: (p, a, ctx) => !!ctx.armConfirmed },
       { text: '拖曳或輸入一個不可達的目標，看手臂保留最後有效命令', check: (p, a, ctx) => !!ctx.armSawInvalid },
-      { text: '記下至少兩個姿態', check: (p) => !!(p.arm && p.arm.poses && p.arm.poses.length >= 2) }
+      { text: '記下至少兩個姿態（A、B…），在「行為」頁排成動作序列', check: (p) => !!(p.arm && p.arm.poses && p.arm.poses.length >= 2) },
+      { text: '按「▶ 執行」，手臂依動作序列自動走完一輪', check: (p, a, ctx) => (ctx.armLoops || 0) >= 1 }
     ]
   });
 

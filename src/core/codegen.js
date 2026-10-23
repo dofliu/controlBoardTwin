@@ -4,7 +4,7 @@
  */
 (function (root) {
   const DL = (root.DL = root.DL || {});
-  const GENERATOR_VERSION = 'doflab-gen 2.2.0';
+  const GENERATOR_VERSION = 'doflab-gen 2.3.0';
 
   const isArm = p => !!(p.arm && !(p.behavior.ir.rules || []).length);
   function prepare(p) {
@@ -26,18 +26,24 @@
     if (!analysis.ok) blockers.push('配置檢查還有錯誤，請先到「配置」頁修正。');
     blockers.push(...DL.arm.validateConfig(cfg));
     for (const j of cfg.joints) if (!analysis.bindings[j.servo]) blockers.push(`${j.id} 對應的 ${j.servo} 還沒有正確接到腳位。`);
-    if (!(p.arm.poses || []).length) blockers.push('還沒有記錄任何姿態：到「手臂」頁移到想要的位置，按「記下目前姿態」。');
+    if (!(p.arm.poses || []).length) blockers.push('動作序列還沒有任何姿態：到「手臂」頁移到想要的位置，按「記下目前姿態」（行為頁會列出序列）。');
     if (!p.arm.confirmed || p.arm.confirmed.hash !== armHash(p, analysis)) blockers.push('手臂設定與伺服映射尚未確認，或確認後又改變了：請到「手臂」頁確認。');
     return { analysis, bv: { issues: [], ok: true }, inputs: DL.project.inputsHash(p, GENERATOR_VERSION), blockers, arm: true };
   }
+  // 序列說明（程式開頭的註解與行為頁摘要共用）
+  function armSeqText(plan) {
+    const parts = plan.way.map(w => `${w.name}（停 ${(w.hold / 1000).toFixed(1)} 秒）`);
+    return `開機在預備姿態 → ${parts.join(' → ')}${plan.loop ? '，反覆執行' : '，走完一輪後停住'}`;
+  }
   function genArmArduino(p, board, prep) {
-    const cfg = p.arm.config; const B = prep.analysis.bindings; const poses = p.arm.poses;
+    const cfg = p.arm.config; const B = prep.analysis.bindings; const plan = DL.arm.seqPlan(p.arm); const W = plan.way;
     const L = [];
     L.push(`// ============================================================`);
-    L.push(`// DofLab 產生的程式（${GENERATOR_VERSION}）：三自由度手臂姿態播放`);
+    L.push(`// DofLab 產生的程式（${GENERATOR_VERSION}）：三自由度手臂動作序列`);
     L.push(`// 專案：${p.name}　板型：${board.name}（${board.fqbn}）`);
     L.push(`// 輸入雜湊：${prep.inputs}`);
-    L.push(`// 依序移到 ${poses.length} 個姿態，每個關節限速 ${cfg.maxSpeed} °/s，到位後停留 1 秒，循環播放。`);
+    L.push(`// 序列：${armSeqText(plan)}。`);
+    L.push(`// 每個關節限速 ${cfg.maxSpeed} °/s；三個關節都到位後才開始停留計時。`);
     L.push(`// 角度是送給伺服的命令值；SG90 沒有回授，程式無法知道實際是否到位。`);
     L.push(`// 尺寸、範圍與零位是教學假設：上電前請確認機構不會碰撞，伺服使用外部電源並與控制板共地。`);
     L.push(`// ============================================================`);
@@ -45,23 +51,25 @@
     L.push('');
     cfg.joints.forEach((j, i) => { const pin = board.pinById[B[j.servo].pin]; L.push(`const int ${j.id}_PIN = ${board.codeName(pin)};`.padEnd(26) + `// ${j.id} ${j.name}：${j.servo} SIG → ${board.pinLabel(pin)}`); });
     L.push('');
-    L.push(`const int POSE_COUNT = ${poses.length};`);
-    L.push(`const int POSES[POSE_COUNT][3] = {   // 伺服命令角度（已依零位與方向換算）`);
-    poses.forEach((ps, k) => { const sv = DL.arm.toServo(cfg, ps.q); L.push(`  {${sv.join(', ')}}${k < poses.length - 1 ? ',' : ''}   // ${ps.name}：目標 (${ps.t.x}, ${ps.t.y}, ${ps.t.z}) cm`); });
+    L.push(`const int HOME[3] = {${plan.home.join(', ')}};   // 預備姿態 (${DL.arm.HOME_T.x}, ${DL.arm.HOME_T.y}, ${DL.arm.HOME_T.z}) cm：開機時的姿勢`);
+    L.push(`const int STEP_COUNT = ${W.length};`);
+    L.push(`const int STEPS[STEP_COUNT][3] = {   // 每一步的伺服命令角度（已依零位與方向換算）`);
+    W.forEach((w, k) => L.push(`  {${w.s.join(', ')}}${k < W.length - 1 ? ',' : ''}   // ${k + 1}. ${w.name}${w.t ? `：(${w.t.x}, ${w.t.y}, ${w.t.z}) cm` : ''}`));
     L.push('};');
+    L.push(`const unsigned long HOLD_MS[STEP_COUNT] = {${W.map(w => w.hold).join(', ')}};   // 到位後停留（毫秒）`);
+    L.push(`const bool LOOP = ${plan.loop ? 'true' : 'false'};   // true：最後一步做完回到第 1 步`);
     L.push(`const float MAX_SPEED = ${Number(cfg.maxSpeed).toFixed(1)};   // °/s（每個關節）`);
-    L.push('const unsigned long HOLD_MS = 1000;');
     L.push('');
     L.push('Servo joint[3];');
     L.push('float current[3];');
     L.push('int written[3] = {-1, -1, -1};');
-    L.push('int poseIndex = 0;');
-    L.push('bool holding = false;');
+    L.push('int stepIndex = 0;');
+    L.push('bool holding = false, done = false;');
     L.push('unsigned long lastMs = 0, holdStart = 0;');
     L.push('');
     L.push('void setup() {');
     cfg.joints.forEach((j, i) => L.push(`  joint[${i}].attach(${j.id}_PIN);`));
-    L.push('  for (int i = 0; i < 3; i++) { current[i] = POSES[0][i]; joint[i].write(POSES[0][i]); written[i] = POSES[0][i]; }');
+    L.push('  for (int i = 0; i < 3; i++) { current[i] = HOME[i]; joint[i].write(HOME[i]); written[i] = HOME[i]; }');
     L.push('  lastMs = millis();');
     L.push('}');
     L.push('');
@@ -69,74 +77,86 @@
     L.push('  unsigned long now = millis();');
     L.push('  float step = MAX_SPEED * (now - lastMs) / 1000.0;   // 這一輪最多可轉幾度');
     L.push('  lastMs = now;');
+    L.push('  if (done) return;');
     L.push('  bool arrived = true;');
     L.push('  for (int i = 0; i < 3; i++) {');
-    L.push('    float target = POSES[poseIndex][i];');
-    L.push('    float d = target - current[i];');
+    L.push('    float d = STEPS[stepIndex][i] - current[i];');
     L.push('    if (d > step) { current[i] += step; arrived = false; }');
     L.push('    else if (d < -step) { current[i] -= step; arrived = false; }');
-    L.push('    else current[i] = target;');
+    L.push('    else current[i] = STEPS[stepIndex][i];');
     L.push('    int a = (int)(current[i] + 0.5);');
     L.push('    if (a != written[i]) { joint[i].write(a); written[i] = a; }');
     L.push('  }');
     L.push('  if (arrived && !holding) { holding = true; holdStart = now; }');
-    L.push('  if (holding && now - holdStart >= HOLD_MS) { holding = false; poseIndex = (poseIndex + 1) % POSE_COUNT; }');
+    L.push('  if (holding && now - holdStart >= HOLD_MS[stepIndex]) {');
+    L.push('    holding = false; stepIndex++;');
+    L.push('    if (stepIndex >= STEP_COUNT) { if (LOOP) stepIndex = 0; else { stepIndex = STEP_COUNT - 1; done = true; } }');
+    L.push('  }');
     L.push('}');
     return { code: L.join('\n') + '\n', libs: [board.libs.servo] };
   }
   function genArmPython(p, board, prep) {
-    const cfg = p.arm.config; const B = prep.analysis.bindings; const poses = p.arm.poses; const L = [];
+    const cfg = p.arm.config; const B = prep.analysis.bindings; const plan = DL.arm.seqPlan(p.arm); const W = plan.way; const L = [];
     L.push('# ============================================================');
-    L.push(`# DofLab 產生的程式（${GENERATOR_VERSION}）：三自由度手臂姿態播放`);
+    L.push(`# DofLab 產生的程式（${GENERATOR_VERSION}）：三自由度手臂動作序列`);
     L.push(`# 專案：${p.name}　板型：${board.name}`);
     L.push(`# 輸入雜湊：${prep.inputs}`);
-    L.push(`# 依序移到 ${poses.length} 個姿態，每個關節限速 ${cfg.maxSpeed} °/s，到位後停留 1 秒，循環播放。`);
+    L.push(`# 序列：${armSeqText(plan)}。每個關節限速 ${cfg.maxSpeed} °/s。`);
     L.push('# 角度是命令值；SG90 沒有回授。尺寸、範圍與零位是教學假設，上電前請確認機構不會碰撞。');
     L.push('# ============================================================');
     L.push('import time');
     L.push('from gpiozero import AngularServo');
     L.push('');
     cfg.joints.forEach(j => { const pin = board.pinById[B[j.servo].pin]; L.push(`${j.id}_PIN = ${pin.num}`.padEnd(16) + `# ${j.id} ${j.name}：${j.servo} SIG → ${board.pinLabel(pin)}`); });
-    L.push('POSES = [   # 伺服命令角度（已依零位與方向換算）');
-    poses.forEach(ps => { const sv = DL.arm.toServo(cfg, ps.q); L.push(`    (${sv.join(', ')}),   # ${ps.name}`); });
+    L.push(`HOME = (${plan.home.join(', ')})   # 預備姿態：開機時的姿勢`);
+    L.push('STEPS = [   # (伺服命令角度, 停留秒數)');
+    W.forEach((w, k) => L.push(`    ((${w.s.join(', ')}), ${(w.hold / 1000).toFixed(3)}),   # ${k + 1}. ${w.name}`));
     L.push(']');
+    L.push(`LOOP = ${plan.loop ? 'True' : 'False'}`);
     L.push(`MAX_SPEED = ${Number(cfg.maxSpeed).toFixed(1)}   # °/s`);
-    L.push('HOLD_S = 1.0');
     L.push('');
     L.push('');
     L.push('def main():');
     L.push(`    joints = [AngularServo(p, min_angle=0, max_angle=180, min_pulse_width=0.0005, max_pulse_width=0.0024) for p in (${cfg.joints.map(j => j.id + '_PIN').join(', ')})]`);
-    L.push('    current = list(POSES[0])');
+    L.push('    current = list(HOME)');
     L.push('    for s, a in zip(joints, current):');
     L.push('        s.angle = a');
-    L.push('    index, holding, hold_start = 0, False, 0.0');
+    L.push('    index, holding, hold_start, done = 0, False, 0.0, False');
     L.push('    last = time.monotonic()');
-    L.push('    print("DofLab：姿態播放程式開始執行（Ctrl+C 結束）", flush=True)');
-    L.push('    while True:');
+    L.push('    print("DofLab：手臂動作序列開始執行（Ctrl+C 結束）", flush=True)');
+    L.push('    while not done:');
     L.push('        now = time.monotonic()');
     L.push('        step = MAX_SPEED * (now - last)');
     L.push('        last = now');
+    L.push('        target, hold = STEPS[index]');
     L.push('        arrived = True');
     L.push('        for i in range(3):');
-    L.push('            d = POSES[index][i] - current[i]');
+    L.push('            d = target[i] - current[i]');
     L.push('            if abs(d) > step:');
     L.push('                current[i] += step if d > 0 else -step');
     L.push('                arrived = False');
     L.push('            else:');
-    L.push('                current[i] = POSES[index][i]');
+    L.push('                current[i] = target[i]');
     L.push('            joints[i].angle = round(current[i])');
     L.push('        if arrived and not holding:');
     L.push('            holding, hold_start = True, now');
-    L.push('        if holding and now - hold_start >= HOLD_S:');
+    L.push('        if holding and now - hold_start >= hold:');
     L.push('            holding = False');
-    L.push('            index = (index + 1) % len(POSES)');
+    L.push('            index += 1');
+    L.push('            if index >= len(STEPS):');
+    L.push('                if LOOP:');
+    L.push('                    index = 0');
+    L.push('                else:');
+    L.push('                    index, done = len(STEPS) - 1, True');
     L.push('        time.sleep(0.02)');
+    L.push('    print("DofLab：序列走完，停在最後的姿勢", flush=True)');
     L.push('');
     L.push('');
     L.push('if __name__ == "__main__":');
     L.push('    main()');
     return { code: L.join('\n') + '\n', libs: ['gpiozero'] };
   }
+
 
   function generate(p, opts) {
     opts = opts || {};
@@ -561,6 +581,6 @@
     return items;
   }
 
-  DL.codegen = { generate, prepare, scanPins, GENERATOR_VERSION };
+  DL.codegen = { armSeqText, generate, prepare, scanPins, GENERATOR_VERSION };
   if (typeof module !== 'undefined') module.exports = DL;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

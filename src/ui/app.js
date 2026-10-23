@@ -29,6 +29,7 @@
       this.blocks = new DL.ui.Blocks(this, $('blocklyHost'));
       if (!this.blocks.ok) { const f = $('blocklyFallback'); f.hidden = false; f.textContent = '積木編輯器（Blockly）沒有載入，可能是網路無法連到 CDN。行為摘要與程式仍以已保存的行為資料運作。'; }
       this.bindChrome();
+      this.initCollapsibles(); this.initChromeHeight();
       this.armInit(); this.bindArm();
       if (this.teacherInit) this.teacherInit();
       this.twin.on(e => this.onTwinEvent(e));
@@ -200,11 +201,56 @@
       this.renderPalette();
       root.addEventListener('beforeunload', e => { if (this.p && this.dirty) { e.preventDefault(); e.returnValue = ''; } });
     }
+    /* ---------- V2.7 緊湊版面：可收合卡片、主畫面高度、浮動資訊 ---------- */
+    initCollapsibles() {
+      let st = {}; try { st = JSON.parse(localStorage.getItem('doflab.collapsed') || '{}') || {}; } catch (e) { }
+      this._collapsed = st;
+      document.querySelectorAll('main .card').forEach(card => {
+        const h = card.querySelector(':scope > h3'); if (!h || h.dataset.cx) return; h.dataset.cx = '1';
+        const key = card.id || ((h.firstChild && h.firstChild.textContent) || '').trim(); card.dataset.ckey = key;
+        const ttl = document.createElement('span'); ttl.className = 'ttl';
+        const cx = document.createElement('button'); cx.type = 'button'; cx.className = 'cx'; cx.textContent = '▼'; cx.setAttribute('aria-label', '收合或展開'); cx.setAttribute('aria-expanded', 'true');
+        ttl.appendChild(cx); while (h.firstChild && h.firstChild.nodeType === 3) ttl.appendChild(h.firstChild);
+        h.insertBefore(ttl, h.firstChild);
+        h.addEventListener('click', e => { if (e.target.closest('button:not(.cx),input,select,a,label,textarea')) return; this.setCollapsed(card, !card.classList.contains('collapsed'), true); });
+        if (st[key] !== undefined) this.setCollapsed(card, !!st[key], false);
+      });
+    }
+    setCollapsed(card, on, save) {
+      card.classList.toggle('collapsed', on); const cx = card.querySelector(':scope > h3 .cx'); if (cx) cx.setAttribute('aria-expanded', String(!on));
+      if (save) { this._collapsed[card.dataset.ckey] = on; try { localStorage.setItem('doflab.collapsed', JSON.stringify(this._collapsed)); } catch (e) { } }
+      if (!on && card.id === 'traceCard') this._traceSize = null;
+    }
+    // 從主畫面的浮動資訊跳到側欄的卡片：展開、捲到看得到的位置、閃一下
+    focusCard(id) {
+      const c = $(id); if (!c || c.hidden) return;
+      if (c.classList.contains('collapsed')) this.setCollapsed(c, false, true);
+      c.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); c.classList.add('flash'); setTimeout(() => c.classList.remove('flash'), 900);
+    }
+    initChromeHeight() {
+      const upd = () => { const m = document.querySelector('main'); const bar = document.querySelector('.bar'); if (!m || !bar) return; document.documentElement.style.setProperty('--chrome-h', Math.round(m.getBoundingClientRect().top + root.scrollY) + 'px'); document.documentElement.style.setProperty('--sticky-h', bar.offsetHeight + 'px'); };
+      this.updateChrome = upd; upd();
+      root.addEventListener('resize', upd);
+      if (root.ResizeObserver) { const ro = new ResizeObserver(upd); for (const el of [document.querySelector('.bar'), $('banner'), document.querySelector('.tabs')]) if (el) ro.observe(el); }
+    }
+    // 配置頁主畫面右上角：檢查結果、任務進度、連線數、選取項目（點一下跳到右側卡片）
+    renderHud() {
+      const el = $('hudConfig'); if (!el || !this.p) return;
+      const a = this.analysis; const c = a.counts; const chips = [];
+      chips.push(c.error ? ['err', 'issueCard', `電路檢查 <b>${c.error} 錯誤</b>${c.warn ? ` · ${c.warn} 注意` : ''}`] : c.warn || c.unknown ? ['warn', 'issueCard', `電路檢查 <b>${c.warn ? c.warn + ' 注意' : ''}${c.unknown ? ' ' + c.unknown + ' 未檢查' : ''}</b>`] : ['ok', 'issueCard', '電路檢查 <b>✓ 通過</b>']);
+      const tl = $('taskList'); if (!$('taskCard').hidden && tl) { const all = tl.querySelectorAll('li'); const done = tl.querySelectorAll('li.done'); const next = [...all].find(li => !li.classList.contains('done')); chips.push([done.length === all.length ? 'ok' : '', 'taskCard', `任務 <b>${done.length}／${all.length}</b>${next ? ' · ' + esc(next.textContent.slice(0, 16)) + (next.textContent.length > 16 ? '…' : '') : ''}`]); }
+      if (!$('assistCard').hidden) chips.push(['', 'assistCard', `接線助手 <b>${esc(($('assistCount') || {}).textContent || '')}</b>`]);
+      chips.push(['', 'wireCard', `連線 <b>${this.p.connections.length}</b> 條`]);
+      const sel = this.ui.selected; if (sel && sel.id) chips.push(['', 'inspectCard', `選取 <b>${esc(sel.id)}</b>`]);
+      const html = chips.map(([k, id, t]) => `<button type="button" class="hc ${k}" data-card="${id}">${t}</button>`).join('');
+      if (html !== this._hudHtml) { this._hudHtml = html; el.innerHTML = html; el.querySelectorAll('[data-card]').forEach(b => b.onclick = () => this.focusCard(b.dataset.card)); }
+    }
     setTab(t) {
       if (!['config', 'behavior', 'code', 'observe', 'arm'].includes(t)) t = 'config';
       if (this.ui.tab !== t) this.cancelModes();
       this.ui.tab = t;
       for (const x of ['config', 'behavior', 'code', 'observe', 'arm']) { $('t-' + x).setAttribute('aria-selected', String(x === t)); $('tab-' + x).hidden = x !== t; }
+      if (this.updateChrome) this.updateChrome();
       if (t === 'config') this.scene.mount($('vpConfig'));
       if (t === 'observe') { this.scene.mount($('vpObserve')); this.renderObserve(); }
       if (t === 'behavior' && this.blocks.ok) { if (!this.blocks.ws) this.blocks.load(this.p.behavior.ir, this.p.behavior.blocks, this.p.lock.behavior); setTimeout(() => this.blocks.resize(), 0); }
@@ -268,6 +314,7 @@
       tb.className = 'tb ' + (a.counts.error ? 'err' : a.counts.warn || a.counts.unknown ? 'warn' : 'ok'); tb.textContent = a.counts.error ? `${a.counts.error} 錯誤` : a.counts.unknown ? `${a.counts.unknown} 未檢查` : a.counts.warn ? `${a.counts.warn} 注意` : '通過';
       const cs = this.confirmState(); const tbb = $('tbBehavior');
       tbb.className = 'tb ' + (cs === 'current' ? 'ok' : cs === 'stale' ? 'warn' : ''); tbb.textContent = cs === 'current' ? '已確認' : cs === 'stale' ? '需重新確認' : '未確認';
+      if (this.p.arm && !(this.p.behavior.ir.rules || []).length) { const n = (this.p.arm.poses || []).length; tbb.className = 'tb ' + (n ? 'ok' : 'warn'); tbb.textContent = n ? `序列 ${n} 步` : '沒有姿態'; }
       const code = this.codeState(); const tbc = $('tbCode');
       tbc.className = 'tb ' + ({ current: 'ok', stale: 'warn', manual: 'warn', none: '' }[code.state]); tbc.textContent = { current: '最新', stale: '過期', manual: '手動修改', none: '尚未產生' }[code.state];
       const tba = $('tbArm'); if (tba) { const st = !this.p.arm ? '' : this.armConfirmState(); tba.className = 'tb ' + (st === 'current' ? 'ok' : st ? 'warn' : ''); tba.textContent = !this.p.arm ? '未啟用' : st === 'current' ? '已確認' : '未確認'; }
@@ -316,7 +363,8 @@
       };
       const bd = DL.boards[this.p.board.type];
       const fits = d => !d.onboard || (d.onboard === 'touch' ? bd.pins.some(x => x.caps.includes('touch')) : !!(bd.onboard || {})[d.onboard]);   // 只列出這塊板子有的板載元件
-      el.innerHTML = Object.values(DL.components).filter(fits).map(d => `<button class="pal" data-type="${d.type}" ${locked ? 'disabled' : ''} aria-pressed="${this.ui.placingType === d.type}">${icons[d.type] || ''}<span><b>${d.name}</b><small>${esc(d.model)}</small></span></button>`).join('') + (locked ? '<p class="hint">引導實驗鎖定了元件清單。</p>' : '');
+      const pc = $('paletteCard'); if (pc && this._collapsed && this._collapsed.paletteCard === undefined) this.setCollapsed(pc, !!locked, false);   // 引導實驗鎖定元件時，清單預設收起來（使用者自己開關過就照他的）
+      el.innerHTML = Object.values(DL.components).filter(fits).map(d => `<button class="pal" data-type="${d.type}" title="${esc(d.name + '：' + d.model)}" ${locked ? 'disabled' : ''} aria-pressed="${this.ui.placingType === d.type}">${icons[d.type] || ''}<span><b>${d.name}</b><small>${esc(d.model)}</small></span></button>`).join('') + (locked ? '<p class="hint">引導實驗鎖定了元件清單。</p>' : '');
       el.querySelectorAll('.pal').forEach(b => b.addEventListener('pointerdown', e => this.paletteDown(e, b.dataset.type)));
     }
     // 從清單拖到場景（滑鼠與觸控共用）；沒有移動就視為「先選元件、再點位置」
@@ -413,7 +461,7 @@
       $('wireList').querySelectorAll('li.ins').forEach(li => li.onclick = e => { if (e.target.dataset.unmount) return; this.ui.selected = { kind: 'comp', id: li.dataset.comp }; this.renderInspector(); this.renderWires(); });
       $('wireList').querySelectorAll('li[data-id]').forEach(li => li.onclick = e => { if (e.target.dataset.del) { DL.project.removeConnection(p, e.target.dataset.del); this.ui.selected = null; this.changed('circuit', `已移除 ${e.target.dataset.del}`); return; } this.ui.selected = { kind: 'wire', id: li.dataset.id }; this.renderInspector(); this.renderWires(); });
     }
-    taskCtx() { return { confirmedCurrent: this.confirmState() === 'current', maxHoldMs: this.sim.maxHoldMs, minLight: this.sim.minLight, maxLight: this.sim.maxLight, minDist: this.sim.minDist, nearMin: this.sim.nearMin, nearMax: this.sim.nearMax, farAfterNear: this.sim.farAfterNear, serialCount: this.sim.serialCount || 0, presses: this.sim.presses, armConfirmed: !!(this.p.arm && this.armConfirmState() === 'current'), armSawInvalid: !!(this.arm && this.arm.sawInvalid) }; }
+    taskCtx() { return { armLoops: this.sim.armLoops || 0, confirmedCurrent: this.confirmState() === 'current', maxHoldMs: this.sim.maxHoldMs, minLight: this.sim.minLight, maxLight: this.sim.maxLight, minDist: this.sim.minDist, nearMin: this.sim.nearMin, nearMax: this.sim.nearMax, farAfterNear: this.sim.farAfterNear, serialCount: this.sim.serialCount || 0, presses: this.sim.presses, armConfirmed: !!(this.p.arm && this.armConfirmState() === 'current'), armSawInvalid: !!(this.arm && this.arm.sawInvalid) }; }
     renderTasks() {
       const p = this.p; const card = $('taskCard');
       const e = p.origin.kind === 'guided' && DL.experiments.forProject(p);
@@ -439,7 +487,11 @@
       return c.inputs === DL.project.inputsHash(this.p, GEN()) ? 'current' : 'stale';
     }
     renderBehavior() {
-      const p = this.p; const sum = DL.behavior.summarize(p); const v = DL.behavior.validate(p, this.analysis);
+      const p = this.p;
+      const armSeq = !!(p.arm && !(p.behavior.ir.rules || []).length);   // 手臂專案：行為＝動作序列（不用積木）
+      $('armSeqCard').hidden = !armSeq; $('blocklyHost').hidden = armSeq; $('blocklyHint').hidden = armSeq;
+      if (armSeq && this.renderArmSeqBehavior) { this.renderArmSeqBehavior(); return; }
+      const sum = DL.behavior.summarize(p); const v = DL.behavior.validate(p, this.analysis);
       $('summaryList').innerHTML = sum.lines.length ? sum.lines.map(l => `<li><span class="rn">規則 ${l.n}</span><span><span class="rk">${l.kind}</span>${esc(l.text)}</span></li>`).join('') : '<li><span class="rn">—</span><span class="muted">還沒有規則。從左側積木的「規則」分類拖一個出來。</span></li>';
       $('summaryInit').textContent = (sum.init.length ? '初始狀態：' + sum.init.join('、') + '。' : '') + ' ' + sum.notes.join(' ');
       const issues = v.issues.concat((this.blockWarnings || []).map(w => ({ level: 'warn', msg: w })));

@@ -166,7 +166,7 @@
   }
   function elKey(p, ep) { return isBB(p, ep.comp) ? ep.comp + '.' + DL.breadboard.busOf(ep.term) : epKey(ep); }
   function inputsHash(p, generatorVersion) {
-    return hash({ e: electricalSnapshot(p), ir: p.behavior.ir, gen: generatorVersion || null, arm: p.arm ? { cfg: p.arm.config, poses: (p.arm.poses || []).map(x => x.q) } : null });
+    return hash({ e: electricalSnapshot(p), ir: p.behavior.ir, gen: generatorVersion || null, arm: p.arm ? Object.assign({ cfg: p.arm.config, poses: (p.arm.poses || []).map(x => x.holdMs === undefined ? x.q : [x.q, x.holdMs]) }, p.arm.seq ? { seq: p.arm.seq } : {}) : null });
   }
 
   /* ---------- 保存／載入 ---------- */
