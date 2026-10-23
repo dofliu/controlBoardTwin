@@ -25,7 +25,8 @@
      - 主機：拒絕非本機位址、第二個連線、錯誤的協定版本與網址；DTR 經網路重新啟動晶片，介面只把它記在事件紀錄。
      - 設備端的 Firmata 紀錄能分辨查詢、輸入設定與各種寫入。
    - E2E 新增 14 項（`python3 e2e/e2e.py vdev`）：瀏覽器連到另一個程序的虛擬 Uno、各處標示虛擬、唯讀時設備端沒有寫入、工作台按鈕（由測試經 HTTP 操作，介面以外）出現在量測層、授權後 D13 在虛擬晶片上 HIGH／LOW 交替並有 ACK、停掉主機後回到模擬且沒有留下未確認命令、重新啟動主機後從唯讀開始且沒有重送、中斷後主機端連線釋放。
-   - 移動 `VirtualUno`（`tests/avr/avrsim.js` → `tools/vdev/avrsim.js`）並修正 RXC 後，本環境另外安裝 arduino-cli 1.1.1＋arduino:avr 1.8.6＋Servo 1.2.2，跑過原本因缺工具鏈而略過的 9 項虛擬晶片測試，全部通過。
+   - 移動 `VirtualUno`（`tests/avr/avrsim.js` → `tools/vdev/avrsim.js`）並修正 RXC 後，本環境另外安裝 arduino-cli 1.1.1＋arduino:avr 1.8.6＋Servo 1.2.2，跑過原本因缺工具鏈而略過的 9 項虛擬晶片測試，全部通過。Python 的 avrdude → pty → 虛擬 Uno 上傳測試（用到搬家後的 `avrsim.js`）也通過。
+   - CI（`.github/workflows/ci.yml`）第一次在 GitHub 上執行並通過（PR dofliu/controlBoardTwin#1）。
 6. **限制與還沒做的**（**未包含**，依規劃文件的後續階段）：工作台的彈跳、光敏、超音波、伺服、接線不一致（第 2 階段）；延遲、掉包等故障注入（第 3 階段）；上傳程式到虛擬 Uno、序列埠文字（第 4 階段）；多人觀看與控制權（第 5 階段）；虛擬樹莓派與 ESP32（第 6 階段）；放到雲端、TLS、通行碼（第 7 階段，需使用者決定）。按鈕放開時假設韌體開了上拉（目前的韌體都會開）。虛擬晶片在本環境約 2.4 倍即時，CPU 不夠時晶片時間會落後（不會跳過指令），主機的狀態 API 會顯示速度比例。
 
 ## V2.7：依使用者介面意見修正
@@ -166,7 +167,7 @@
 |---|---|---|
 | Node `tests/*.test.js` | 112／112 | 虛擬設備經 WebSocket（4，V2.8）、核心邏輯、手臂運動學、自動整線、等價測試、虛擬硬體、麵包板（9）、上傳燒錄（6）、接線助手與自訂實驗（7）、V2.4 新實驗（8）、超音波（9）、超音波真機同步（2）、ESP32 DevKit V1 與板載元件（7）、序列埠占用處理（6）、手臂動作序列（5） |
 | Python `tests/test_*.py` | 17／17 | Pi 程式（gpiozero Mock，含新實驗與引擎比對；超音波用假的 DistanceSensor）、Pi 閘道超音波（模擬腳位）、Pi 閘道協定與部署、編譯服務（Uno＋ESP32＋ESP32 DevKit V1＋Pi）、上傳（含 avrdude → 虛擬 Uno 端到端） |
-| 瀏覽器 E2E `e2e/e2e.py` | 179／179 | headless Chromium＋SwiftShader；虛擬設備經 WebSocket（14，V2.8）、桌面、麵包板、教師模式、新實驗（6）、超音波（12，含虛擬 Uno 上 DofLabFirmata 量回波）、只用板子（7）、序列埠占用（3）、手臂與板子同一畫面（2）、V2.7 版面與手臂序列（17）、上傳（瀏覽器 STK500 → 虛擬 Uno 的 Optiboot）、樹莓派部署、手機 390×844（觸控模擬）、深色模式。按鈕與亮度的檢查都等到狀態符合（最多 2 秒）再判斷：新實驗的 E2E 第一次用 120 ms 短按，軟體渲染下模擬一格比按住時間還長，有 3 項讀不到按下；改成等模擬看到按下後再放開，整輪重跑通過 |
+| 瀏覽器 E2E `e2e/e2e.py` | 179／179 | V2.8 的完整一輪是 178／179：唯一失敗的是 ESP32 DevKit V1 真實編譯，原因是本環境當時沒有 esp32:esp32 core 與 pyserial（esptool 需要）；補裝後重跑該段落（onboard）7／7 通過。headless Chromium＋SwiftShader；虛擬設備經 WebSocket（14，V2.8）、桌面、麵包板、教師模式、新實驗（6）、超音波（12，含虛擬 Uno 上 DofLabFirmata 量回波）、只用板子（7）、序列埠占用（3）、手臂與板子同一畫面（2）、V2.7 版面與手臂序列（17）、上傳（瀏覽器 STK500 → 虛擬 Uno 的 Optiboot）、樹莓派部署、手機 390×844（觸控模擬）、深色模式。按鈕與亮度的檢查都等到狀態符合（最多 2 秒）再判斷：新實驗的 E2E 第一次用 120 ms 短按，軟體渲染下模擬一格比按住時間還長，有 3 項讀不到按下；改成等模擬看到按下後再放開，整輪重跑通過 |
 
 工具鏈：arduino-cli 1.1.1、arduino:avr 1.8.6（avr-gcc 7.3.0）、esp32:esp32 2.0.17（xtensa gcc 8.4.0）、Servo 1.2.2、ESP32Servo 1.1.2、Firmata 2.5.9、avr8js 0.20.1、avrdude 7.1、Optiboot（arduino:avr 內附的 optiboot_atmega328.hex）。
 
