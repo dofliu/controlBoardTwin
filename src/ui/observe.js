@@ -314,7 +314,8 @@
     const step = (n, title, state, body) => `<li class="${state}"><span class="no">${n}</span><div><b>${title}</b>${body}</div></li>`;
     const s1 = connected ? `<span>${esc(info.label)} · ${esc(c.info || '')}</span><div class="row"><button class="btn danger" id="hwDisc">中斷連線</button></div>`
       : `${p.board.type === 'pi4b' ? `<div class="row"><input class="inp mono" id="wsUrl" value="${esc(urlDefault)}" aria-label="樹莓派閘道網址" style="flex:1 1 200px"></div>` : `<span class="hint">${DL.boardFamily(p.board.type) === 'esp32' ? 'ESP32 需先上傳 DofLabFirmata 韌體' : 'Uno 需先上傳 DofLabFirmata（建議）或 StandardFirmata'}，再用 USB 連接電腦；需要電腦版 Chrome／Edge。韌體在下載包的 firmware 資料夾，也可以直接按下面的按鈕上傳。</span>${this.firmataFlashHtml ? this.firmataFlashHtml() : ''}`}
-         <div class="row"><button class="btn primary" id="hwConn" ${this.hw.busy ? 'disabled' : ''}>${p.board.type === 'pi4b' ? '連接樹莓派' : (DL.boardFamily(p.board.type) === 'esp32' ? '連接 ESP32（USB）' : '連接 Arduino（USB）')}</button></div>
+         <div class="row"><button class="btn primary" id="hwConn" ${this.hw.busy ? 'disabled' : ''}>${p.board.type === 'pi4b' ? '連接樹莓派' : (DL.boardFamily(p.board.type) === 'esp32' ? '連接 ESP32（USB）' : '連接 Arduino（USB）')}</button>${p.board.type !== 'pi4b' && this.hw.lastPort ? `<button class="btn" id="hwReconn" ${this.hw.busy ? 'disabled' : ''} title="不用再選連接埠">用上次的連接埠重新連線</button>` : ''}</div>
+         ${p.board.type !== 'pi4b' ? '<span class="hint">連不上時：先關掉 Arduino IDE 的序列埠監控視窗與其他 DofLab 分頁。本頁上一次沒關乾淨的連線會自動關閉；板子沒回應時會自動重新啟動板子再試一次。</span>' : ''}
          ${c.state === 'lost' ? `<span class="hint" style="color:var(--err)">上次連線中斷${this.twin.dropped.length ? `；${this.twin.dropped.length} 個未確認命令已作廢、不會重送` : ''}。重新連線後會從唯讀開始。</span>` : ''}`;
     const s2 = this.hw.identity ? `<span class="${this.hw.identity.ok ? '' : 'muted'}">${this.hw.identity.ok ? '✓' : '✗'} ${esc(this.hw.identity.msg)}</span>${this.hw.identity.mock ? '<span class="hint">這是測試用的模擬腳位，不是實體設備。</span>' : ''}` : '<span class="hint">連線後讀取板卡回報的型號與腳位能力。</span>';
     const bindings = Object.values(a.bindings);
@@ -333,6 +334,7 @@
       ${step(4, '受控寫入', mode === 'hw-control' ? 'done' : connected && R.ok ? 'cur' : '', s4)}
     </ol><p class="hint">斷線、資料過期、重連或裝置重啟時，不會自動重送未確認的命令；重連一律從唯讀開始。此流程不是實際接線或機械安全操作程序，電壓、電流、共地與供電請依實物規格核對。</p>`;
     const cn = $('hwConn'); if (cn) cn.onclick = () => this.hwConnect();
+    const rc = $('hwReconn'); if (rc) rc.onclick = () => this.hwConnect(true);
     if (this.bindFirmataFlash) this.bindFirmataFlash();
     const dc = $('hwDisc'); if (dc) dc.onclick = () => this.hwDisconnect('使用者中斷連線');
     const au = $('hwAuth'); if (au) au.onclick = () => this.hwAuthorize();
@@ -347,7 +349,7 @@
       this.hw.lastSeen = this.hw.lastSeen || {}; if (v.measured) this.hw.lastSeen[c.id] = v.measured.v;
     }
   };
-  P.hwConnect = async function () {
+  P.hwConnect = async function (reuse) {
     const p = this.p; const info = DL.drivers.driverFor(p.board.type);
     if (!info.cls) { this.toast(info.status, 'e'); return; }
     const url = $('wsUrl') ? $('wsUrl').value.trim() : null;   // 先讀網址，再重繪面板
@@ -355,7 +357,8 @@
     this.hw.busy = true; this.renderHw();
     const drv = new info.cls(this.twin, { log: (m, k) => { this.log(k || '', m); }, onLost: why => this.hwLost(why) }, p.board.type);
     try {
-      const r = await drv.connect({ url });
+      const r = await drv.connect({ url, port: reuse ? this.hw.lastPort : null });
+      if (drv.port) this.hw.lastPort = drv.port;   // 記住連接埠：之後可以不經選擇視窗直接重新連線（瀏覽器已授權過）
       if (this.sim.running) this.toggleRun();
       this.hw.driver = drv; this.hw.identity = r.identity; this.hw.checks = {}; this.hw.sawChange = {}; this.hw.lastSeen = {};
       this.twin.connected(r.deviceId, r.info);
@@ -370,6 +373,7 @@
       if (!r.identity.ok) this.log('w', '板卡辨識與專案不符：只能唯讀觀測，不能授權寫入。');
     } catch (e) {
       const msg = e && e.name === 'NotFoundError' ? '沒有選擇序列埠。' : e && (e.name === 'SecurityError' || e.name === 'NotAllowedError') ? '這個頁面不允許存取裝置（例如在 Claude 的預覽中）。請改用下載版，在 Chrome／Edge 以 https 或 localhost 開啟。' : (e && e.message) || String(e);
+      if (drv.port && e && e.code !== 'port_busy') this.hw.lastPort = drv.port;
       this.log('e', '連線失敗：' + msg); this.toast(msg, 'e');
     } finally { this.hw.busy = false; this.renderAll(); }
   };
@@ -384,10 +388,10 @@
   };
   P.hwRevoke = function (why) { if (this.twin.mode !== 'hw-control') return; this.twin.revoke(why); if (this.sim.running) this.toggleRun(); this.hw.driver && this.hw.driver.revoke(); this.renderAll(); };
   P.hwDisconnect = function (why) {
-    const d = this.hw.driver; if (!d) return;
+    const d = this.hw.driver; if (!d) return Promise.resolve();
     this.hw.driver = null; if (this.sim.running) this.toggleRun();
-    this.twin.disconnected(why || '中斷連線'); d.disconnect();
-    this.hw.identity = null; this.renderAll();
+    this.twin.disconnected(why || '中斷連線'); const done = d.disconnect();
+    this.hw.identity = null; this.renderAll(); return done;
   };
   P.hwLost = function (why) {
     if (!this.hw.driver) return; this.hw.driver = null; if (this.sim.running) this.toggleRun();

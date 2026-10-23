@@ -31,7 +31,7 @@
     req.push({ ok: cs.state !== 'stale', text: cs.state === 'stale' ? '程式是依照舊的配置或行為產生的：請重新產生' : cs.state === 'manual' ? '程式有手動修改（會照目前的內容上傳）' : '程式與目前的配置、行為一致' });
     req.push({ ok: bs.state === 'ok', text: bs.state === 'ok' ? '目前的程式編譯成功' : '目前的程式還沒有編譯成功：請先按「編譯」' });
     if (method === 'browser') { const a = this.lastArtifacts; req.push({ ok: !!(a && a.codeHash === DL.hash(code) && a.board === p.board.type && a.artifacts && a.artifacts.kind === 'hex'), text: '有這份程式編譯出的 .hex（重新整理頁面後需要再編譯一次）' }); }
-    req.push({ ok: this.twin.conn.state !== 'connected', text: this.twin.conn.state === 'connected' ? '「觀測」頁正連著這塊板子：請先中斷連線（同一個連接埠不能同時使用）' : '「觀測」頁沒有佔用這塊板子' });
+    req.push({ ok: true, text: this.twin.conn.state === 'connected' && method !== 'pi' ? '「觀測」頁正連著這塊板子：上傳前會自動中斷連線（同一個連接埠不能同時使用）' : '「觀測」頁沒有佔用這塊板子' });
     return { req, ok: req.every(r => r.ok) };
   };
 
@@ -100,6 +100,14 @@
   };
 
   // 執行上傳；what = 'program'（目前的程式）或 'firmata'（觀測頁用的韌體）
+  // 編譯服務上傳失敗時，從工具輸出判斷常見原因（給學生看得懂的下一步）
+  function uploadHint(raw) {
+    raw = String(raw || '');
+    if (/could not open port|Access is denied|Resource busy|Permission denied|PermissionError|port is busy|being used by another/i.test(raw)) return '連接埠被占用或沒有權限：關掉 Arduino IDE 的序列埠監控視窗與其他 DofLab 分頁後再試（Linux 需要把使用者加入 dialout 群組）。';
+    if (/Failed to connect to ESP32|Wrong boot mode|Timed out waiting for packet header|No serial data received/i.test(raw)) return 'ESP32 沒有進入下載模式：上傳出現「Connecting…」時按住板子上的 BOOT 鍵，開始寫入後再放開。';
+    if (/not in sync|stk500_recv|stk500_getsync/i.test(raw)) return '沒有和 Uno 的開機程式同步：確認板型與連接埠，或在上傳開始時按一下 RESET。';
+    return '';
+  }
   P.upRun = async function (method, what) {
     const p = this.p; const up = this.up; const board = DL.boards[p.board.type];
     if (up.busy) return;
@@ -107,23 +115,28 @@
     up.busy = true; up.prog = null; up.last = null; this.renderUpload(); if (what === 'firmata') this.renderHw();
     const code = what === 'firmata' ? DL.firmware.ino : p.code.text;
     try {
+      // 同一個序列埠不能同時給兩個程式用：觀測頁還連著的話，先中斷再上傳
+      if (method !== 'pi' && this.hw && this.hw.driver && this.hw.driver.kind === 'firmata') {
+        this.upLog('上傳前先中斷「觀測」頁的真機連線（同一個序列埠不能同時給兩個程式用）', 'w');
+        await this.hwDisconnect('上傳程式前中斷'); await new Promise(r => setTimeout(r, 300));
+      }
       if (method === 'browser') {
         const hex = what === 'firmata' ? DL.firmware.unoHex : this.lastArtifacts.artifacts.hex;
         let port;
         try { port = await navigator.serial.requestPort({}); } catch (e) { throw new Error('沒有選擇連接埠，已取消。'); }
         this.upLog('開始上傳（瀏覽器，STK500）');
-        const r = await DL.stk500.flash(port, hex, { log: m => this.upLog(m), onProgress: pr => { up.prog = pr; this.renderUpload(); } });
+        const r = await DL.stk500.flash(port, hex, { open: (pt, baud) => DL.serial.open(pt, baud, m => this.upLog(m)), log: m => this.upLog(m), onProgress: pr => { up.prog = pr; this.renderUpload(); } });
         up.last = `已上傳到 ${board.short}：${r.bytes} 位元組，${r.verified ? '讀回比對一致' : '未比對'}，${(r.ms / 1000).toFixed(1)} 秒。`;
       } else if (method === 'server') {
         if (!up.port) await this.upListPorts();
         if (!up.port) throw new Error('沒有可用的序列埠。');
         this.upLog(`開始上傳（編譯服務，${up.port}）：先編譯再上傳，可能需要一分鐘`);
         const r = await (await fetch(this.compileBase() + '/api/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ board: p.board.type, code, port: up.port, confirm: true }) })).json();
-        if (!r.ok) { up.lastRaw = r.raw; const stage = r.stage === 'compile' ? '編譯失敗' : r.stage === 'port' ? '連接埠不正確' : '上傳失敗'; throw new Error(stage + '（結束碼 ' + r.exitCode + '）：' + rawTail(r.raw)); }
+        if (!r.ok) { up.lastRaw = r.raw; const stage = r.stage === 'compile' ? '編譯失敗' : r.stage === 'port' ? '連接埠不正確' : '上傳失敗'; const hint = r.stage === 'upload' ? uploadHint(r.raw) : ''; throw new Error(stage + '（結束碼 ' + r.exitCode + '）：' + (hint ? hint + '　原始訊息：' : '') + rawTail(r.raw)); }
         up.last = `已由編譯服務上傳到 ${up.port}（${r.fqbn}，${(r.durationMs / 1000).toFixed(1)} 秒，含讀回比對）。`;
       } else if (method === 'pi') await this.piDeploy(code);
       if (up.last) { this.upLog(up.last, 'ok'); this.log('s', up.last); this.toast(up.last); }
-      if (what === 'firmata' && method !== 'pi') this.hw.firmataFlashed = true;
+      if (what === 'firmata' && method !== 'pi') { this.hw.firmataFlashed = true; if (this.hw.lastPort) this.log('s', '韌體已上傳：在「真機連線」按「用上次的連接埠重新連線」即可，不用再選連接埠。'); }
     } catch (e) {
       this.upLog(e.message, 'e'); this.log('e', '上傳失敗：' + e.message); this.toast(e.message, 'e');
     } finally { up.busy = false; up.prog = null; this.renderUpload(); if (what === 'firmata') this.renderHw(); }

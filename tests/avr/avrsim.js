@@ -128,9 +128,20 @@ class VirtualUno {
       getInfo: () => ({ usbVendorId: 0x2341, usbProductId: 0x0043, virtual: 'avr8js' }),
       // DTR 由「未啟用」變成「啟用」時，Uno 的 RESET 腳經電容收到一個脈衝 → 晶片重置（上傳程式就是靠這個進入 Optiboot）
       async setSignals(sig) { if (sig && 'dataTerminalReady' in sig) { if (sig.dataTerminalReady && self._dtr === false) self.reset(); self._dtr = !!sig.dataTerminalReady; } },
-      get readable() { return readable; }, get writable() { return writable; },
-      async open() { if (port.opened) throw new Error('連接埠已經開啟'); if (port.closed) mk(); port.opened = true; port.closed = false; if (port.tick) port.tick(true); else { const k = realtimeFactor || 1; timer = setInterval(() => self.runMs(10 * k), 10); } },
-      async close() { clearInterval(timer); if (port.tick) port.tick(false); let n = 0; while (self.rxQueue.length && n++ < 200) self.runMs(1); self.runMs(5); try { ctrl.close(); } catch (e) { } self.onSerial = null; port.opened = false; port.closed = true; },   // 已寫出的位元組會先送完（如同作業系統的序列埠緩衝）
+      // 與 Chrome 的 Web Serial 相同：未開啟時 readable／writable 是 null；重複開啟丟 InvalidStateError；
+      // 串流還被鎖住（讀取迴圈沒放開）時 close() 失敗、連接埠保持開啟；externalBusy 模擬「被其他程式占用」（NetworkError）
+      get readable() { return port.opened ? readable : null; }, get writable() { return port.opened ? writable : null; },
+      externalBusy: 0, opens: 0,
+      async open() {
+        if (port.opened) throw Object.assign(new Error('The port is already open.'), { name: 'InvalidStateError' });
+        if (port.externalBusy > 0) { port.externalBusy--; throw Object.assign(new Error('Failed to open serial port.'), { name: 'NetworkError' }); }
+        if (port.closed) mk(); port.opened = true; port.closed = false; port.opens++; if (port.tick) port.tick(true); else { const k = realtimeFactor || 1; timer = setInterval(() => self.runMs(10 * k), 10); }
+      },
+      async close() {
+        if (!port.opened) throw Object.assign(new Error('The port is already closed.'), { name: 'InvalidStateError' });
+        if (readable.locked || writable.locked) throw new TypeError('Cannot cancel a locked stream');
+        clearInterval(timer); if (port.tick) port.tick(false); let n = 0; while (self.rxQueue.length && n++ < 200) self.runMs(1); self.runMs(5); try { ctrl.close(); } catch (e) { } self.onSerial = null; port.opened = false; port.closed = true; },   // 已寫出的位元組會先送完（如同作業系統的序列埠緩衝）
+      unplug() { try { ctrl.error(new Error('The device has been lost.')); } catch (e) { } },   // 模擬拔掉 USB：讀取串流出錯
       stop() { clearInterval(timer); if (port.tick) port.tick(false); }
     };
     return port;

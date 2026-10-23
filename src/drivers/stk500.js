@@ -46,7 +46,7 @@
     const image = parseHex(hexText);
     if (image.length > dev.maxBytes) throw new Error(`程式有 ${image.length} 位元組，超過 ${dev.name} 可用的 ${dev.maxBytes} 位元組（最後 512 位元組保留給開機程式）。`);
     const pages = Math.ceil(image.length / dev.page);
-    await port.open({ baudRate: dev.baud });
+    if (opts.open) await opts.open(port, dev.baud); else await port.open({ baudRate: dev.baud });   // 瀏覽器傳入 DL.serial.open：會先關掉本頁沒關乾淨的連線
     const io = byteReader(port); const writer = port.writable.getWriter();
     const send = bytes => writer.write(new Uint8Array(bytes));
     const cmd = async (bytes, extra, ms) => { await send(bytes); const r = await io.read(2 + (extra || 0), ms || 800); if (r[0] !== STK.INSYNC || r[r.length - 1] !== STK.OK) throw new Error('回應不同步'); return r.slice(1, -1); };

@@ -11,6 +11,40 @@
   const DL = (root.DL = root.DL || {});
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+  /* ======================= 序列埠的開啟與釋放 =======================
+   * 同一個連接埠同時只能被一個程式（或同一頁的一個連線）開啟。常見的卡住原因：
+   *   1. 本頁上一次的連線沒有關乾淨（讀取迴圈還鎖著串流，close() 失敗）→ 再開會得到 InvalidStateError
+   *   2. 別的程式還開著（Arduino IDE 的序列埠監控視窗、另一個 DofLab 分頁、剛結束的上傳工具還沒放開）→ NetworkError
+   * 第 1 種由這裡自動關閉後重開；第 2 種稍候重試，仍失敗就明確說明可能的占用者。 */
+  const owners = new Map();   // 連接埠 → 本頁哪個連線開著它（關閉函式）
+  const isOpen = port => !!(port && (port.readable || port.writable));
+  async function releasePort(port) {
+    const own = owners.get(port); owners.delete(port);
+    if (own) { try { await own(); } catch (e) { } }
+    if (isOpen(port)) { try { await port.close(); } catch (e) { } }
+    return !isOpen(port);
+  }
+  function busyError(e) {
+    return Object.assign(new Error(`序列埠被占用，打不開（${(e && (e.name + '：' + e.message)) || e}）。請關閉可能正在使用它的程式：Arduino IDE 的「序列埠監控視窗」或「序列繪圖家」、另一個開著 DofLab 的分頁、還在進行的上傳；仍然不行就拔插 USB 線再試。`), { code: 'port_busy', cause: e });
+  }
+  async function openPort(port, baudRate, log) {
+    log = log || (() => { });
+    if (isOpen(port)) { log('這個序列埠還開著（本頁上一次的連線沒有關乾淨），先關閉再重新開啟…', 'w'); await releasePort(port); }
+    let last = null;
+    for (let i = 0; i < 4; i++) {
+      try { await port.open({ baudRate }); return; }
+      catch (e) {
+        last = e;
+        if ((e && e.name === 'InvalidStateError') || isOpen(port)) { log('連接埠仍在開啟狀態，先關閉後重試…', 'w'); await releasePort(port); }
+        else { if (i === 0) log('序列埠暫時打不開（可能剛被其他程式放開），稍候自動重試…', 'w'); await sleep(700); }
+      }
+    }
+    throw busyError(last);
+  }
+  async function releaseAll() { for (const p of [...owners.keys()]) await releasePort(p); }
+  DL.serial = { open: openPort, release: releasePort, claim: (port, closer) => owners.set(port, closer), unclaim: port => owners.delete(port), releaseAll, isOpen, owners };
+  if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('pagehide', () => { releaseAll(); });
+
   /* ======================= Arduino：Firmata over Web Serial ======================= */
   class FirmataDriver {
     constructor(twin, hooks, boardId) { this.twin = twin; this.hooks = hooks || {}; this.board = DL.boards[boardId || 'uno']; this.kind = 'firmata'; this.buf = []; this.sysex = null; this.version = null; this.caps = null; this.firmware = null; this.fwVersion = null; this.analogMap = null; this.seq = 0; this.pinSignals = {}; this.sonarSignals = {}; this.outPins = {}; this.lastCmdByPin = {}; }
@@ -21,19 +55,37 @@
       return { ok: true };
     }
     static available() { return typeof navigator !== 'undefined' && 'serial' in navigator; }
-    async connect() {
-      if (!FirmataDriver.available()) throw new Error('這個瀏覽器不支援 Web Serial：請用電腦版 Chrome 或 Edge，並從 https 或 http://localhost 開啟本頁。');
-      this.port = await navigator.serial.requestPort();
-      await this.port.open({ baudRate: 57600 });
-      this.writer = this.port.writable.getWriter();
-      this.reading = this.readLoop();
-      this.log('序列埠已開啟（57600 bps），等待板子重新啟動並回應 Firmata…');
+    // 送出查詢，等 Firmata 回應版本與腳位能力
+    async handshake(ms) {
       const t0 = Date.now(); let asked = 0;
-      while ((!this.version || !this.caps) && Date.now() - t0 < 6000) {
+      while ((!this.version || !this.caps) && Date.now() - t0 < ms) {
         if (Date.now() - t0 > asked * 1500) { asked++; await this.send([0xF9]); await this.send([0xF0, 0x79, 0xF7]); await this.send([0xF0, 0x6B, 0xF7]); await this.send([0xF0, 0x69, 0xF7]); }
         await sleep(100);
       }
-      if (!this.version) { await this.disconnect(true); throw new Error(`6 秒內沒有收到 Firmata 回應。請確認板子已上傳 ${(this.board.family || this.board.id) === 'esp32' ? 'DofLabFirmata' : 'DofLabFirmata 或 StandardFirmata'}（57600 bps），而且沒有其他程式占用序列埠。`); }
+      return !!(this.version && this.caps);   // 板子開機時自己會送版本；要連腳位能力也回應了，才算真的在聽
+    }
+    // 用 USB 晶片的 DTR／RTS 線重新啟動板子（與 Arduino IDE、esptool 的做法相同；不會進入下載模式）
+    async resetBoard() {
+      if (!this.port.setSignals) return false;
+      try {
+        if ((this.board.family || this.board.id) === 'esp32') { await this.port.setSignals({ dataTerminalReady: false, requestToSend: true }); await sleep(120); await this.port.setSignals({ dataTerminalReady: false, requestToSend: false }); }
+        else { await this.port.setSignals({ dataTerminalReady: false }); await sleep(120); await this.port.setSignals({ dataTerminalReady: true }); }
+        return true;
+      } catch (e) { return false; }
+    }
+    async connect(opts) {
+      if (!FirmataDriver.available()) throw new Error('這個瀏覽器不支援 Web Serial：請用電腦版 Chrome 或 Edge，並從 https 或 http://localhost 開啟本頁。');
+      this.port = (opts && opts.port) || await navigator.serial.requestPort();
+      await openPort(this.port, 57600, (m, k) => this.log(m, k));
+      this.closing = false; owners.set(this.port, () => this.disconnect(true));
+      this.writer = this.port.writable.getWriter();
+      this.reading = this.readLoop();
+      this.log('序列埠已開啟（57600 bps），等待板子重新啟動並回應 Firmata…');
+      if (!await this.handshake(6000) && !this.closing && await this.resetBoard()) {
+        this.log('6 秒內沒有回應：重新啟動板子後再等一次…', 'w'); this.buf = []; this.sysex = null;
+        await this.handshake(7000);
+      }
+      if (!this.version) { await this.disconnect(true); throw new Error(`沒有收到 Firmata 回應（已重新啟動板子再等一次）。請確認板子已上傳 ${(this.board.family || this.board.id) === 'esp32' ? 'DofLabFirmata' : 'DofLabFirmata 或 StandardFirmata'}（57600 bps），而且沒有其他程式占用序列埠。`); }
       const pinCount = this.caps ? this.caps.length : null; const want = this.board.firmataPins;
       const fw = `${this.firmware || 'Firmata'} ${this.version}`;
       const identity = pinCount === want ? { ok: true, msg: `${fw}，回報 ${pinCount} 個腳位，與 ${this.board.name} 相符。` } : { ok: false, msg: `${fw}，回報 ${pinCount ?? '未知'} 個腳位，與 ${this.board.name}（${want} 個）不符。` };
@@ -117,14 +169,21 @@
       for (const o of Object.values(this.outPins)) { if (o.kind !== 'servo') await this.send([0xF5, o.num, 0]); await this.send([0xF4, o.num, 0x00]); }
       this.outPins = {};
     }
-    async disconnect(silent) {
+    disconnect(silent) { if (!this._closingP) this._closingP = this._disconnect(silent); return this._closingP; }
+    async _disconnect(silent) {
       this.closing = true; clearInterval(this.hb);
-      try { if (!silent) { if (Object.keys(this.sonarSignals).length) await this.send([0xF0, 0x62, 0x7F, 0xF7]); await this.revoke(); await sleep(150); } } catch (e) { }   // 先停止超音波（TRIG 回到輸入）   // 撤銷後稍等，讓設備處理完再關閉連接埠
+      try { if (!silent) { if (Object.keys(this.sonarSignals).length) await this.send([0xF0, 0x62, 0x7F, 0xF7]); await this.revoke(); await sleep(150); } } catch (e) { }   // 先停止超音波（TRIG 回到輸入）；撤銷後稍等，讓設備處理完再關閉連接埠
       if (this.reader) { try { await this.reader.cancel(); } catch (e) { } }   // 必須 await，否則 reader 已釋放時的拒絕會變成未處理錯誤
+      if (this.reading) { try { await this.reading; } catch (e) { } }   // 等讀取迴圈真的放開串流：否則 close() 會因為串流還鎖著而失敗，連接埠一直被本頁占住
       try { this.writer && this.writer.releaseLock(); } catch (e) { }
-      if (this.port) { try { await this.port.close(); } catch (e) { } }
+      this.writer = null;
+      if (this.port) {
+        if (owners.get(this.port)) owners.delete(this.port);
+        try { await this.port.close(); } catch (e) { this.log('關閉序列埠失敗：' + e.message + '（下次連線時會再試著關閉）', 'w'); }
+      }
     }
-    lost(why) { clearInterval(this.hb); this.hooks.onLost && this.hooks.onLost(why); }
+    // 序列埠意外中斷（拔線、板子重置）：通知上層，並把連接埠關掉，下次才能重新開啟
+    lost(why) { clearInterval(this.hb); this.hooks.onLost && this.hooks.onLost(why); this.disconnect(true); }
     log(m, k) { this.hooks.log && this.hooks.log(m, k); }
   }
 
