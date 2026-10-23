@@ -238,7 +238,7 @@
 
   function driverFor(boardId) {
     const b = DL.boards[boardId];
-    if (b.driver === 'firmata') return { cls: FirmataDriver, label: 'USB 序列埠（Firmata）', status: b.id === 'uno' ? '已在虛擬 Uno（真實韌體）驗證，未以實體板驗證' : '韌體可編譯、協定在虛擬 Uno 驗證，未以實體 ESP32 驗證' };
+    if (b.driver === 'firmata') return { cls: FirmataDriver, label: 'USB 序列埠（Firmata）', status: b.id === 'uno' ? '已在虛擬 Uno（真實韌體）驗證，未以實體板驗證' : '協定在虛擬 Uno 驗證；使用者已在實體 ESP32 DevKit V1 實測連線、BOOT 同步與藍燈（2026-10-23）' };
     if (b.driver === 'pibridge') return { cls: PiBridgeDriver, label: '網路閘道（pi_bridge.py）', status: '已實作，僅以 --mock 模擬腳位測試' };
     return { cls: null, label: '無', status: `${b.short} 的真機驅動尚未實作：可以模擬與產生程式，但不能連線同步。` };
   }

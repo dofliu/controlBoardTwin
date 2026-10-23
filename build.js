@@ -31,6 +31,7 @@ fs.copyFileSync(nm('blockly/msg/zh-hant.js'), path.join(__dirname, 'dist/vendor/
 fs.mkdirSync(path.join(__dirname, 'dist/vendor/blockly-media'), { recursive: true });   // 離線版自帶 Blockly 的游標與圖示
 for (const f of fs.readdirSync(nm('blockly/media'))) if (!/\.(mp3|ogg|wav)$/.test(f)) fs.copyFileSync(nm('blockly/media/' + f), path.join(__dirname, 'dist/vendor/blockly-media', f));
 for (const f of ['pi_bridge.py', 'doflab_server.py']) fs.copyFileSync(path.join(__dirname, 'tools', f), path.join(__dirname, 'dist', f));
+for (const f of ['README.md', 'ACCEPTANCE.md']) fs.copyFileSync(path.join(__dirname, f), path.join(__dirname, 'dist', f));   // 下載版附上說明與驗收紀錄
 fs.mkdirSync(path.join(__dirname, 'dist/firmware/DofLabFirmata'), { recursive: true });
 fs.copyFileSync(path.join(__dirname, 'tools/firmware/DofLabFirmata/DofLabFirmata.ino'), path.join(__dirname, 'dist/firmware/DofLabFirmata/DofLabFirmata.ino'));
 // 只用 ESP32 DevKit V1 板子的範例程式：不需要 DofLab，用 Arduino IDE 打開就能上傳

@@ -1,0 +1,22 @@
+# 不需要 Arduino 工具鏈的測試（真實編譯、虛擬晶片、上傳的測試會自動略過）。
+# 狀態：未驗證——這份設定還沒有在 GitHub 上跑過；第一次推上去後請看 Actions 的結果。
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: pip install aiohttp gpiozero
+      - run: npm run check
+      - run: npm run build
+      - run: npm run test:node
+      - run: npm run test:py

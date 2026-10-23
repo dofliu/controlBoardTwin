@@ -171,7 +171,9 @@ tests/         Node 單元與等價測試、Python 測試
 e2e/           Playwright 端到端測試
 ```
 
-建置：`npm install && node build.js`，輸出到 `dist/`。
+建置：`npm ci && npm run build`，輸出到 `dist/`（建置產物不進 git）。也可以用 `npm test`（語法檢查＋建置＋Node＋Python 測試）。
+
+開發說明（架構、規則、已知的坑）在 `CLAUDE.md`；下一步「雲端虛擬硬體」的規劃在 `docs/VIRTUAL_DEVICE_PLAN.md`。
 
 ## 測試
 
