@@ -150,7 +150,7 @@
     if (this.armTick) this.armTick(dtFrame);
     if (this.sim.running) {
       if (this.sim.last === null) this.sim.last = now;
-      this.sim.acc = (this.sim.acc || 0) + Math.min(250, now - this.sim.last) * this.sim.speed; this.sim.last = now;
+      this.sim.acc = (this.sim.acc || 0) + Math.min(1000, now - this.sim.last) * this.sim.speed; this.sim.last = now;   // 畫面很慢（軟體繪圖）時也跟上真實時間；分頁在背景太久才截斷
       const step = Math.floor(this.sim.acc); this.sim.acc -= step;
       if (step > 0) this.advance(step);
     }

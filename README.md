@@ -1,4 +1,4 @@
-# DofLab V2.6.1 原型
+# DofLab V2.7 原型
 
 從電路配置、行為設計、模擬測試，到真實設備同步的教學與開發平台。本版依《DofLab 規劃文件 v0.1》重新開發。
 
@@ -68,7 +68,7 @@ Arduino IDE 設定：開發板管理員安裝「esp32 by Espressif Systems」，
 | 按住閃爍（麵包板） | 同上，插在麵包板 | 同上 | Uno／ESP32／Pi |
 | 光控夜燈 | 光敏模組、電阻、LED | 亮度低於 30 % 時亮燈 | Uno／ESP32 |
 | 伺服角度命令 | 按鈕、伺服 | 按下轉到 150°、放開回到 30° | Uno／ESP32／Pi |
-| 三軸機械手臂 | 3 顆伺服、外部 5V 電源 | 拖曳目標點：逆運動學、限位、限速；手臂與控制板、導線在同一個 3D 畫面（V2.6.1） | Uno／ESP32／Pi |
+| 三軸機械手臂 | 3 顆伺服、外部 5V 電源 | 拖曳目標點：逆運動學、限位、限速；手臂與控制板、導線在同一個 3D 畫面（V2.6.1）；動作序列 A → B → C → 原點反覆，按「執行」自動、手動操作即切到手動（V2.7） | Uno／ESP32／Pi |
 | **按一下切換**（V2.4） | 按鈕、電阻、LED | 每按一下切換亮滅；按住不會連續切換 | Uno／ESP32／Pi |
 | **行人按鈕紅綠燈**（V2.4） | 按鈕、紅綠 LED 各一與電阻 | 平時綠燈；按住時紅燈、綠燈滅；放開恢復 | Uno／ESP32／Pi |
 | **太亮警示**（V2.4） | 光敏模組、電阻、黃 LED | 亮度超過 70 % 時快速閃爍 | Uno／ESP32 |
@@ -176,9 +176,9 @@ e2e/           Playwright 端到端測試
 ## 測試
 
 ```bash
-node --test --test-concurrency=1 tests/*.test.js     # 103 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
+node --test --test-concurrency=1 tests/*.test.js     # 108 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
 python3 -m unittest discover -s tests -p "test_*.py" # 17 項（上傳端到端需要 avrdude 與 socat）
-python3 e2e/e2e.py                                   # 148 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard）
+python3 e2e/e2e.py                                   # 165 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27）
 ```
 
 ### 示範影片

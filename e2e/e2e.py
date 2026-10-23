@@ -187,6 +187,8 @@ async def pi_hw(p, port, bridge):
             check("唯讀：按下實體按鈕 → 量測層顯示按下、品質有效；沒有送出任何命令", m['v'] is True and m['q'] == 'ok' and m['cmd'] is None, json.dumps(m))
             check("唯讀：3D 按鈕顯示「量測」標籤", '量測' in await pg.inner_text('#vpObserve .labels'))
             await ws.send_json({"op": "mock_level", "pin": 27, "value": 1}); await pg.wait_for_timeout(300)
+            try: await pg.wait_for_function("document.querySelector('#hwBody').innerText.includes('已偵測到變化')", timeout=3000)
+            except Exception: pass
             check("唯讀：偵測到實體按鈕變化", '已偵測到變化' in await pg.inner_text('#hwBody'))
             for cb in await pg.locator('[data-chk]').all(): await cb.check()
             await pg.wait_for_timeout(100)
@@ -296,7 +298,7 @@ async def arm_flow(p):
     check("手臂設定確認後分頁顯示已確認", '已確認' in await pg.inner_text('#tbArm'))
     await pg.click('#t-code'); await pg.wait_for_timeout(200); await pg.click('#btnGen'); await pg.wait_for_timeout(200)
     code = await pg.input_value('#code')
-    check("手臂專案產生姿態播放程式（含限速與兩個姿態）", 'POSE_COUNT = 2' in code and 'MAX_SPEED' in code, code[:120])
+    check("手臂專案產生動作序列程式（兩個姿態＋回到預備姿態、限速）", 'STEP_COUNT = 3' in code and 'MAX_SPEED' in code and 'HOME[3]' in code, code[:120])
     await pg.click('#btnCompile'); await pg.wait_for_function("document.querySelector('#btnCompile').textContent==='編譯'", timeout=180000)
     check("手臂程式以 arduino-cli 真實編譯成功", await pg.inner_text('#buildBadge') == '編譯成功', (await pg.inner_text('#buildBody'))[:300])
     # 改連桿長度 → 確認失效、程式過期
@@ -549,12 +551,12 @@ async def new_experiments(p):
     async def settle(want):
         # 軟體渲染時模擬一格可能超過 100 ms，所以等到狀態符合（最多 2 秒）再讀，而不是固定延遲
         js = " && ".join(f"(doflab.twin.view('{k}').simulated||{{}}).v === {v}" for k, v in want.items())
-        try: await pg.wait_for_function(js, timeout=2000)
+        try: await pg.wait_for_function(js, timeout=4000)
         except Exception: pass
         return [await view(k) for k in want]
     async def click_btn(comp, want, hold=0.4):
         bp = await ev(pg, f"doflab.scene.compScreen('{comp}')"); await pg.mouse.move(bp['x'], bp['y']); await pg.mouse.down()
-        try: await pg.wait_for_function(f"(doflab.twin.view('{comp}.pressed').simulated||{{}}).v === true", timeout=2000)
+        try: await pg.wait_for_function(f"(doflab.twin.view('{comp}.pressed').simulated||{{}}).v === true", timeout=4000)
         except Exception: pass
         await pg.wait_for_timeout(int(hold * 1000)); await pg.mouse.up()
         try: await pg.wait_for_function(f"!(doflab.twin.view('{comp}.pressed').simulated||{{}}).v", timeout=2000)
@@ -587,14 +589,17 @@ async def new_experiments(p):
     # 3 太亮警示
     ok = await open_and_wire('bright-alarm')
     await light(40); off = await view('LED1.state')
-    await light(90); vals = []
-    for i in range(20): await pg.wait_for_timeout(40); vals.append(await view('LED1.state'))
-    await light(50); after = await view('LED1.state')
+    t0 = await ev(pg, "doflab.sim.time"); await light(90)
+    try: await pg.wait_for_function(f"doflab.sim.time > {t0} + 900", timeout=8000)
+    except Exception: pass
+    # 以模擬時間計：90 % 之後的 LED1 事件（軟體繪圖時畫面很慢，用固定間隔取樣會漏掉 100 ms 的閃爍）
+    vals = await ev(pg, f"[...new Set(doflab.events.filter(e=>e.simT!==null && e.simT>{t0} && /^LED1 → /.test(e.text)).map(e=>e.text.endsWith('亮')?1:0))]")
+    await light(50); after = (await settle({'LED1.state': 0}))[0]
     d = await tasks_done()
     check("新實驗「太亮警示」：40 % 不亮；90 % 快速閃爍；降回 50 % 熄滅；任務全部完成", ok and off == 0 and len(set(vals)) == 2 and after == 0 and d[0] == d[1], json.dumps([ok, off, vals, after, d]))
     # 4 光控遮陽板
     ok = await open_and_wire('sun-shade')
-    await light(30); a0 = await view('SERVO1.angle'); await light(80); a1 = await view('SERVO1.angle'); await light(20); a2 = await view('SERVO1.angle')
+    await light(30); a0 = (await settle({'SERVO1.angle': 30}))[0]; await light(80); a1 = (await settle({'SERVO1.angle': 150}))[0]; await light(20); a2 = (await settle({'SERVO1.angle': 30}))[0]
     tw = await pg.inner_text('#twinRows')
     d = await tasks_done()
     check("新實驗「光控遮陽板」：命令角度 30° → 150° → 30°，量測欄標示無回授；任務全部完成", ok and [a0, a1, a2] == [30, 150, 30] and '無回授' in tw and d[0] == d[1], json.dumps([ok, a0, a1, a2, d]))

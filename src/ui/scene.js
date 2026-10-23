@@ -347,12 +347,18 @@
     }
 
     /* ------------------------- 每幀 ------------------------- */
-    setVis(vis) { this.vis = vis || {}; this.dirty = true; }
+    setVis(vis) { const k = JSON.stringify(vis || {}); if (k !== this._visKey) { this._visKey = k; this.dirty = true; } this.vis = vis || {}; }
     frame() {
       if (!this.ok || !this.container || !this.container.offsetParent) return;
       const THREE = T();
-      if (this.root.parent !== this.scene) { this.scene.add(this.root); this._armKey = null; }   // 從手臂頁的場景拿回來
+      if (this.root.parent !== this.scene) { this.scene.add(this.root); this._armKey = null; this.dirty = true; }   // 從手臂頁的場景拿回來
       if (this.objects.arm && this.app.arm) this.armPose(this.app.arm.q);
+      // 沒有任何變化就不重畫（省電，慢的電腦也順）；最多 1 秒補畫一次，避免漏掉沒標記的變化
+      const c = this.cam, sl = this.app.ui.selected, wf = this.app.ui.wiringFrom, he = this.hoverEp;
+      const key = [c.theta, c.phi, c.r, c.target.x, c.target.y, c.target.z, this._w, this._h, sl && sl.kind, sl && sl.id, wf && wf.comp, wf && wf.term, he && he.comp, he && he.term, this.highlightUsed, this.labels.childElementCount].join('|');
+      const nowT = performance.now();
+      if (!this.dirty && key === this._frameKey && nowT - (this._lastRender || 0) < 1000) return;
+      this._frameKey = key; this._lastRender = nowT; this.dirty = false;
       this.updateCamera();
       const sel = this.app.ui.selected;
       for (const [id, g] of Object.entries(this.objects.comps)) {

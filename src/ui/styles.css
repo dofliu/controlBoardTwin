@@ -340,3 +340,9 @@ main{padding-block:8px 14px}
 .card > h3 .ttl{white-space:nowrap;flex:0 0 auto;margin-right:auto}
 .card > h3 > .muted{font-size:.72rem;text-align:right;min-width:0}
 @media (min-width:1051px){.viewport,#vpArm{height:max(380px,calc(100vh - var(--chrome-h,130px) - 34px))}}
+@media (max-width:640px){.card > h3{flex-wrap:wrap} .card > h3 > *{min-width:0} .status-tag{white-space:normal}}
+@media (max-width:1050px){#tab-behavior,#tab-code,#tab-observe,#tab-arm{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:760px){#tab-config{grid-template-columns:minmax(0,1fr)} #tab-config > .col-r{grid-template-columns:minmax(0,1fr)}}
+/* 浮在主畫面上的東西只有按鈕本身擋滑鼠，空白處可以直接點到 3D 場景 */
+@media (min-width:1051px){.stage-ov > *{pointer-events:none} .stage-ov .simbar,.stage-ov .inputs > *{pointer-events:auto}}
+.hud .vals{pointer-events:none}
