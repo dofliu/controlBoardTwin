@@ -19,6 +19,8 @@
       this.groundMat = new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 1 });
       const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), this.groundMat); ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; this.scene.add(ground);
       this.armRoot = new THREE.Group(); this.scene.add(this.armRoot);
+      // 板子、導線、伺服排線與手臂本體都來自「配置」頁的場景（同一份模型）：放進這個群組，並平移讓手臂底座落在原點
+      this.ctx = new THREE.Group(); this.scene.add(this.ctx);
       this.ray = new THREE.Raycaster();
       const el = this.el = document.createElement('div'); el.style.cssText = 'position:absolute;inset:0'; el.appendChild(r.domElement);
       this.labels = document.createElement('div'); this.labels.className = 'labels'; el.appendChild(this.labels);
@@ -32,47 +34,41 @@
       const THREE = T(); this.scene.background = new THREE.Color(css('--scene-bg')); this.groundMat.color = new THREE.Color(css('--scene-bg'));
       if (this.grid) this.scene.remove(this.grid); this.grid = new THREE.GridHelper(80, 40, new THREE.Color(css('--scene-grid')), new THREE.Color(css('--scene-grid2'))); this.grid.position.y = 0.01; this.scene.add(this.grid);
     }
-    mount(c) { if (!this.ok) { if (!c.querySelector('.nogl')) { const d = document.createElement('div'); d.className = 'nogl'; d.textContent = '這個瀏覽器無法建立 WebGL 3D 畫面。仍可用右側的數值與滑桿操作。'; c.appendChild(d); } return; } if (this.el.parentNode !== c) { c.insertBefore(this.el, c.firstChild); this.ro.disconnect(); this.ro.observe(c); } this.container = c; this.resize(); }
+    mount(c) { const first = !this.container; if (!this.ok) { if (!c.querySelector('.nogl')) { const d = document.createElement('div'); d.className = 'nogl'; d.textContent = '這個瀏覽器無法建立 WebGL 3D 畫面。仍可用右側的數值與滑桿操作。'; c.appendChild(d); } return; } if (this.el.parentNode !== c) { c.insertBefore(this.el, c.firstChild); this.ro.disconnect(); this.ro.observe(c); } this.container = c; this.resize();  if (first) this.fit(); }
     syncSize() { if (this.container && (this.container.clientWidth !== this._w || this.container.clientHeight !== this._h)) this.resize(); }
     resize() { if (!this.container) return; const w = this.container.clientWidth, h = this.container.clientHeight; if (!w || !h) return; this._w = w; this._h = h; this.renderer.setSize(w, h, false); this.renderer.domElement.style.width = '100%'; this.renderer.domElement.style.height = '100%'; this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); }
-    setView(v) { const s = { iso: [0.9, 1.0], top: [0, 0.0001], front: [Math.PI / 2, 1.42], side: [0, 1.42] }[v] || [0.9, 1.0]; this.cam.theta = s[0]; this.cam.phi = s[1]; this.view = v; }
+    setView(v) { const s = { iso: [0.9, 1.0], top: [0, 0.0001], front: [Math.PI / 2, 1.42], side: [0, 1.42] }[v] || [0.9, 1.0]; this.cam.theta = s[0]; this.cam.phi = s[1]; this.view = v; this.fit(); }
+    // 取景：手臂與板子、導線一起放進畫面
+    fit() {
+      const S = this.app.scene; if (!this.cam.target) return;
+      if (!S || !S.ok || !S.project || !S.project.arm) { this.cam.target.set(4, 6, 0); this.cam.r = 38; return; }
+      const pl = S.armPlace(S.project); const b = S.bounds(); const cx = b.x - pl.x, cz = b.z - pl.z;
+      this.cam.target.set((cx + 5) / 2, 4, (cz + 0) / 2);
+      const asp = this.camera.aspect || 1.4; this.cam.r = Math.min(140, Math.max(40, b.size * 1.25 + 8) * Math.max(1, 1.35 / asp));
+    }
     updateCamera() { const c = this.cam, s = Math.sin(c.phi); this.camera.position.set(c.target.x + c.r * s * Math.sin(c.theta), c.target.y + c.r * Math.cos(c.phi), c.target.z + c.r * s * Math.cos(c.theta)); this.camera.up.set(0, 1, 0); if (c.phi < 0.001) this.camera.up.set(0, 0, -1); this.camera.lookAt(c.target); this.camera.updateMatrixWorld(); }
 
     /* ---- 建模（依設定的尺寸） ---- */
+    get A() { const S = this.app.scene; return S && S.objects && S.objects.arm; }
+    get yaw() { return this.A && this.A.yaw; } get shoulder() { return this.A && this.A.shoulder; } get elbow() { return this.A && this.A.elbow; }
+    // 把配置頁場景的內容借過來（只在手臂頁顯示時；回到配置／觀測頁時那邊會自己拿回去）
+    adopt() {
+      const S = this.app.scene; if (!S || !S.ok || !S.project) return;
+      if (S.root.parent !== this.ctx) { this.ctx.add(S.root); S._armKey = null; }
+      if (S.project.arm) { const pl = S.armPlace(S.project); this.ctx.position.set(-pl.x, 0, -pl.z); }
+    }
     build(cfg) {
-      const THREE = T(); this.cfg = cfg;
+      const THREE = T(); this.cfg = cfg; this.built = true;
       while (this.armRoot.children.length) this.armRoot.remove(this.armRoot.children[0]);
       const M = (c, o) => new THREE.MeshStandardMaterial(Object.assign({ color: new THREE.Color(c), roughness: 0.55 }, o || {}));
       const sh = o => { o.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } }); return o; };
       const box = (w, h, d, m) => sh(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m));
       const cyl = (r, h, m, s) => sh(new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, s || 32), m));
-      const servoM = new THREE.MeshPhysicalMaterial({ color: new THREE.Color('#2a63c4'), transparent: true, opacity: 0.9, roughness: 0.35, clearcoat: 0.6 });
-      const acrylic = new THREE.MeshStandardMaterial({ color: new THREE.Color('#d6dde3'), roughness: 0.35, metalness: 0.55 });   // 鋁板連桿（不透明，看得清楚）
-      const dark = M('#2b2f33'), alu = M('#c5cad0', { metalness: 0.8, roughness: 0.35 });
       // 工作範圍：桌面上的可達環（只畫底座允許的角度）
       const j1 = cfg.joints[0]; const reach = A.reachAtHeight(cfg, cfg.floorY);
       const ring = new THREE.Mesh(new THREE.RingGeometry(Math.max(0.5, reach.rMin), reach.rMax, 96, 1, j1.min * D2R, (j1.max - j1.min) * D2R), new THREE.MeshBasicMaterial({ color: new THREE.Color(css('--ok')), transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false }));
       ring.rotation.x = -Math.PI / 2; ring.position.y = 0.02; this.armRoot.add(ring); this.ring = ring;
       const edge = new THREE.Mesh(new THREE.RingGeometry(reach.rMax - 0.08, reach.rMax, 96, 1, j1.min * D2R, (j1.max - j1.min) * D2R), new THREE.MeshBasicMaterial({ color: new THREE.Color(css('--ok')), transparent: true, opacity: 0.6, side: THREE.DoubleSide })); edge.rotation.x = -Math.PI / 2; edge.position.y = 0.03; this.armRoot.add(edge);
-      // 底座
-      const base = cyl(3.6, 1.4, dark); base.position.y = 0.7; this.armRoot.add(base);
-      const yaw = new THREE.Group(); yaw.position.y = 1.4; this.armRoot.add(yaw); this.yaw = yaw;
-      const plate = cyl(3.0, 0.35, acrylic); plate.position.y = 0.18; yaw.add(plate);
-      const j1s = box(2.3, 1.22, 1.2, servoM); j1s.position.set(0.4, -0.8, 0); this.armRoot.add(j1s);
-      // 肩部支架與伺服
-      const sy = cfg.H - 1.4;
-      for (const s of [-1, 1]) { const b = box(2.0, sy, 0.3, acrylic); b.position.set(0, sy / 2 + 0.35, s * 1.35); yaw.add(b); }
-      const j2s = box(2.3, 2.25, 1.22, servoM); j2s.position.set(-0.4, sy - 0.3, 0); j2s.rotation.x = Math.PI / 2; yaw.add(j2s);
-      const shoulder = new THREE.Group(); shoulder.position.y = sy; yaw.add(shoulder); this.shoulder = shoulder;
-      shoulder.add(cyl(0.5, 3.1, alu).rotateX(Math.PI / 2));
-      const up = box(cfg.L1, 0.45, 1.6, acrylic); up.position.x = cfg.L1 / 2; shoulder.add(up);
-      const elbow = new THREE.Group(); elbow.position.x = cfg.L1; shoulder.add(elbow); this.elbow = elbow;
-      elbow.add(cyl(0.45, 2.4, alu).rotateX(Math.PI / 2));
-      const j3s = box(2.3, 1.22, 2.25, servoM); j3s.position.set(-0.6, 0, 0); elbow.add(j3s);
-      const fore = box(cfg.L2, 0.35, 1.1, acrylic); fore.position.x = cfg.L2 / 2; elbow.add(fore);
-      const tipG = new THREE.Group(); tipG.position.x = cfg.L2; elbow.add(tipG);
-      const cone = sh(new THREE.Mesh(new THREE.ConeGeometry(0.45, 1.0, 20), dark)); cone.rotation.z = Math.PI / 2; cone.position.x = 0.2; tipG.add(cone);
-      const tip = sh(new THREE.Mesh(new THREE.SphereGeometry(0.28, 20, 12), M('#e0352b', { emissive: new THREE.Color('#5a0d08') }))); tipG.add(tip); this.tip = tip;
       // 目標把手、垂直參考線、桌面投影
       this.handle = sh(new THREE.Mesh(new THREE.SphereGeometry(0.62, 24, 16), M('#e58a2e', { emissive: new THREE.Color('#3a1c05'), transparent: true, opacity: 0.7 })));
       this.handle.userData.kind = 'handle'; this.armRoot.add(this.handle);
@@ -82,8 +78,8 @@
       this.planeViz = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshBasicMaterial({ color: new THREE.Color(css('--info')), transparent: true, opacity: 0.06, side: THREE.DoubleSide, depthWrite: false })); this.planeViz.visible = false; this.armRoot.add(this.planeViz);
     }
     pose(q, target, ghost) {
-      if (!this.yaw) return;
-      this.yaw.rotation.y = q[0] * D2R; this.shoulder.rotation.z = q[1] * D2R; this.elbow.rotation.z = -q[2] * D2R;
+      if (!this.handle) return;
+      this.adopt(); if (this.app.scene.objects.arm) this.app.scene.armPose(q);
       this.handle.position.set(target.x, target.y, target.z);
       this.guide.geometry.setFromPoints([new (T().Vector3)(target.x, target.y, target.z), new (T().Vector3)(target.x, 0.02, target.z)]); this.guide.computeLineDistances();
       this.shadowDot.position.x = target.x; this.shadowDot.position.z = target.z;
@@ -91,6 +87,7 @@
     }
     frame(info) {
       if (!this.ok || !this.container || !this.container.offsetParent) return;
+      this.adopt();
       this.syncSize(); this.updateCamera(); this.renderer.render(this.scene, this.camera);
       const THREE = T(); const w = this._w, h = this._h;
       const put = (k, v, text) => { const el = this.lbl[k]; const p = v.clone().project(this.camera); const vis = p.z < 1; el.style.display = vis ? '' : 'none'; if (vis) { el.style.left = ((p.x + 1) / 2 * w) + 'px'; el.style.top = ((1 - p.y) / 2 * h) + 'px'; el.innerHTML = text; } };

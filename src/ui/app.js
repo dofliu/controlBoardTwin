@@ -81,7 +81,7 @@
         if (this.sim.running || this.sim.time > 0) { this.resetSim(); this.log('w', '配置或行為改變，模擬已重置。'); }
         if (this.hw.driver && this.twin.mode === 'hw-control') { this.hwRevoke('配置或行為改變，已撤銷寫入授權'); }
       }
-      if (kind === 'circuit' || kind === 'board' || kind === 'view') this.scene.build(this.p, this.analysis);
+      if (kind === 'circuit' || kind === 'board' || kind === 'view' || kind === 'arm') this.scene.build(this.p, this.analysis);
       if (kind === 'circuit' && this.blocks.ok && this.ui.tab === 'behavior') this.blocks.load(this.p.behavior.ir, this.p.behavior.blocks, this.p.lock.behavior);
       this.renderAll();
       if (msg) this.toast(msg);
@@ -209,7 +209,7 @@
       if (t === 'observe') { this.scene.mount($('vpObserve')); this.renderObserve(); }
       if (t === 'behavior' && this.blocks.ok) { if (!this.blocks.ws) this.blocks.load(this.p.behavior.ir, this.p.behavior.blocks, this.p.lock.behavior); setTimeout(() => this.blocks.resize(), 0); }
       if (t === 'code') this.renderCode();
-      if (t === 'arm') { this.renderArm(); if (this.armScene.ok) { this.armScene.mount($('vpArm')); if (this.p.arm && !this.armScene.yaw) this.armScene.build(this.p.arm.config); } }
+      if (t === 'arm') { this.renderArm(); if (this.armScene.ok) { this.armScene.mount($('vpArm')); if (this.p.arm && !this.armScene.built) this.armScene.build(this.p.arm.config); if (this.armScene._fitId !== this.p.id) { this.armScene._fitId = this.p.id; this.armScene.fit(); } } }
       try { history.replaceState(null, '', '#' + t); } catch (e) { }
     }
     key(e) {

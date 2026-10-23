@@ -290,7 +290,7 @@
   function lathe(points, m, seg) { const THREE = T(); const o = new THREE.Mesh(new THREE.LatheGeometry(points.map(([r, y]) => new THREE.Vector2(r, y)), seg || 28), m); o.castShadow = true; return o; }
   function leg(THREE, pts, r, m) { const curve = new THREE.CatmullRomCurve3(pts.map(p => new THREE.Vector3(...p)), false, 'catmullrom', 0.05); const o = new THREE.Mesh(new THREE.TubeGeometry(curve, 24, r, 6, false), m); o.castShadow = true; return o; }
 
-  function component(c, ins) {
+  function component(c, ins, opts) {
     const THREE = T(); const g = new THREE.Group(); const body = []; const ref = {}; const def = DL.components[c.type];
     if (c.type === 'BB') return breadboard(c);
     const H = (term, i) => ins && ins[term] && ins[term][i || 0];   // 插入時這支腳的孔位 [x, z]
@@ -369,6 +369,13 @@
       const beamM = new THREE.MeshBasicMaterial({ color: new THREE.Color('#e8892a'), transparent: true, opacity: 0.6 });
       const beams = []; for (let i = 0; i < 24; i++) { const b = box(0.05, 0.05, 0.35, beamM, 0, PY + 1.05, 0); b.raycast = () => { }; g.add(b); beams.push(b); }
       g.add(ob); ref.obstacle = { group: ob, plate, mat: obM, beams, front: -1.28 };
+    } else if (c.type === 'SERVO' && opts && opts.armJoint) {
+      // 裝在手臂上的伺服：本體在手臂的關節（由場景畫），這裡只畫排線末端的母座與一個「束線夾」（可拖曳、可接線的位置）
+      add(box(0.78, 0.26, 0.5, black(), 0, 0.13, 2.45));
+      const clip = add(box(1.1, 0.34, 0.62, plastic('#2a63c4'), 0, 0.17, 0)); ref.clip = clip;
+      const wires = [['#5a3a22', -0.08], ['#d23a2a', 0], ['#e8892a', 0.08]];
+      for (const [col, dz] of wires) g.add(leg(THREE, [[dz * 3.2, 0.12, 2.22], [dz * 2, 0.16, 1.2], [dz, 0.2, 0.3], [dz, 0.24, 0]], 0.035, mat('sw' + col, col, { roughness: 0.5 })));
+      ref.armJoint = opts.armJoint; ref.cableFrom = [0, 0.24, 0];
     } else if (c.type === 'SERVO') {
       const blue = new THREE.MeshPhysicalMaterial({ color: new THREE.Color('#2a63c4'), transparent: true, opacity: 0.88, roughness: 0.35, clearcoat: 0.6 });
       add(box(2.3, 2.25, 1.22, blue, 0, 1.125, 0));
@@ -443,5 +450,36 @@
     return { group: g, body, ref: { bb: true } };
   }
 
-  DL.models = { board, component, breadboard, PIN_TOP, labelPlane };
+  /* ---------------- 三軸手臂（配置／觀測頁與手臂頁共用同一個模型） ----------------
+   * 手臂座標：底座軸線在原點、+X 為 0° 方向、Y 向上；尺寸依手臂設定（H、L1、L2）。 */
+  function arm(cfg) {
+    const THREE = T(); const g = new THREE.Group();
+    const sh = o => { o.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } }); return o; };
+    const bx = (w, h, d, m) => sh(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m));
+    const cy = (r, h, m, s) => sh(new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, s || 32), m));
+    const servoM = mat('armservo', '#2a63c4', { roughness: 0.35 });
+    const plate = mat('armplate', '#d6dde3', { roughness: 0.35, metalness: 0.55 });
+    const dark = mat('armdark', '#2b2f33', { roughness: 0.55 }), alu = mat('armalu', '#c5cad0', { metalness: 0.8, roughness: 0.35 });
+    const base = cy(3.6, 1.4, dark); base.position.y = 0.7; g.add(base);
+    const yaw = new THREE.Group(); yaw.position.y = 1.4; g.add(yaw);
+    const pl = cy(3.0, 0.35, plate); pl.position.y = 0.18; yaw.add(pl);
+    const j1 = bx(2.3, 1.22, 1.2, servoM); j1.position.set(0.4, 0.75, 0); g.add(j1);   // 底座伺服（露出在底座上方側邊，看得到排線接到哪裡）
+    const sy = cfg.H - 1.4;
+    for (const s of [-1, 1]) { const b = bx(2.0, sy, 0.3, plate); b.position.set(0, sy / 2 + 0.35, s * 1.35); yaw.add(b); }
+    const j2 = bx(2.3, 2.25, 1.22, servoM); j2.position.set(-0.4, sy - 0.3, 0); j2.rotation.x = Math.PI / 2; yaw.add(j2);
+    const shoulder = new THREE.Group(); shoulder.position.y = sy; yaw.add(shoulder);
+    shoulder.add(cy(0.5, 3.1, alu).rotateX(Math.PI / 2));
+    const up = bx(cfg.L1, 0.45, 1.6, plate); up.position.x = cfg.L1 / 2; shoulder.add(up);
+    const elbow = new THREE.Group(); elbow.position.x = cfg.L1; shoulder.add(elbow);
+    elbow.add(cy(0.45, 2.4, alu).rotateX(Math.PI / 2));
+    const j3 = bx(2.3, 1.22, 2.25, servoM); j3.position.set(-0.6, 0, 0); elbow.add(j3);
+    const fore = bx(cfg.L2, 0.35, 1.1, plate); fore.position.x = cfg.L2 / 2; elbow.add(fore);
+    const tipG = new THREE.Group(); tipG.position.x = cfg.L2; elbow.add(tipG);
+    const cone = sh(new THREE.Mesh(new THREE.ConeGeometry(0.45, 1.0, 20), dark)); cone.rotation.z = Math.PI / 2; cone.position.x = 0.2; tipG.add(cone);
+    const tip = sh(new THREE.Mesh(new THREE.SphereGeometry(0.28, 20, 12), mat('armtip', '#e0352b', { emissive: new THREE.Color('#5a0d08') }))); tipG.add(tip);
+    const pose = q => { yaw.rotation.y = q[0] * Math.PI / 180; shoulder.rotation.z = q[1] * Math.PI / 180; elbow.rotation.z = -q[2] * Math.PI / 180; };
+    return { group: g, yaw, shoulder, elbow, tip, servos: [j1, j2, j3], pose };
+  }
+
+  DL.models = { board, component, breadboard, arm, PIN_TOP, labelPlane };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

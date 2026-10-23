@@ -12,7 +12,7 @@
     constructor(app) {
       this.app = app;
       this.ok = false;
-      this.objects = { board: null, comps: {}, wires: {} };
+      this.objects = { board: null, comps: {}, wires: {}, arm: null }; this.armCables = []; this._armKey = null;
       this.pick = [];            // 可點選的網格
       this.pointers = new Map();
       this.vis = {};             // 每個元件的視覺狀態（由 app 每幀提供）
@@ -95,12 +95,13 @@
     setView(name, instant) {
       const v = { iso: [0.55, 0.95, 26], top: [0, 0.0001, 24], front: [0, 1.38, 24], side: [Math.PI / 2, 1.3, 24] }[name] || [0.55, 0.95, 26];
       this.cam.theta = v[0]; this.cam.phi = v[1]; this.cam.r = v[2];
-      if (this.project) { const c = this.bounds(); this.cam.target.set(c.x, 0, c.z); const asp = this.camera.aspect || 1.4; this.cam.r = Math.max(11, c.size * 1.32 * Math.max(1, 1.45 / asp)); }
+      if (this.project) { const c = this.bounds(); const tall = this.project.arm ? this.project.arm.config.H + 4 : 0; this.cam.target.set(c.x, tall * 0.35, c.z); const asp = this.camera.aspect || 1.4; this.cam.r = Math.max(11, c.size * 1.32 * Math.max(1, 1.45 / asp) + tall * 0.9); }   // 有手臂時把高度也算進取景
       this.view = name; this.dirty = true;
     }
     bounds() {
       const p = this.project; const xs = [p.board.pos.x - 4.5, p.board.pos.x + 4.5], zs = [p.board.pos.z - 3, p.board.pos.z + 3];
       for (const c of p.components) { const big = c.type === 'BB' ? [4.3, 2.9] : [1, 1]; xs.push(c.pos.x - big[0], c.pos.x + big[0]); zs.push(c.pos.z - big[1], c.pos.z + Math.max(1.5, big[1])); }
+      if (p.arm) { const pl = this.armPlace(p); const cfg = p.arm.config; xs.push(pl.x - 4, pl.x + cfg.L1 + cfg.L2 * 0.5); zs.push(pl.z - 5, pl.z + 4); }
       const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
       return { x: (x0 + x1) / 2, z: (z0 + z1) / 2, size: Math.max(x1 - x0, (z1 - z0) * 1.4) };
     }
@@ -115,7 +116,7 @@
     clear() {
       const disp = o => o.traverse(n => { if (n.geometry) n.geometry.dispose(); if (n.material) (Array.isArray(n.material) ? n.material : [n.material]).forEach(m => { if (m.map) m.map.dispose(); m.dispose(); }); });
       while (this.root.children.length) { const c = this.root.children[0]; this.root.remove(c); disp(c); }
-      this.objects = { board: null, comps: {}, wires: {} }; this.pick = []; this.labels.innerHTML = ''; this.labelEls = {}; this.busHl = null; this._busKey = null;
+      this.objects = { board: null, comps: {}, wires: {}, arm: null }; this.armCables = []; this._armKey = null; this.pick = []; this.labels.innerHTML = ''; this.labelEls = {}; this.busHl = null; this._busKey = null;
     }
     build(p, analysis) {
       if (!this.ok) return;
@@ -123,7 +124,10 @@
       this.project = p; this.analysis = analysis;
       this.clear();
       this.buildBoard(p);
+      this.armJoints = {}; if (p.arm) p.arm.config.joints.forEach((j, i) => { this.armJoints[j.servo] = i; });
       for (const c of p.components) this.buildComp(c);
+      if (p.arm) this.buildArm(p);
+      const ext = p.arm ? 36 : 22; Object.assign(this.sun.shadow.camera, { left: -ext, right: ext, top: ext, bottom: -ext }); this.sun.shadow.camera.updateProjectionMatrix();
       this.routes = ((p.view && p.view.wireStyle) || 'neat') === 'neat' && p.connections.length ? DL.routing.route(p) : null;
       for (const w of p.connections) if (w.kind !== 'insert') this.buildWire(w);   // 插在麵包板上的腳由元件模型畫出
       if (first) this.setView(this.view || 'iso');
@@ -189,7 +193,7 @@
       // 插在麵包板上：算出每支腳的孔在元件本地座標的位置，模型的腳直接插進孔裡
       const mount = c.type !== 'BB' && BBm.mountOf(this.project, c.id); let ins = null;
       if (mount) { const bb = DL.project.findComp(this.project, mount.bb); ins = {}; for (const h of mount.holes) { const w = BBm.holeWorld(bb, h.hole); const [lx, lz] = DL.rotXZ(w.x - c.pos.x, w.z - c.pos.z, 360 - (c.rot || 0)); (ins[h.term] = ins[h.term] || []).push([lx, lz]); } }
-      const model = DL.models.component(c, ins); const g = model.group; const body = model.body; const ref = model.ref;
+      const model = DL.models.component(c, ins, c.type === 'SERVO' && this.armJoints && this.armJoints[c.id] !== undefined ? { armJoint: this.armJoints[c.id] + 1 } : null); const g = model.group; const body = model.body; const ref = model.ref;
       for (const b of body) this.pick.push(b);
       // 端子：小色點＋加大點選範圍（麵包板的孔另外處理；插在麵包板上的元件請接到同一條導通條的其他孔）
       for (const t of def && c.type !== 'BB' && !mount ? def.terminals : []) {
@@ -203,6 +207,47 @@
       g.userData = { kind: 'compGroup', comp: c.id, ref, body, mounted: !!mount };
       this.root.add(g); this.objects.comps[c.id] = g;
       this.label(c.id, c.id);
+    }
+
+    /* ---- 三軸手臂：和板子、導線放在同一個場景；三顆伺服裝在手臂的關節上，排線接回各自的母座（接線端點不變） ---- */
+    armPlace(p) {
+      const bd = DL.boards[p.board.type]; let minZ = p.board.pos.z - bd.size.h / 2;
+      for (const c of p.components) { const d = DL.components[c.type]; if (d && d.onboard) continue; minZ = Math.min(minZ, c.pos.z - (c.type === 'BB' ? 3 : 1.5)); }
+      return { x: p.board.pos.x + 12, z: minZ - 8 };   // 放在板子與元件的後方（離相機較遠），不擋住接線
+    }
+    buildArm(p) {
+      const THREE = T(); const m = DL.models.arm(p.arm.config);
+      m.group.traverse(o => { if (o.isMesh) o.userData = { kind: 'arm' }; });
+      this.root.add(m.group); this.objects.arm = m;
+      const cm = this.mat('#4a3426', { roughness: 0.5 });
+      p.arm.config.joints.forEach((j, i) => {
+        const c = DL.project.findComp(p, j.servo); if (!c || c.type !== 'SERVO') return;
+        const mesh = new THREE.Mesh(new THREE.BufferGeometry(), cm); mesh.castShadow = true; mesh.raycast = () => { };
+        this.root.add(mesh); this.armCables.push({ comp: j.servo, i, mesh });
+      });
+      this.label('arm', '三軸手臂');
+    }
+    // 依關節角擺出手臂，並重畫三條伺服排線（母座 → 手臂上的伺服）；座標都在 root 內，所以在手臂頁的場景也正確
+    armPose(q) {
+      const A = this.objects.arm; if (!A || !q) return; const THREE = T();
+      const pl = this.armPlace(this.project); A.group.position.set(pl.x, 0, pl.z); A.pose(q);
+      const key = q.map(v => v.toFixed(1)).join() + '|' + pl.x + ',' + pl.z + '|' + this.armCables.map(cb => { const g = this.objects.comps[cb.comp]; return g ? `${g.position.x.toFixed(2)},${g.position.z.toFixed(2)},${g.rotation.y.toFixed(2)}` : ''; }).join(';');
+      if (key === this._armKey) return; this._armKey = key;
+      this.root.updateWorldMatrix(true, true);
+      const inv = new THREE.Matrix4().copy(this.root.matrixWorld).invert();
+      for (const cb of this.armCables) {
+        const g = this.objects.comps[cb.comp]; if (!g) continue;
+        const s = new THREE.Vector3(0, 0.24, -0.25).applyMatrix4(g.matrixWorld).applyMatrix4(inv);
+        let e;
+        if (cb.i === 0) { const d = new THREE.Vector3(s.x - pl.x, 0, s.z - pl.z); if (d.lengthSq() < 1e-6) d.set(0, 0, 1); d.setLength(3.65); e = new THREE.Vector3(pl.x + d.x, 0.75, pl.z + d.z); }
+        else e = A.servos[cb.i].getWorldPosition(new THREE.Vector3()).applyMatrix4(inv);
+        const near = new THREE.Vector3(pl.x, 0.2, pl.z).add(new THREE.Vector3(s.x - pl.x, 0, s.z - pl.z).setLength(4.6));   // 先沿桌面走到底座旁，再往上接到關節
+        const pts = [s, s.clone().lerp(near, 0.5).setY(0.2), near];
+        if (cb.i > 0) pts.push(new THREE.Vector3(pl.x, 0.2, pl.z).add(new THREE.Vector3(e.x - pl.x, 0, e.z - pl.z).setLength(2.2)).setY(Math.min(1.6, e.y)));
+        pts.push(e);
+        cb.mesh.geometry.dispose(); cb.mesh.geometry = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.3), 64, 0.075, 6, false);
+      }
+      this.dirty = true;
     }
 
     epWorld(ep) {
@@ -306,6 +351,8 @@
     frame() {
       if (!this.ok || !this.container || !this.container.offsetParent) return;
       const THREE = T();
+      if (this.root.parent !== this.scene) { this.scene.add(this.root); this._armKey = null; }   // 從手臂頁的場景拿回來
+      if (this.objects.arm && this.app.arm) this.armPose(this.app.arm.q);
       this.updateCamera();
       const sel = this.app.ui.selected;
       for (const [id, g] of Object.entries(this.objects.comps)) {
@@ -364,6 +411,7 @@
         if (t) { tagEl.hidden = false; tagEl.className = 'tag ' + t.cls; tagEl.textContent = t.text; } else tagEl.hidden = true;
       };
       const bd = this.project.board; const b = DL.boards[bd.type];
+      if (this.objects.arm) { const v = this.objects.arm.group.getWorldPosition(new THREE.Vector3()); put('arm', v.setY(this.project.arm.config.H + 3.2)); }
       put('board', new THREE.Vector3(bd.pos.x, b.size.t + 0.2, bd.pos.z + b.size.h / 2 + 0.6));
       const wp = new THREE.Vector3();
       for (const c of this.project.components) { const g = this.objects.comps[c.id]; if (g && g.userData.onboard) { g.getWorldPosition(wp); put(c.id, wp.clone().setY(wp.y + (c.type === 'BOOT' ? 1.15 : 0.55))); continue; } /* BOOT 鍵與藍燈很近：標籤錯開高度 */ if (g) put(c.id, c.type === 'BB' ? new THREE.Vector3(g.position.x - DL.breadboard.SIZE.w / 2 + 0.6, DL.breadboard.TOP + 0.1, g.position.z - DL.breadboard.SIZE.d / 2 - 0.35) : new THREE.Vector3(g.position.x, g.position.y + (c.type === 'SERVO' ? 1.9 : 1.25), g.position.z)); }
