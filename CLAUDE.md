@@ -77,7 +77,7 @@ python3 tools/pi_bridge.py --mock
 完整測試需要的工具：Node 22、g++、Python 3.9+（`pip install aiohttp gpiozero playwright`）、arduino-cli 1.1.1＋`arduino:avr` 1.8.6＋`esp32:esp32` 2.0.17、Servo 1.2.2、ESP32Servo 1.1.2、avr-nm、avrdude、socat。Playwright 用系統的 Chromium。
 在沒有網路的環境，arduino-cli 的工具路徑可以用環境變數 `DOFLAB_ARDUINO_PROPS`（`key=value;key=value`，會變成 `--build-property`）指定；一般電腦不需要。
 
-CI（`.github/workflows/ci.yml`）只跑不需要 Arduino 工具鏈的部分。**尚未在 GitHub 上跑過**。
+CI（`.github/workflows/ci.yml`）只跑不需要 Arduino 工具鏈的部分。2026-10-23 在 GitHub 上第一次執行並通過（PR dofliu/controlBoardTwin#1）。
 
 ## 已知的坑
 
