@@ -32,7 +32,7 @@
 3. 到「觀測」頁按「連接 Arduino（USB）」或「連接 ESP32（USB）」，再依序完成：辨識、唯讀觀測、核對接線、授權受控寫入。
 4. 連不上時（V2.6.1）：先關掉 Arduino IDE 的序列埠監控視窗與其他開著 DofLab 的分頁。本頁上一次沒關乾淨的連線會自動關閉；被其他程式占用時會自動重試並說明；板子沒回應時會自動重新啟動板子再試一次。上傳程式前會自動中斷觀測頁的連線，上傳後按「用上次的連接埠重新連線」即可。
 
-### 虛擬設備：沒有板子也能走完數位孿生（V2.8；V2.9 加上工作台；V2.11 可以上傳程式；V2.12 多人與控制權）
+### 虛擬設備：沒有板子也能走完數位孿生（V2.8；V2.9 加上工作台；V2.11 可以上傳程式；V2.12 多人與控制權；V2.13 虛擬樹莓派與 ESP32）
 
 虛擬設備是**另一個程式**裡的虛擬 Uno：avr8js 執行真的 DofLabFirmata 機器碼，外面接著「工作台」——這塊虛擬板子實際接了哪些元件。介面經網路（WebSocket）連過去，送出與收到的 Firmata 位元組和接 USB 時完全相同。
 
@@ -116,7 +116,28 @@ curl -X POST -d '{"part":"BTN1","action":"press","atDevMs":12345.5}' http://127.
 - 「匯出紀錄」下載 JSON（格式 `doflab-session` 第 1 版）。
 - 「重播剛才的紀錄」或「開啟紀錄檔…」：在模擬中照紀錄的模擬時間重送輸入、重算輸出，和紀錄比對；結果寫進事件紀錄（例如「1 個輸出的變化和紀錄完全相同（逐毫秒相同）；紀錄中送出的 7 個命令，7 個依序出現在重播的輸出中」）。重播不連設備、不送任何命令。可以用來確認「改了行為之後，同樣的輸入會不會得到不同的結果」。手臂專案的重播本版未包含。
 
-目前的限制：只在本機、沒有通行碼；換工作台要重新啟動主機。後續階段（虛擬樹莓派與 ESP32、雲端部署）見 `docs/VIRTUAL_DEVICE_PLAN.md`。
+**虛擬樹莓派與虛擬 ESP32（V2.13）**：同一台虛擬設備主機可以再加一台樹莓派、一台 ESP32：
+
+```bash
+npm run vdev -- --pi --esp32                          # uno-1＋pi-1（工作台 pi-hold-blink）＋esp32-1（工作台 esp32-hold-blink）
+npm run vdev -- --pi pi-dist-gauge --esp32 esp32-arm-3dof
+```
+
+| | 虛擬 Uno | 虛擬 ESP32 | 虛擬樹莓派 |
+|---|---|---|---|
+| 晶片端是什麼 | avr8js 執行**真的** DofLabFirmata 機器碼 | **協定模型**：行為和 DofLabFirmata 相同的 JS 程式，**不是實際韌體**（不模擬 ESP32 的指令） | **真的** `pi_bridge.py`（和接實體樹莓派時同一份），GPIO 是 gpiozero 的模擬腳位 |
+| 網址 | `ws://127.0.0.1:8770/dev/uno-1` | `…/dev/esp32-1` | `…/dev/pi-1` |
+| 工作台預設 | `hold-blink` 等 5 個 | `esp32-hold-blink`、`esp32-night-light`、`esp32-dist-gauge`、`esp32-arm-3dof`、`esp32doit-boot`（DevKit V1 的 BOOT 鍵與藍燈） | `pi-hold-blink`、`pi-dist-gauge`、`pi-arm-3dof` |
+| 超音波 | 回波時序 | 回波時序 | 只模擬距離（pi_bridge 在模擬腳位上直接讀距離） |
+| 故障注入 | 全部 | 全部 | 網路延遲、掉包、中斷（沒有 RESET 與瞬間斷電） |
+| 上傳程式 | 可以（Optiboot） | 不行 | 不能部署（說明原因） |
+| 多人 | 控制權（V2.12） | 控制權（V2.12） | pi_bridge 依腳位分配：同一個腳位同時只有一個連線能用 |
+
+觀測頁選「虛擬設備（網址）」時，預設網址依專案的板型；ESP32 的按鈕是「連接虛擬 ESP32（協定模型）」，連線結果、辨識、驗證狀態都寫「協定模型，不是實際韌體」。樹莓派的來源有「網路閘道（實體樹莓派）」與「虛擬設備」兩種。工作台頁（`http://127.0.0.1:8770/?d=pi-1`）上方可以切換設備，腳位依板型寫 D／A 或 GPIO。
+
+ESP32 的協定模型怎麼確認「行為和韌體相同」：把模型換成 Uno 的腳位表，和虛擬 Uno 上的真韌體送同一段 Firmata 訊息，回覆逐位元組相同（`tests/vdev_esp32.test.js`）。它驗證的是協定，不是 ESP32 晶片：韌體在 ESP32 上的錯誤不會在這裡出現。觸控腳不支援同步。
+
+目前的限制：只在本機、沒有通行碼；換工作台要重新啟動主機。後續階段（雲端部署）見 `docs/VIRTUAL_DEVICE_PLAN.md`。
 
 ### Raspberry Pi 4B 真機同步
 
@@ -124,6 +145,7 @@ curl -X POST -d '{"part":"BTN1","action":"press","atDevMs":12345.5}' http://127.
 sudo apt install python3-aiohttp python3-gpiozero python3-lgpio
 python3 pi_bridge.py              # 實體 GPIO
 python3 pi_bridge.py --mock       # 沒有樹莓派時，用模擬腳位測試流程
+python3 pi_bridge.py --bench pi-hold-blink   # 虛擬樹莓派：模擬腳位外面接工作台（通常由 npm run vdev -- --pi 啟動）
 ```
 
 ## 只有一張 ESP32 板子（V2.6）
@@ -255,7 +277,7 @@ src/core/      與介面無關的核心（Node 與瀏覽器共用同一份檔案
 src/drivers/   transport.js（傳輸層：USB 序列埠、虛擬設備的 WebSocket）、Firmata 與 Pi 閘道（WebSocket）驅動；stk500.js（瀏覽器上傳到 Uno）
 src/ui/        Three.js 場景與擬真模型（models.js）、Blockly 積木、五個分頁、手臂（arm.js）、上傳燒錄（upload.js）、連線紀錄的錄製／匯出／重播（record.js）、教師模式（teacher.js）
 tools/         doflab_server.py（編譯服務）、pi_bridge.py（Pi 閘道 v2）、firmware/DofLabFirmata
-tools/vdev/    虛擬設備主機：server.js（WebSocket＋HTTP）、hub.js（多人連線與控制權：Firmata 轉接）、netfault.js（網路故障注入）、device.js（每台設備一個 worker）、bench.js（工作台的元件模型）、bench.html（工作台頁）、benches/（工作台預設）、avrsim.js（虛擬 Uno：執行真實 hex，含 Optiboot 與自我燒錄；測試也用它）
+tools/vdev/    虛擬設備主機：server.js（WebSocket＋HTTP）、hub.js（多人連線與控制權：Firmata 轉接）、netfault.js（網路故障注入）、device.js（每台設備一個 worker）、bench.js（工作台的元件模型）、bench.html（工作台頁）、benches/（工作台預設）、avrsim.js（虛擬 Uno：執行真實 hex，含 Optiboot 與自我燒錄；測試也用它）、esp32model.js（虛擬 ESP32 的協定模型，不是實際韌體）、pihost.js＋pi_bench.py（虛擬樹莓派：啟動 pi_bridge --bench 並轉接）
 tests/avr/     pty_uno.js（讓 avrdude 經 pty 上傳到虛擬 Uno）
 tests/         Node 單元與等價測試、Python 測試
 e2e/           Playwright 端到端測試
