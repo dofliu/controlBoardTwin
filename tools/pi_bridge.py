@@ -38,6 +38,8 @@ DofLab — Raspberry Pi GPIO 閘道（協定 v2）
 安裝：sudo apt install python3-aiohttp python3-gpiozero python3-lgpio
 執行：python3 pi_bridge.py            （真的控制 GPIO）
       python3 pi_bridge.py --mock     （任何電腦都能跑，用 gpiozero 模擬腳位；只供測試）
+      python3 pi_bridge.py --bench pi-hold-blink   （虛擬樹莓派：模擬腳位＋工作台 tools/vdev/pi_bench.py；
+                                                    通常由虛擬設備主機 tools/vdev/server.js --pi 啟動，不必自己執行）
 """
 import argparse
 import asyncio
@@ -56,6 +58,7 @@ from aiohttp import web, WSMsgType
 
 HERE = pathlib.Path(__file__).resolve().parent
 PROTO = 2
+DEPLOY_NO_BENCH = "虛擬樹莓派不支援部署：部署的程式會在另一個程序執行，接不到工作台的模擬腳位。請用「觀測」頁的同步，或在實體樹莓派上部署。"
 
 
 def board_model(mock):
@@ -107,6 +110,8 @@ class Session:
             dev.when_activated = lambda p=pin: self.hub.loop.call_soon_threadsafe(self.push_input, p)
             dev.when_deactivated = lambda p=pin: self.hub.loop.call_soon_threadsafe(self.push_input, p)
             self.inputs[pin] = dev
+            if self.hub.bench:
+                self.hub.bench.reassert(pin)         # 虛擬樹莓派：工作台上的按鈕若正按著，腳位仍是低電位
             self.push_input(pin)
 
     def sonar_pins(self):
@@ -186,6 +191,8 @@ class Session:
             dev.value = 1 if int(m["value"]) else 0
             value = int(dev.value)                  # 回讀輸出暫存值（不證明 LED 真的亮）
         ack = {"op": "ack", "id": cid, "pin": pin, "value": value, "kind": kind}
+        if self.hub.bench:
+            self.hub.bench.writes += 1                # 虛擬樹莓派：設備端的寫入紀錄（給工作台頁與測試）
         self.acks[cid] = ack
         while len(self.acks) > 256:
             self.acks.popitem(last=False)
@@ -229,7 +236,7 @@ class Deployed:
 
 
 class Hub:
-    def __init__(self, loop, mock, deploy_dir=None):
+    def __init__(self, loop, mock, deploy_dir=None, bench=None):
         from gpiozero import Device, DigitalInputDevice, DigitalOutputDevice, AngularServo, DistanceSensor
         if mock:
             from gpiozero.pins.mock import MockFactory, MockPWMPin
@@ -240,8 +247,16 @@ class Hub:
         self.owner = {}
         self.deploy_dir = pathlib.Path(deploy_dir or (pathlib.Path.home() / "doflab-deploy"))
         self.running = None
+        self.sessions = 0
+        self.bench = None
+        if bench is not None:                  # 虛擬樹莓派：模擬腳位外面接工作台（tools/vdev/pi_bench.py）
+            sys.path.insert(0, str(HERE / "vdev"))
+            from pi_bench import PiBench
+            self.bench = PiBench(self, bench)
 
     async def deploy(self, session, code, pins):
+        if self.bench:
+            raise RuntimeError(DEPLOY_NO_BENCH)
         if self.running:
             raise RuntimeError("已經有一個部署的程式在執行，請先停止它")
         pins = [int(p) for p in pins or []]
@@ -333,6 +348,7 @@ async def ws_handler(request):
     ws = web.WebSocketResponse(heartbeat=20)
     await ws.prepare(request)
     s = Session(hub, ws)
+    hub.sessions += 1
     print(f"[連線] {request.remote}")
     try:
         async for msg in ws:
@@ -343,7 +359,11 @@ async def ws_handler(request):
                 m = json.loads(msg.data)
                 op = m.get("op")
                 if op == "hello":
-                    await s.send({"op": "hello", "proto": PROTO, "board": "pi4b", "model": board_model(hub.mock), "host": socket.gethostname(), "mock": hub.mock, "deploy": True, "running": hub.running.info() if hub.running else None})
+                    h = {"op": "hello", "proto": PROTO, "board": "pi4b", "model": board_model(hub.mock), "host": socket.gethostname(), "mock": hub.mock, "deploy": True, "running": hub.running.info() if hub.running else None}
+                    if hub.bench:   # 虛擬樹莓派：明確標示，介面據此顯示「虛擬設備」
+                        h.update(virtual=True, kind="virtual", model="虛擬樹莓派（pi_bridge＋gpiozero 模擬腳位＋工作台）", device=hub.bench.spec.get("device", "pi-1"),
+                                 bench=hub.bench.spec.get("id"), benchName=hub.bench.spec.get("name"), deploy=False, deployWhy=DEPLOY_NO_BENCH)
+                    await s.send(h)
                 elif op == "ping":
                     await s.send({"op": "pong", "t": m.get("t")})
                 elif op == "watch":
@@ -380,11 +400,36 @@ async def ws_handler(request):
             except Exception as e:  # 單一指令失敗不中斷連線
                 await s.send({"op": "error", "id": m.get("id"), "message": str(e)})
     finally:
+        hub.sessions -= 1
         s.close()                   # 斷線：關閉並釋放這個連線的所有輸出與輸入，不保留待執行命令
         if hub.running and hub.running.session is s:
             hub.running.session = None   # 部署的程式繼續執行（像 Arduino 上傳後一樣），之後的連線可以停止它
         print(f"[離線] {request.remote}")
     return ws
+
+
+# 虛擬樹莓派的工作台 API（只在 --bench 時有）：狀態、操作、輸出軌跡；格式和 tools/vdev 的虛擬 Uno 相同
+async def bench_state(request):
+    hub = request.app["hub"]
+    return web.json_response(hub.bench.state(hub.sessions), dumps=lambda o: json.dumps(o, ensure_ascii=False))
+
+
+async def bench_act(request):
+    hub = request.app["hub"]
+    try:
+        q = await request.json()
+        hub.bench.act(q)
+        return web.json_response(hub.bench.state(hub.sessions), dumps=lambda o: json.dumps(o, ensure_ascii=False))
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=400, dumps=lambda o: json.dumps(o, ensure_ascii=False))
+
+
+async def bench_trace(request):
+    b = request.app["hub"].bench
+    t = {"trace": list(b.trace), "resets": [], "devMs": round(b.now_ms())}
+    if request.query.get("clear") == "1":
+        b.trace.clear()
+    return web.json_response(t, dumps=lambda o: json.dumps(o, ensure_ascii=False))
 
 
 def main():
@@ -393,10 +438,25 @@ def main():
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--mock", action="store_true", help="不接硬體，用 gpiozero MockFactory 模擬腳位（只供測試）")
     ap.add_argument("--deploy-dir", default=None, help="部署程式存放的資料夾（預設 ~/doflab-deploy）")
+    ap.add_argument("--bench", default=None, help="虛擬樹莓派：模擬腳位外面接的工作台（tools/vdev/benches 的名稱、.json 路徑或 JSON 文字）；隱含 --mock")
+    ap.add_argument("--exit-with-parent", action="store_true", help="父程序（虛擬設備主機）結束時跟著結束，避免留下孤兒程序")
     args = ap.parse_args()
+    if args.bench:
+        args.mock = True
+    ppid = os.getppid()
+
+    async def watch_parent():
+        while True:
+            await asyncio.sleep(0.5)
+            if os.getppid() != ppid:       # 父程序不在了（被收養）：模擬腳位，沒有要安全關閉的硬體
+                os._exit(0)
 
     async def on_startup(app):
-        app["hub"] = Hub(asyncio.get_running_loop(), args.mock, args.deploy_dir)
+        app["hub"] = Hub(asyncio.get_running_loop(), args.mock, args.deploy_dir, args.bench)
+        if app["hub"].bench:
+            app["hub"].bench.start()
+        if args.exit_with_parent:
+            app["parent"] = asyncio.get_running_loop().create_task(watch_parent())
 
     async def on_cleanup(app):
         await app["hub"].stop()       # 閘道結束：一併停止部署的程式
@@ -409,7 +469,12 @@ def main():
     if (HERE / "vendor").is_dir():
         app.router.add_static("/vendor", HERE / "vendor")   # 離線用的 three.js 與 Blockly
     app.router.add_get("/ws", ws_handler)
-    print(f"DofLab Pi 閘道：http://{socket.gethostname()}.local:{args.port}  {'（模擬腳位）' if args.mock else ''}")
+    if args.bench:
+        app.router.add_get("/api/bench", bench_state)
+        app.router.add_post("/api/bench", bench_act)
+        app.router.add_get("/api/trace", bench_trace)
+    bench_name = (json.loads(args.bench).get("id") or "自訂") if args.bench and args.bench.lstrip().startswith("{") else args.bench
+    print(f"DofLab Pi 閘道：http://{socket.gethostname()}.local:{args.port}  {'（虛擬樹莓派：模擬腳位＋工作台 ' + bench_name + '）' if args.bench else '（模擬腳位）' if args.mock else ''}", flush=True)
     web.run_app(app, host=args.host, port=args.port, print=None)
 
 

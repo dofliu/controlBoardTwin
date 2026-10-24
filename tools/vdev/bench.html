@@ -62,7 +62,8 @@ table.j th, table.j td { text-align:right; padding:4px 6px; border-bottom:1px so
 <body>
 <div class="wrap">
   <header>
-    <h1><span id="title">DofLab 虛擬工作台</span><span class="tag">虛擬設備，不是實體板子</span></h1>
+    <h1><span id="title">DofLab 虛擬工作台</span><span class="tag" id="kindTag">虛擬設備，不是實體板子</span></h1>
+    <div class="meta" id="devPick" hidden><label for="devSel">設備</label><select id="devSel"></select></div>
     <div class="meta" id="meta"><span>載入中…</span></div>
     <div class="note" id="note" hidden></div>
   </header>
@@ -89,7 +90,10 @@ const qs = new URLSearchParams(location.search);
 let dev = qs.get('d'); const built = {}; let lastState = null;
 const post = (q) => fetch(`/api/devices/${dev}/bench`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(q) }).then(r => r.json()).then(s => { if (s && s.error) console.warn(s.error); });
 const f1 = x => x === null || x === undefined ? '—' : (Math.round(x * 10) / 10).toFixed(1);
-const pin = n => n < 14 ? 'D' + n : 'A' + (n - 14);
+// 腳位名稱依板型：Uno 是 D0–D13／A0–A5，ESP32 與樹莓派是 GPIO 編號（第 6 階段）
+let board = 'uno';
+const pin = n => board === 'uno' ? (n < 14 ? 'D' + n : 'A' + (n - 14)) : 'GPIO' + n;
+const KIND_TAG = { avr8js: '虛擬設備（avr8js 跑真的韌體），不是實體板子', protocol: '虛擬設備：ESP32 協定模型，不是實際韌體，也不是實體板子', 'gpio-mock': '虛擬設備：pi_bridge＋gpiozero 模擬腳位，不是實體樹莓派' };
 const NS = 'http://www.w3.org/2000/svg';
 
 function card(p, title, sub, wide) {
@@ -142,7 +146,7 @@ const KIND = {
       el.querySelector('[data-k=far]').addEventListener('click', () => post({ part: p.id, action: 'set', cm: null }));
       return el;
     },
-    update(el, p) { const r = el.querySelector('input'); if (document.activeElement !== r && p.cm !== null) r.value = p.cm; el.querySelector('[data-k=cm]').textContent = p.cm === null ? '沒有物體' : p.cm + ' cm'; el.querySelector('[data-k=pulses]').textContent = p.pulses; el.querySelector('[data-k=echoes]').textContent = `${p.echoes}／${p.dropped}`; }
+    update(el, p) { const r = el.querySelector('input'); if (document.activeElement !== r && p.cm !== null) r.value = p.cm; el.querySelector('[data-k=cm]').textContent = p.cm === null ? '沒有物體' : p.cm + ' cm'; el.querySelector('[data-k=pulses]').textContent = p.pulses ?? '—（虛擬樹莓派只模擬距離，不模擬回波時序）'; el.querySelector('[data-k=echoes]').textContent = p.echoes === null ? '—' : `${p.echoes}／${p.dropped}`; }
   },
   servo: {
     build(p) {
@@ -199,10 +203,12 @@ function faultUpdate(el, p) {
   if (p.type === 'arm') return;
   const w = el.querySelector('[data-k=wire]'); w.dataset.cut = p.unplugged ? '1' : '0'; w.textContent = p.unplugged ? `接回 ${p.id} 的線` : `拔掉 ${p.id} 的線`;
   el.classList.toggle('cut', !!p.unplugged || !!p.stuck);
-  const st = el.querySelector('[data-k=stuck]'); if (st) { st.dataset.on = p.stuck ? '1' : '0'; st.textContent = p.stuck ? '模組恢復正常' : '模組卡住（ECHO 一直是高電位）'; }
+  const st = el.querySelector('[data-k=stuck]'); if (st) { st.dataset.on = p.stuck ? '1' : '0'; st.textContent = p.stuck ? '模組恢復正常' : p.model === 'distance' ? '模組卡住（量不到距離）' : '模組卡住（ECHO 一直是高電位）'; }
 }
 function render(s) {
-  lastState = s; window.__bench = s;
+  lastState = s; window.__bench = s; board = s.board || 'uno';
+  const kind = s.model || (s.firmware && s.firmware.model) || 'avr8js'; $('#kindTag').textContent = KIND_TAG[kind] || KIND_TAG.avr8js;
+  for (const id of ['#fReset', '#fBrownout']) $(id).hidden = board === 'pi4b';   // 虛擬樹莓派沒有 RESET 與瞬間斷電（只有網路中斷）
   $('#title').textContent = `虛擬工作台 · ${s.id}`;
   $('#meta').innerHTML = `<span>工作台 <b>${s.bench.id}</b>（${s.bench.name}）</span><span>韌體 <b id="fwName">${esc(s.firmware.name)}</b>${s.uploads ? `（已上傳 ${s.uploads} 次）` : ''}</span><span>晶片時間 <b>${(s.devMs / 1000).toFixed(1)} s</b></span><span>速度 <b>${s.realtime ?? '—'}×</b> 即時</span><span>DofLab <b id="linked">${s.hub && s.hub.links.length ? `${s.hub.links.length} 個連線（${s.hub.links.map(l => esc(l.name)).join('、')}）` : '沒有連線'}</b></span><span>控制權 <b id="holder">${s.hub && s.hub.holder ? esc(s.hub.holder.name) : '沒有人'}</b></span>`;
   const n = $('#note'); n.hidden = !s.bench.note; n.textContent = s.bench.note || '';
@@ -213,9 +219,21 @@ function render(s) {
   $('#fStats').textContent = f.up ? `已送 介面→設備 ${f.up.frames} 筆（丟 ${f.up.dropped}）、設備→介面 ${f.down.frames} 筆（丟 ${f.down.dropped}）；重新開機 ${s.resets} 次` : `重新開機 ${s.resets} 次`;
   $('#log').textContent = s.bench.log.slice().reverse().map(e => `${(e.devMs / 1000).toFixed(3)} s  ${e.part} ${e.action}${e.light !== undefined ? ' ' + e.light + ' %' : ''}${e.cm !== undefined ? ' ' + (e.cm === null ? '移走物體' : e.cm + ' cm') : ''}${e.bounces ? '（彈跳 ' + e.bounces + ' 次）' : ''}${e.action === 'upload' ? '：收到新程式（' + e.pages + ' 頁）' + e.firmware : ''}`).join('\n') || '（還沒有操作）';
 }
+// 設備選單：同一台主機上有好幾台虛擬設備時（--pi、--esp32）切換；切換時重建元件卡片
+async function devices() {
+  const list = await (await fetch('/api/devices')).json();
+  if (!dev) dev = list[0] && list[0].id;
+  const sel = $('#devSel'); $('#devPick').hidden = list.length < 2;
+  if (sel.options.length !== list.length) sel.innerHTML = list.map(d => `<option value="${esc(d.id)}">${esc(d.id)}（${esc(d.board)}${d.model === 'protocol' ? '，協定模型' : ''}）</option>`).join('');
+  sel.value = dev;
+}
+$('#devSel').addEventListener('change', e => {
+  dev = e.target.value; $('#parts').innerHTML = ''; for (const k of Object.keys(built)) delete built[k];
+  const u = new URL(location.href); u.searchParams.set('d', dev); history.replaceState(null, '', u);
+});
 async function loop() {
   try {
-    if (!dev) { const list = await (await fetch('/api/devices')).json(); dev = list[0] && list[0].id; }
+    if (!$('#devSel').options.length) await devices();
     if (dev) render(await (await fetch(`/api/devices/${dev}`, { cache: 'no-store' })).json());
   } catch (e) { $('#meta').innerHTML = '<span class="warn">連不到虛擬設備主機（node tools/vdev/server.js 是否還在執行？）</span>'; }
   setTimeout(loop, 100);

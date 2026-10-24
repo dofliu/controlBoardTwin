@@ -1,0 +1,21 @@
+{
+ "id": "pi-dist-gauge",
+ "board": "pi4b",
+ "name": "樹莓派：超音波 TRIG GPIO5／ECHO GPIO6＋SG90 GPIO18（與「超音波距離指針」相同接線）",
+ "seed": 20261024,
+ "parts": [
+  {
+   "id": "US1",
+   "type": "ultrasonic",
+   "trig": 5,
+   "echo": 6,
+   "cm": 100
+  },
+  {
+   "id": "SERVO1",
+   "type": "servo",
+   "pin": 18,
+   "speed": 600
+  }
+ ]
+}

@@ -373,8 +373,23 @@
     if (this.hw.driver && this.hw.connSrc) return this.hw.connSrc;
     return srcs.includes(this.hw.src) ? this.hw.src : srcs[0];
   };
-  P.vdevUrl = function () { if (this.hw.vdevUrl) return this.hw.vdevUrl; try { const u = localStorage.getItem('doflab.vdevUrl'); if (u) return u; } catch (e) { } return DL.drivers.VDEV_URL; };
-  const benchUrl = ws => { try { const u = new URL(ws); return `${u.protocol === 'wss:' ? 'https:' : 'http:'}//${u.host}/`; } catch (e) { return null; } };
+  // 虛擬設備網址：每個板型各記一個（Uno 沿用舊的 doflab.vdevUrl；ESP32 → esp32-1、樹莓派 → pi-1，第 6 階段）
+  const vdevKey = b => b === 'uno' ? 'doflab.vdevUrl' : 'doflab.vdevUrl.' + b;
+  P.vdevUrl = function () {
+    const b = this.p.board.type;
+    if (this.hw.vdevUrl && this.hw.vdevUrlBoard === b) return this.hw.vdevUrl;
+    try { const u = localStorage.getItem(vdevKey(b)); if (u) return u; } catch (e) { }
+    return DL.drivers.vdevUrl(b);
+  };
+  P.setVdevUrl = function (url) { const b = this.p.board.type; this.hw.vdevUrl = url; this.hw.vdevUrlBoard = b; try { localStorage.setItem(vdevKey(b), url); } catch (e) { } };
+  // 三種虛擬設備的說明（介面各處都要分得出：虛擬 Uno 跑真的韌體；ESP32 是協定模型；樹莓派是 pi_bridge＋模擬腳位）
+  const VKIND = {
+    uno: { short: '另一個程序模擬的 Uno（avr8js），不是實體板子', btn: '連接虛擬 Uno', hint: '虛擬設備是另一個程式（<span class="mono">node tools/vdev/server.js</span>）裡以 avr8js 模擬的 Uno，執行真的 DofLabFirmata 機器碼；資料經網路（WebSocket）交換，Firmata 位元組和 USB 完全相同。它<b>不是實體板子</b>：在這裡通過的只算「已在虛擬設備驗證」。不需要 Web Serial，手機也能連。' },
+    esp32: { short: 'ESP32 協定模型，不是實際韌體，也不是實體板子', btn: '連接虛擬 ESP32（協定模型）', hint: '虛擬 ESP32 是另一個程式（<span class="mono">node tools/vdev/server.js --esp32</span>）裡的<b>協定模型</b>：一段行為和 DofLabFirmata 相同的 JS 程式，<b>不是實際韌體</b>（不模擬 ESP32 的指令），也不是實體板子。韌體本身的錯誤不會在這裡出現；在這裡通過只算「已在虛擬設備（協定模型）驗證」。觸控腳不支援同步。' },
+    pi4b: { short: '虛擬樹莓派（pi_bridge＋模擬腳位），不是實體樹莓派', btn: '連接虛擬樹莓派', hint: '虛擬樹莓派是虛擬設備主機（<span class="mono">node tools/vdev/server.js --pi</span>）啟動的 <span class="mono">pi_bridge.py</span>：和接實體樹莓派時同一份閘道程式，GPIO 是 gpiozero 的模擬腳位，外面接工作台。它<b>不是實體樹莓派</b>：在這裡通過只算「已在虛擬設備驗證」。超音波只模擬距離（不模擬回波時序）；不能部署程式。' }
+  };
+  const vkind = b => VKIND[DL.boardFamily ? (DL.boardFamily(b) === 'esp32' ? 'esp32' : b) : b] || VKIND.uno;
+  const benchUrl = ws => { try { const u = new URL(ws); const m = u.pathname.match(/\/dev\/([\w-]+)$/); return `${u.protocol === 'wss:' ? 'https:' : 'http:'}//${u.host}/${m ? '?d=' + m[1] : ''}`; } catch (e) { return null; } };   // 工作台頁直接選到這台設備
   P.renderHw = function () {
     const el = $('hwBody'); if (!el || !this.p) return;
     const p = this.p; const board = DL.boards[p.board.type]; const src = this.hwSource(); const info = DL.drivers.driverFor(p.board.type, src); const virt = src === 'virtual';
@@ -384,21 +399,23 @@
     const a = this.analysis; const R = this.hwRequirements();
     const urlDefault = (() => { try { const s = localStorage.getItem('doflab.wsUrl'); if (s) return s; } catch (e) { } return location.protocol === 'http:' && location.host && location.port !== '8766' ? `ws://${location.host}/ws` : 'ws://raspberrypi.local:8765/ws'; })();
     const step = (n, title, state, body) => `<li class="${state}"><span class="no">${n}</span><div><b>${title}</b>${body}</div></li>`;
-    const srcSel = !connected && info.sources.length > 1 ? `<div class="row" role="radiogroup" aria-label="連線來源">${info.sources.map(k => `<label class="check"><input type="radio" name="hwSrc" value="${k}" ${k === src ? 'checked' : ''}><span>${k === 'virtual' ? '虛擬設備（網址）' : 'USB 序列埠（實體板子）'}</span></label>`).join('')}</div>` : '';
+    const srcSel = !connected && info.sources.length > 1 ? `<div class="row" role="radiogroup" aria-label="連線來源">${info.sources.map(k => `<label class="check"><input type="radio" name="hwSrc" value="${k}" ${k === src ? 'checked' : ''}><span>${k === 'virtual' ? '虛擬設備（網址）' : k === 'pibridge' ? '網路閘道（實體樹莓派）' : 'USB 序列埠（實體板子）'}</span></label>`).join('')}</div>` : '';
+    const vk = vkind(p.board.type), isPi = p.board.type === 'pi4b';
     const bu = virt ? benchUrl(connected && this.hw.vdevConnUrl ? this.hw.vdevConnUrl : this.vdevUrl()) : null;
     // 多人（第 5 階段）：誰連著、誰有控制權
     const pr = virt && connected ? this.hw.presence : null;
     const prHtml = pr ? `<span class="hint" id="vdevPresence">${this.presenceText(pr)}</span>` : '';
-    const s1 = connected ? `<span>${esc(info.label)} · ${esc(c.info || '')}</span>${virt ? `<span class="hint"><span class="ev-virt">虛擬</span>另一個程序模擬的 Uno，不是實體板子 · <span id="vdevNet">網路來回 ${this.hw.driver && this.hw.driver.transport && this.hw.driver.transport.rtt !== null ? this.hw.driver.transport.rtt + ' ms' : '量測中'}</span>${bu ? ` · <a href="${esc(bu)}" target="_blank" rel="noopener">開啟工作台</a>` : ''}</span>` : ''}<div class="row"><button class="btn danger" id="hwDisc">中斷連線</button></div>`
-      : virt ? `${srcSel}<div class="row"><input class="inp mono" id="vdevUrl" value="${esc(this.vdevUrl())}" aria-label="虛擬設備網址" style="flex:1 1 200px"><input class="inp" id="vdevName" value="${esc(this.vdevName())}" aria-label="你的名稱（其他連線看得到）" title="你的名稱：同一台虛擬設備的其他連線會看到，例如「控制中：老師」" style="flex:0 1 120px"></div><span class="hint">虛擬設備是另一個程式（<span class="mono">node tools/vdev/server.js</span>）裡以 avr8js 模擬的 Uno，執行真的 DofLabFirmata 機器碼；資料經網路（WebSocket）交換，Firmata 位元組和 USB 完全相同。它<b>不是實體板子</b>：在這裡通過的只算「已在虛擬設備驗證」。不需要 Web Serial，手機也能連。</span>
-         <div class="row"><button class="btn primary" id="hwConn" ${this.hw.busy ? 'disabled' : ''}>連接虛擬 Uno</button></div>
-         <span class="hint">虛擬 Uno 上傳過自己的程式（「程式」頁）之後，要同步請先把 DofLabFirmata 上傳回去：</span>${this.firmataFlashHtml ? this.firmataFlashHtml() : ''}
+    const rtt = this.hw.driver && this.hw.driver.transport ? `<span id="vdevNet">網路來回 ${this.hw.driver.transport.rtt !== null ? this.hw.driver.transport.rtt + ' ms' : '量測中'}</span> · ` : '';
+    const s1 = connected ? `<span>${esc(info.label)} · ${esc(c.info || '')}</span>${virt ? `<span class="hint"><span class="ev-virt">虛擬</span>${esc(vk.short)} · ${rtt}${bu ? `<a href="${esc(bu)}" target="_blank" rel="noopener">開啟工作台</a>` : ''}</span>` : ''}<div class="row"><button class="btn danger" id="hwDisc">中斷連線</button></div>`
+      : virt ? `${srcSel}<div class="row"><input class="inp mono" id="vdevUrl" value="${esc(this.vdevUrl())}" aria-label="虛擬設備網址" style="flex:1 1 200px">${isPi ? '' : `<input class="inp" id="vdevName" value="${esc(this.vdevName())}" aria-label="你的名稱（其他連線看得到）" title="你的名稱：同一台虛擬設備的其他連線會看到，例如「控制中：老師」" style="flex:0 1 120px">`}</div><span class="hint">${vk.hint}</span>
+         <div class="row"><button class="btn primary" id="hwConn" ${this.hw.busy ? 'disabled' : ''}>${vk.btn}</button></div>
+         ${p.board.type === 'uno' ? `<span class="hint">虛擬 Uno 上傳過自己的程式（「程式」頁）之後，要同步請先把 DofLabFirmata 上傳回去：</span>${this.firmataFlashHtml ? this.firmataFlashHtml() : ''}` : ''}
          ${c.state === 'lost' ? `<span class="hint" style="color:var(--err)">上次連線中斷${this.twin.dropped.length ? `；${this.twin.dropped.length} 個未確認命令已作廢、不會重送` : ''}。重新連線後會從唯讀開始。</span>` : ''}`
       : `${srcSel}${p.board.type === 'pi4b' ? `<div class="row"><input class="inp mono" id="wsUrl" value="${esc(urlDefault)}" aria-label="樹莓派閘道網址" style="flex:1 1 200px"></div>` : `<span class="hint">${DL.boardFamily(p.board.type) === 'esp32' ? 'ESP32 需先上傳 DofLabFirmata 韌體' : 'Uno 需先上傳 DofLabFirmata（建議）或 StandardFirmata'}，再用 USB 連接電腦；需要電腦版 Chrome／Edge。韌體在下載包的 firmware 資料夾，也可以直接按下面的按鈕上傳。</span>${this.firmataFlashHtml ? this.firmataFlashHtml() : ''}`}
          <div class="row"><button class="btn primary" id="hwConn" ${this.hw.busy ? 'disabled' : ''}>${p.board.type === 'pi4b' ? '連接樹莓派' : (DL.boardFamily(p.board.type) === 'esp32' ? '連接 ESP32（USB）' : '連接 Arduino（USB）')}</button>${p.board.type !== 'pi4b' && this.hw.lastPort ? `<button class="btn" id="hwReconn" ${this.hw.busy ? 'disabled' : ''} title="不用再選連接埠">用上次的連接埠重新連線</button>` : ''}</div>
          ${p.board.type !== 'pi4b' ? '<span class="hint">連不上時：先關掉 Arduino IDE 的序列埠監控視窗與其他 DofLab 分頁。本頁上一次沒關乾淨的連線會自動關閉；板子沒回應時會自動重新啟動板子再試一次。</span>' : ''}
          ${c.state === 'lost' ? `<span class="hint" style="color:var(--err)">上次連線中斷${this.twin.dropped.length ? `；${this.twin.dropped.length} 個未確認命令已作廢、不會重送` : ''}。重新連線後會從唯讀開始。</span>` : ''}`;
-    const s2 = this.hw.identity ? `<span class="${this.hw.identity.ok ? '' : 'muted'}">${this.hw.identity.ok ? '✓' : '✗'} ${esc(this.hw.identity.msg)}</span>${this.hw.identity.mock ? '<span class="hint">這是測試用的模擬腳位，不是實體設備。</span>' : ''}${(this.hw.identity.virtual ? '<span class="hint">這是虛擬設備（另一個程序模擬的晶片），不是實體設備：在這裡通過只算「已在虛擬設備驗證，未以實體設備驗證」。</span>' : '')}` : '<span class="hint">連線後讀取板卡回報的型號與腳位能力。</span>';
+    const s2 = this.hw.identity ? `<span class="${this.hw.identity.ok ? '' : 'muted'}">${this.hw.identity.ok ? '✓' : '✗'} ${esc(this.hw.identity.msg)}</span>${this.hw.identity.mock ? '<span class="hint">這是測試用的模擬腳位，不是實體設備。</span>' : ''}${(this.hw.identity.virtual ? (this.hw.identity.protocol ? '<span class="hint">這是虛擬設備（ESP32 協定模型：行為和韌體相同的 JS 程式，不是實際韌體），不是實體設備：在這裡通過只算「已在虛擬設備（協定模型）驗證，未以實體設備驗證」。</span>' : '<span class="hint">這是虛擬設備（另一個程序模擬的晶片或腳位），不是實體設備：在這裡通過只算「已在虛擬設備驗證，未以實體設備驗證」。</span>') : '')}` : '<span class="hint">連線後讀取板卡回報的型號與腳位能力。</span>';
     const bindings = Object.values(a.bindings);
     const hasUs = bindings.some(b => b.role === 'ultrasonic');
     const s3 = connected ? `<span class="hint">唯讀只會把輸入腳位設為上拉／類比並開啟回報，不改變任何輸出。${virt ? '到虛擬設備的工作台（「開啟工作台」）按一下按鈕' : '按一下實體按鈕'}，確認畫面有反應。${hasUs ? '超音波的 TRIG 是量距離必須的觸發輸出：唯讀時韌體也會每 60 ms 送一次 10 µs 的觸發脈衝，只接到超音波模組。' : ''}</span>${this.hw.sonarUnsupported ? `<span class="hint" style="color:var(--err)">${esc(this.hw.sonarUnsupported)}</span>` : ''}${this.hw.touchUnsupported ? `<span class="hint" style="color:var(--warn)">${esc(this.hw.touchUnsupported)}</span>` : ''}${bindings.map(b => {
@@ -422,7 +439,7 @@
     const rv = $('hwRevoke'); if (rv) rv.onclick = () => this.hwRevoke('使用者停止寫入');
     el.querySelectorAll('[data-chk]').forEach(cb => cb.onchange = () => { this.hw.checks[cb.dataset.chk] = cb.checked; this.renderHw(); });
     el.querySelectorAll('input[name="hwSrc"]').forEach(r => r.onchange = () => { if (!r.checked) return; this.hw.src = r.value; try { localStorage.setItem('doflab.hwSrc', r.value); } catch (e) { } this.renderHw(); });
-    const vu = $('vdevUrl'); if (vu) vu.onchange = () => { this.hw.vdevUrl = vu.value.trim(); try { localStorage.setItem('doflab.vdevUrl', this.hw.vdevUrl); } catch (e) { } };
+    const vu = $('vdevUrl'); if (vu) vu.onchange = () => this.setVdevUrl(vu.value.trim());
     const vn = $('vdevName'); if (vn) vn.onchange = () => { this.hw.vdevName = vn.value.trim().slice(0, 24); try { localStorage.setItem('doflab.vdevName', this.hw.vdevName); } catch (e) { } };
   };
   // 你的名稱：同一台虛擬設備的其他連線看得到（「控制中：老師」）。第一次用時給一個隨機的預設名稱
@@ -448,6 +465,7 @@
     const el = $('vdevPresence'); if (el && ph === nh && prev) el.innerHTML = this.presenceText(m); else this.renderHw();   // 控制權改變：授權條件也跟著變，整個面板重畫
   };
   P.renderHwLive = function () {
+    if (this.renderRec && this.recActive && this.recActive()) this.renderRec();   // 連線紀錄的筆數即時更新
     const net = $('vdevNet'); const t = this.hw.driver && this.hw.driver.transport;
     if (net && t && t.rtt !== null && t.rtt !== undefined) net.textContent = `網路來回 ${t.rtt} ms`;
     for (const c of this.p.components) {
@@ -460,8 +478,7 @@
     if (!info.cls) { this.toast(info.status, 'e'); return; }
     // 先讀網址，再重繪面板：樹莓派閘道（wsUrl）或虛擬設備（vdevUrl）；USB 不用網址
     const url = src === 'virtual' ? ($('vdevUrl') ? $('vdevUrl').value.trim() : this.vdevUrl()) : src === 'pibridge' && $('wsUrl') ? $('wsUrl').value.trim() : null;
-    if (url) try { localStorage.setItem(src === 'virtual' ? 'doflab.vdevUrl' : 'doflab.wsUrl', url); } catch (e) { }
-    if (src === 'virtual') this.hw.vdevUrl = url;
+    if (url && src === 'virtual') this.setVdevUrl(url); else if (url) try { localStorage.setItem('doflab.wsUrl', url); } catch (e) { }
     this.hw.busy = true; this.renderHw();   // 先標示「連線中」：關閉序列埠監看也要一點時間，期間不能再按一次
     if (src === 'virtual' && this.up && this.up.vmon && this.up.vmon.open) await this.vmonClose('「觀測」頁要連線，已關閉（上傳與序列埠監看需要獨占虛擬設備）');
     const drv = new info.cls(this.twin, { log: (m, k) => { this.log(k || '', m); }, onLost: why => this.hwLost(why), onReboot: why => this.hwRebooted(why), onPresence: m => this.hwPresence(m) }, p.board.type);

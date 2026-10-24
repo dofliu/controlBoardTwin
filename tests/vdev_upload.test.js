@@ -62,16 +62,34 @@ test('經網路上傳（不需要 arduino-cli）：StandardFirmata 寫入虛擬 
   } finally { await s.close(); }
 });
 
+// 從收到的位元組找出完整的韌體名稱訊息（F0 79 主版 次版 名稱… F7）；被打斷的（中途出現別的命令位元組）不算
+function firmwareNames(bytes) {
+  const out = [];
+  for (let i = 0; i + 1 < bytes.length; i++) {
+    if (bytes[i] !== 0xF0 || bytes[i + 1] !== 0x79) continue;
+    let k = i + 4, cut = false; const name = [];
+    for (; k + 1 < bytes.length && bytes[k] !== 0xF7; k += 2) { if (bytes[k] & 0x80 || bytes[k + 1] & 0x80) { cut = true; break; } name.push(bytes[k] | (bytes[k + 1] << 7)); }
+    if (!cut && bytes[k] === 0xF7) out.push(String.fromCharCode(...name));
+  }
+  return out;
+}
+test('韌體名稱的解析：上電開機訊息被 DTR 重置打斷時，只取完整的那一則（GitHub CI 實際收到的位元組）', () => {
+  const name = 'DofLabFirmata'; const enc = [...name].flatMap(c => [c.charCodeAt(0), 0]);
+  const full = [0xF9, 2, 6, 0xF0, 0x79, 1, 1, ...enc, 0xF7];
+  const cut = [0xF9, 2, 6, 0xF0, 0x79, 1, 1, ...enc.slice(0, 16)];   // 「DofLabFi」之後被打斷
+  assert.deepStrictEqual(firmwareNames(cut.concat(full)), [name]);
+  assert.deepStrictEqual(firmwareNames(cut), []);
+});
+
 test('序列埠監看（不需要 arduino-cli）：開啟時 DTR 讓虛擬 Uno 重新啟動，等 Optiboot 逾時後程式開機輸出的位元組經網路送回', { timeout: 60000 }, async () => {
   const s = await server();
   try {
     const m = await monitor(s);
-    // DofLabFirmata 開機會主動送出版本（F9）與韌體名稱（F0 79 … F7）
-    const ok = await until(() => { const i = m.bytes.indexOf(0x79); return m.bytes.includes(0xF9) && i > 0 && m.bytes.indexOf(0xF7, i) > 0; }, 6000);
-    assert.ok(ok, '收到開機輸出：' + m.bytes.slice(0, 20).map(b => b.toString(16)).join(' '));
-    const i = m.bytes.indexOf(0x79); const name = []; for (let k = i + 3; k + 1 < m.bytes.length && m.bytes[k] !== 0xF7; k += 2) name.push(m.bytes[k] | (m.bytes[k + 1] << 7));
+    // DofLabFirmata 開機會主動送出版本（F9）與韌體名稱（F0 79 … F7）。連線得很早時，可能先收到上電開機訊息的前半段、
+    // 接著 DTR 重置把它打斷（和實體 Uno 一樣），所以只看完整的韌體名稱訊息
+    const ok = await until(() => firmwareNames(m.bytes).some(n => /DofLabFirmata/.test(n)), 6000);
     const hex = m.bytes.slice(0, 40).map(b => b.toString(16)).join(' ');
-    assert.match(String.fromCharCode(...name), /DofLabFirmata/, '收到的位元組：' + hex);
+    assert.ok(ok, '收到完整的開機訊息（韌體名稱 DofLabFirmata）：' + hex);
     const tr = await s.trace(); const fl = tr.resets.map(r => r.flags); const why = '重置紀錄：' + JSON.stringify(tr.resets) + '；收到的位元組：' + hex;
     assert.deepStrictEqual(fl.slice(-2), [2, 8], 'DTR 重置（EXTRF）→ Optiboot 等待逾時 → 看門狗重置（WDRF）執行程式。' + why);
     assert.ok(tr.resets[tr.resets.length - 1].devMs - tr.resets[tr.resets.length - 2].devMs > 500, 'Optiboot 等了約 1 秒才執行程式（和實體 Uno 一樣）。' + why);

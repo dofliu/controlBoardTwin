@@ -24,7 +24,16 @@ async function rig(bench) {
 test('工作台規格：每個預設都能載入；接錯腳位、重複腳位、未知元件都明確拒絕', () => {
   const { VirtualUno } = require('../tools/vdev/avrsim'); const { Bench } = require('../tools/vdev/bench.js');
   assert.ok(presets().includes('arm-3dof') && presets().includes('hold-blink-miswired'));
-  for (const name of presets()) new Bench(new VirtualUno(), name);
+  // 每個預設接在它的板型上（樹莓派的工作台是 Python，在 vdev_pi.test.js 驗）
+  const { VirtualEsp32 } = require('../tools/vdev/esp32model');
+  const byBoard = b => presets().filter(n => (loadSpec(n).board || 'uno') === b);
+  assert.ok(byBoard('uno').length >= 5 && byBoard('esp32').length >= 2, presets().join('、'));
+  for (const name of byBoard('uno')) new Bench(new VirtualUno(), name);
+  for (const name of byBoard('esp32')) new Bench(new VirtualEsp32(), name);
+  assert.throws(() => new Bench(new VirtualUno(), 'esp32-hold-blink'), /是 esp32 用的，不能接在 uno 上/);
+  assert.throws(() => new Bench(new VirtualEsp32(), { board: 'esp32', parts: [{ id: 'A', type: 'button', pin: 6 }] }), /不是 ESP32 的/);
+  assert.throws(() => new Bench(new VirtualEsp32(), { board: 'esp32', parts: [{ id: 'L', type: 'led', pin: 34 }] }), /GPIO34 只能輸入/);
+  assert.throws(() => new Bench(new VirtualEsp32(), { board: 'esp32', parts: [{ id: 'R', type: 'ldr', pin: 4 }] }), /GPIO32–36、39/);
   assert.throws(() => new Bench(new VirtualUno(), { parts: [{ id: 'A', type: 'button', pin: 2 }, { id: 'B', type: 'led', pin: 2 }] }), /D2 同時接了 A 與 B/);
   assert.throws(() => new Bench(new VirtualUno(), { parts: [{ id: 'A', type: 'button', pin: 25 }] }), /不是 Uno/);
   assert.throws(() => new Bench(new VirtualUno(), { parts: [{ id: 'A', type: 'motor', pin: 3 }] }), /不支援/);
