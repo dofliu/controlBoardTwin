@@ -1,4 +1,4 @@
-# DofLab V2.8.1 原型
+# DofLab V2.9 原型
 
 從電路配置、行為設計、模擬測試，到真實設備同步的教學與開發平台。本版依《DofLab 規劃文件 v0.1》重新開發。
 
@@ -32,18 +32,29 @@
 3. 到「觀測」頁按「連接 Arduino（USB）」或「連接 ESP32（USB）」，再依序完成：辨識、唯讀觀測、核對接線、授權受控寫入。
 4. 連不上時（V2.6.1）：先關掉 Arduino IDE 的序列埠監控視窗與其他開著 DofLab 的分頁。本頁上一次沒關乾淨的連線會自動關閉；被其他程式占用時會自動重試並說明；板子沒回應時會自動重新啟動板子再試一次。上傳程式前會自動中斷觀測頁的連線，上傳後按「用上次的連接埠重新連線」即可。
 
-### 虛擬設備：沒有板子也能走完數位孿生（V2.8）
+### 虛擬設備：沒有板子也能走完數位孿生（V2.8；V2.9 加上工作台）
 
-虛擬設備是**另一個程式**裡的虛擬 Uno：avr8js 執行真的 DofLabFirmata 機器碼，外面接著「工作台」（按鈕 BTN1 接 D2、LED1 經 220 Ω 接 D13，和「按住閃爍」相同）。介面經網路（WebSocket）連過去，送出與收到的 Firmata 位元組和接 USB 時完全相同。
+虛擬設備是**另一個程式**裡的虛擬 Uno：avr8js 執行真的 DofLabFirmata 機器碼，外面接著「工作台」——這塊虛擬板子實際接了哪些元件。介面經網路（WebSocket）連過去，送出與收到的 Firmata 位元組和接 USB 時完全相同。
 
 ```bash
 npm ci
-npm run vdev        # = node tools/vdev/server.js，只聽本機 127.0.0.1:8770
+npm run vdev                              # = node tools/vdev/server.js，只聽本機 127.0.0.1:8770，工作台 hold-blink
+npm run vdev -- --bench arm-3dof          # 換一個工作台（tools/vdev/benches/ 裡的預設，或自己寫的 .json）
 ```
+
+| 工作台 `--bench` | 接線 | 搭配的引導實驗 |
+|---|---|---|
+| `hold-blink`（預設） | 按鈕 D2（0–8 ms 隨機彈跳）、LED D13 經 220 Ω | 按住閃爍、按一下切換 |
+| `hold-blink-miswired` | 故意接錯：按鈕 D3、LED D12 | 練習「核對接線」：按按鈕畫面沒反應；LED 命令有 ACK 但 LED 不亮 |
+| `night-light` | 光敏模組 A0（±1 % 雜訊）、LED D13 | 光控夜燈、太亮警示 |
+| `dist-gauge` | 超音波 TRIG D7／ECHO D8、SG90 D9 | 超音波距離指針 |
+| `arm-3dof` | 三顆 SG90 接 D9、D10、D11，裝成三軸手臂 | 三軸機械手臂 |
+
+工作台頁（`http://127.0.0.1:8770/`，DofLab 連線後按「開啟工作台」）是**第二個介面**：在這裡按按鈕、拉亮度與距離、按「移走物體」，看 LED、SG90 的命令角與實際角度、三軸手臂的側視與俯視。DofLab 看不到這一頁，只看得到 Firmata 回報的量測與回讀；SG90 的實際角度只在工作台顯示（DofLab 的量測欄仍是「無回授」）。
 
 1. 從 `http://localhost:8766`（`python3 dist/doflab_server.py`）或 `dist/index.html` 開啟 DofLab，板型選 Uno，載入「按住閃爍」並確認行為。
 2. 「觀測」頁的真機連線選「虛擬設備（網址）」，網址 `ws://127.0.0.1:8770/dev/uno-1`，按「連接虛擬 Uno」。不需要 Web Serial。
-3. 按「開啟工作台」（`http://127.0.0.1:8770/`），在工作台按住 BTN1：介面的量測層顯示按下（唯讀，不送任何命令）。
+3. 按「開啟工作台」（`http://127.0.0.1:8770/`），在工作台頁按住 BTN1：介面的量測層顯示按下（唯讀，不送任何命令）。
 4. 核對接線、授權受控寫入、按「▶ 執行」，再到工作台按住 BTN1：工作台上的 LED 依虛擬晶片 D13 的實際電位閃爍。
 5. 停掉 `npm run vdev`：介面回到模擬，未確認的命令作廢、不會重送；重新啟動後再連線，從唯讀開始。
 
@@ -54,9 +65,13 @@ npm run vdev        # = node tools/vdev/server.js，只聽本機 127.0.0.1:8770
 ```bash
 curl http://127.0.0.1:8770/api/devices/uno-1                                   # 腳位、工作台、設備收到的命令紀錄
 curl -X POST -d '{"part":"BTN1","action":"press"}' http://127.0.0.1:8770/api/devices/uno-1/bench
+curl -X POST -d '{"part":"US1","action":"set","cm":12}' http://127.0.0.1:8770/api/devices/uno-1/bench   # cm 為 null：移走物體
+curl -X POST -d '{"part":"LDR1","action":"set","light":30}' http://127.0.0.1:8770/api/devices/uno-1/bench
 ```
 
-第 1 階段的限制：只在本機、沒有通行碼；同時只接受一個連線；工作台只有按鈕與 LED。後續階段見 `docs/VIRTUAL_DEVICE_PLAN.md`。
+**手臂的兩個介面同步**：用 `--bench arm-3dof` 啟動，DofLab 載入「三軸機械手臂」、確認手臂設定、連線並授權寫入，在「手臂」頁勾選「把手臂命令送到設備」。拖曳或執行序列時，工作台頁上的手臂跟著 D9／D10／D11 的脈寬轉動。工作台用自己的方式換算（脈寬 → 伺服角 → 關節角 → 末端位置），不用 DofLab 的程式；兩邊停下時的關節角相差在 1.5° 內。動作序列（姿態）要在連線授權**之前**記好：改序列等於改行為，會撤銷寫入授權。
+
+目前的限制：只在本機、沒有通行碼；同時只接受一個連線；換工作台要重新啟動主機。後續階段（故障與網路注入、上傳程式到虛擬 Uno、多人觀看、虛擬樹莓派與 ESP32、雲端部署）見 `docs/VIRTUAL_DEVICE_PLAN.md`。
 
 ### Raspberry Pi 4B 真機同步
 
@@ -193,7 +208,7 @@ src/core/      與介面無關的核心（Node 與瀏覽器共用同一份檔案
 src/drivers/   transport.js（傳輸層：USB 序列埠、虛擬設備的 WebSocket）、Firmata 與 Pi 閘道（WebSocket）驅動；stk500.js（瀏覽器上傳到 Uno）
 src/ui/        Three.js 場景與擬真模型（models.js）、Blockly 積木、五個分頁、手臂（arm.js）、上傳燒錄（upload.js）、教師模式（teacher.js）
 tools/         doflab_server.py（編譯服務）、pi_bridge.py（Pi 閘道 v2）、firmware/DofLabFirmata
-tools/vdev/    虛擬設備主機：server.js（WebSocket＋HTTP）、device.js（每台設備一個 worker）、bench.js（工作台）、avrsim.js（虛擬 Uno：執行真實 hex，含 Optiboot 與自我燒錄；測試也用它）
+tools/vdev/    虛擬設備主機：server.js（WebSocket＋HTTP）、device.js（每台設備一個 worker）、bench.js（工作台的元件模型）、bench.html（工作台頁）、benches/（工作台預設）、avrsim.js（虛擬 Uno：執行真實 hex，含 Optiboot 與自我燒錄；測試也用它）
 tests/avr/     pty_uno.js（讓 avrdude 經 pty 上傳到虛擬 Uno）
 tests/         Node 單元與等價測試、Python 測試
 e2e/           Playwright 端到端測試
@@ -206,9 +221,9 @@ e2e/           Playwright 端到端測試
 ## 測試
 
 ```bash
-node --test --test-concurrency=1 tests/*.test.js     # 112 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
+node --test --test-concurrency=1 tests/*.test.js     # 119 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
 python3 -m unittest discover -s tests -p "test_*.py" # 17 項（上傳端到端需要 avrdude 與 socat）
-python3 e2e/e2e.py                                   # 180 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev）
+python3 e2e/e2e.py                                   # 201 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench）
 ```
 
 ### 示範影片

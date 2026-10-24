@@ -99,7 +99,7 @@ class VirtualDevice {
     if (q.op === 'signals') { this.signals(q); return {}; }
     throw new Error('未知的查詢 ' + q.op);
   }
-  hello() { return { kind: 'virtual', board: this.board, device: this.id, firmware: this.firmware, bench: this.bench.spec.id, clock: 'virtual', speed: this.speed, mcu: 'ATmega328P（avr8js 模擬）' }; }
+  hello() { return { kind: 'virtual', board: this.board, device: this.id, firmware: this.firmware, bench: this.bench.spec.id, benchName: this.bench.spec.name, clock: 'virtual', speed: this.speed, mcu: 'ATmega328P（avr8js 模擬）' }; }
 }
 
 // 在 worker thread 裡執行：與 server.js 以訊息溝通

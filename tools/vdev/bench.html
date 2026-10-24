@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DofLab 虛擬工作台</title>
+<style>
+/* 虛擬工作台：虛擬板子外面接了什麼、元件現在怎樣。這一頁是「設備那一端」，DofLab 介面看不到這些內容 */
+:root {
+  --bg:#eef0f4; --surface:#fbfbfd; --surface-2:#eceef4; --ink:#1b1f2b; --muted:#5d6274; --line:#d3d6e2;
+  --virt:#5b4fb0; --virt-soft:#e6e3f7; --led:#e53935; --led-glow:rgba(229,57,53,.45); --ok:#17805a; --warn:#9a6210; --warn-soft:#f8ead0; --cmd:#b4581c; --metal:#8a90a3; --arm:#6c7389;
+  --font-ui:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif; --font-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --bg:#12141c; --surface:#1a1d28; --surface-2:#232736; --ink:#e4e6ef; --muted:#9aa0b4; --line:#2e3244;
+  --virt:#a99cf2; --virt-soft:#2a2550; --led:#ff6b5e; --led-glow:rgba(255,107,94,.5); --ok:#3ec28c; --warn:#e2a64a; --warn-soft:#3a2c12; --cmd:#e58c4e; --metal:#7d8398; --arm:#a3a9bd; color-scheme:dark } }
+* { box-sizing:border-box }
+body { margin:0; background:var(--bg); color:var(--ink); font-family:var(--font-ui); font-size:14px; line-height:1.55 }
+.wrap { max-width:1180px; margin:0 auto; padding:18px 16px 40px; display:grid; gap:14px }
+header { display:grid; gap:6px; border:2px dashed var(--virt); border-radius:12px; padding:12px 16px; background:var(--surface) }
+header h1 { margin:0; font-size:1.25rem; display:flex; flex-wrap:wrap; align-items:center; gap:8px }
+.tag { display:inline-block; background:var(--virt-soft); color:var(--virt); border-radius:999px; padding:1px 10px; font-size:.78rem; font-weight:700 }
+.meta { display:flex; flex-wrap:wrap; gap:4px 16px; color:var(--muted); font-size:.84rem }
+.meta b { color:var(--ink); font-weight:500; font-family:var(--font-mono) }
+.note { background:var(--warn-soft); color:var(--warn); border-radius:8px; padding:6px 10px; font-size:.86rem }
+.parts { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap:12px }
+.part { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:12px 14px; display:grid; gap:8px; align-content:start; min-width:0 }
+.part.wide { grid-column:1 / -1 }
+.part h2 { margin:0; font-size:.95rem; display:flex; justify-content:space-between; gap:8px; align-items:baseline }
+.part h2 small { font-family:var(--font-mono); color:var(--muted); font-weight:500; font-size:.78rem }
+.kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:.84rem; color:var(--muted) }
+.kv b { color:var(--ink); font-weight:500; font-family:var(--font-mono); font-variant-numeric:tabular-nums }
+button.hold { font:inherit; font-size:1rem; font-weight:700; padding:14px; border-radius:999px; border:2px solid var(--line); background:var(--surface-2); color:var(--ink); cursor:pointer; touch-action:none; user-select:none }
+button.hold[aria-pressed="true"] { background:var(--cmd); border-color:var(--cmd); color:#fff }
+button.sm { font:inherit; font-size:.82rem; padding:4px 10px; border-radius:8px; border:1px solid var(--line); background:var(--surface-2); color:var(--ink); cursor:pointer }
+button:focus-visible, input:focus-visible { outline:2px solid var(--virt); outline-offset:2px }
+input[type=range] { width:100%; accent-color:var(--virt) }
+.warn { color:var(--warn); font-weight:700 }
+.nofb { font-size:.78rem; color:var(--muted) }
+svg { display:block; width:100%; height:auto }
+svg text { font-family:var(--font-mono); font-size:11px; fill:var(--muted) }
+.armgrid { display:grid; grid-template-columns:minmax(0, 3fr) minmax(0, 2fr); gap:12px }
+.armgrid svg { max-height:240px }
+@media (max-width:640px) { .armgrid { grid-template-columns:1fr } }
+table.j { border-collapse:collapse; font-size:.84rem; width:100% }
+table.j th, table.j td { text-align:right; padding:4px 6px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums } table.j th:first-child, table.j td:first-child { text-align:left }
+.log { font-family:var(--font-mono); font-size:.78rem; color:var(--muted); max-height:160px; overflow:auto; margin:0; white-space:pre-wrap }
+.empty { color:var(--muted) }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span id="title">DofLab 虛擬工作台</span><span class="tag">虛擬設備，不是實體板子</span></h1>
+    <div class="meta" id="meta"><span>載入中…</span></div>
+    <div class="note" id="note" hidden></div>
+  </header>
+  <div class="parts" id="parts"></div>
+  <div class="part wide"><h2>工作台紀錄 <small>設備時間</small></h2><pre class="log" id="log"></pre></div>
+  <p class="nofb">這一頁顯示虛擬板子外面的世界：按鈕、LED、感測器、伺服與手臂。DofLab 介面看不到這一頁，只看得到 Firmata 回報的量測與回讀。伺服的實際角度只在這裡顯示；SG90 沒有回授，所以 DofLab 的量測欄固定是「無回授」。</p>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const qs = new URLSearchParams(location.search);
+let dev = qs.get('d'); const built = {}; let lastState = null;
+const post = (q) => fetch(`/api/devices/${dev}/bench`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(q) }).then(r => r.json()).then(s => { if (s && s.error) console.warn(s.error); });
+const f1 = x => x === null || x === undefined ? '—' : (Math.round(x * 10) / 10).toFixed(1);
+const pin = n => n < 14 ? 'D' + n : 'A' + (n - 14);
+const NS = 'http://www.w3.org/2000/svg';
+
+function card(p, title, sub, wide) {
+  const el = document.createElement('section'); el.className = 'part' + (wide ? ' wide' : ''); el.dataset.part = p.id;
+  el.innerHTML = `<h2>${title}<small>${sub}</small></h2>`; $('#parts').appendChild(el); return el;
+}
+// 每種元件：build 建一次 DOM，update 只改數值（拖拉桿時不重建）
+const KIND = {
+  button: {
+    build(p) {
+      const el = card(p, p.id + ' 按鈕', pin(p.pin) + ' → GND');
+      el.insertAdjacentHTML('beforeend', `<button class="hold" type="button" aria-pressed="false" id="hold-${p.id}">按住 ${p.id}</button><div class="kv"><span>腳位電位</span><b data-k="level"></b><span>彈跳</span><b>0–${p.bounceMs} ms</b><span>電位變化次數</span><b data-k="edges"></b></div>`);
+      const b = el.querySelector('button'); let down = false;
+      const press = v => { if (down === v) return; down = v; b.setAttribute('aria-pressed', String(v)); post({ part: p.id, action: v ? 'press' : 'release' }); };
+      b.addEventListener('pointerdown', e => { e.preventDefault(); b.setPointerCapture(e.pointerId); press(true); });
+      for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, () => press(false));
+      b.addEventListener('keydown', e => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); press(true); } });
+      b.addEventListener('keyup', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); press(false); } });
+      return el;
+    },
+    update(el, p) { el.querySelector('[data-k=level]').textContent = p.level === 'low' ? 'LOW（按下）' : 'HIGH（放開）'; el.querySelector('[data-k=edges]').textContent = p.edges; }
+  },
+  led: {
+    build(p) {
+      const el = card(p, p.id + ' LED', `${pin(p.pin)} → ${p.ohm} Ω → GND`);
+      el.insertAdjacentHTML('beforeend', `<svg viewBox="0 0 120 70" aria-hidden="true"><circle data-k="glow" cx="60" cy="32" r="28" fill="var(--led-glow)" opacity="0"/><circle data-k="bulb" cx="60" cy="32" r="16" stroke="var(--metal)" stroke-width="2"/><line x1="52" y1="48" x2="52" y2="68" stroke="var(--metal)" stroke-width="3"/><line x1="68" y1="48" x2="68" y2="66" stroke="var(--metal)" stroke-width="3"/></svg><div class="kv"><span>狀態</span><b data-k="on"></b><span>電流（估算）</span><b data-k="mA"></b><span>亮滅切換次數</span><b data-k="toggles"></b></div>`);
+      return el;
+    },
+    update(el, p) {
+      el.querySelector('[data-k=bulb]').setAttribute('fill', p.on ? 'var(--led)' : 'var(--surface-2)'); el.querySelector('[data-k=glow]').setAttribute('opacity', p.on ? '1' : '0');
+      el.querySelector('[data-k=on]').textContent = p.on ? '亮' : '滅'; el.querySelector('[data-k=toggles]').textContent = p.toggles;
+      const m = el.querySelector('[data-k=mA]'); m.textContent = p.on ? `${p.mA} mA${p.overCurrent ? '（超過 20 mA）' : ''}` : '0 mA'; m.className = p.overCurrent ? 'warn' : '';
+    }
+  },
+  ldr: {
+    build(p) {
+      const el = card(p, p.id + ' 光敏模組', 'AO → ' + pin(p.pin));
+      el.insertAdjacentHTML('beforeend', `<label for="ldr-${p.id}">環境亮度 <b data-k="light"></b> %</label><input type="range" id="ldr-${p.id}" min="0" max="100" step="1"><div class="kv"><span>AO 電壓</span><b data-k="v"></b><span>雜訊</span><b>±${(p.noise * 100).toFixed(0)} %</b>${p.inverted ? '<span>方向</span><b>相反（越亮電壓越低）</b>' : ''}</div>`);
+      const r = el.querySelector('input'); r.value = p.light; r.addEventListener('input', () => { el.querySelector('[data-k=light]').textContent = r.value; post({ part: p.id, action: 'set', light: +r.value }); });
+      return el;
+    },
+    update(el, p) { const r = el.querySelector('input'); if (document.activeElement !== r) { r.value = p.light; el.querySelector('[data-k=light]').textContent = p.light; } el.querySelector('[data-k=v]').textContent = p.volts.toFixed(3) + ' V'; }
+  },
+  ultrasonic: {
+    build(p) {
+      const el = card(p, p.id + ' 超音波', `TRIG ${pin(p.trig)}、ECHO ${pin(p.echo)}`);
+      el.insertAdjacentHTML('beforeend', `<label for="us-${p.id}">前方物體 <b data-k="cm"></b></label><input type="range" id="us-${p.id}" min="2" max="200" step="1"><div><button class="sm" type="button" data-k="far">移走物體（沒有回波）</button></div><div class="kv"><span>觸發次數</span><b data-k="pulses"></b><span>有回波／掉回波</span><b data-k="echoes"></b></div>`);
+      const r = el.querySelector('input'); r.value = p.cm === null ? 200 : p.cm;
+      r.addEventListener('input', () => post({ part: p.id, action: 'set', cm: +r.value }));
+      el.querySelector('[data-k=far]').addEventListener('click', () => post({ part: p.id, action: 'set', cm: null }));
+      return el;
+    },
+    update(el, p) { const r = el.querySelector('input'); if (document.activeElement !== r && p.cm !== null) r.value = p.cm; el.querySelector('[data-k=cm]').textContent = p.cm === null ? '沒有物體' : p.cm + ' cm'; el.querySelector('[data-k=pulses]').textContent = p.pulses; el.querySelector('[data-k=echoes]').textContent = `${p.echoes}／${p.dropped}`; }
+  },
+  servo: {
+    build(p) {
+      const el = card(p, p.id + ' SG90', pin(p.pin) + ' 訊號');
+      el.insertAdjacentHTML('beforeend', `<svg viewBox="0 0 160 92" aria-hidden="true"><path d="M10 82 A70 70 0 0 1 150 82" fill="none" stroke="var(--line)" stroke-width="8" stroke-linecap="round"/><text x="6" y="92">0°</text><text x="72" y="10">90°</text><text x="134" y="92">180°</text><line data-k="cmd" x1="80" y1="82" x2="80" y2="20" stroke="var(--cmd)" stroke-width="2" stroke-dasharray="4 3"/><line data-k="act" x1="80" y1="82" x2="80" y2="24" stroke="var(--ink)" stroke-width="4" stroke-linecap="round"/><circle cx="80" cy="82" r="6" fill="var(--metal)"/></svg><div class="kv"><span>脈寬</span><b data-k="us"></b><span>命令角（由脈寬換算）</span><b data-k="c"></b><span>實際角度（有限速度）</span><b data-k="a"></b></div><span class="nofb">實際角度只在工作台顯示；DofLab 的量測欄是「無回授」。</span>`);
+      return el;
+    },
+    update(el, p) {
+      const needle = (k, a, len) => { const l = el.querySelector(`[data-k=${k}]`); if (a === null) { l.setAttribute('opacity', '0'); return; } const t = Math.PI * (1 - a / 180); l.setAttribute('opacity', '1'); l.setAttribute('x2', (80 + len * Math.cos(t)).toFixed(1)); l.setAttribute('y2', (82 - len * Math.sin(t)).toFixed(1)); };
+      needle('cmd', p.cmd, 64); needle('act', p.angle, 58);
+      el.querySelector('[data-k=us]').textContent = p.pulseUs ? p.pulseUs + ' µs' + (p.powered ? '' : '（沒有訊號）') : '沒有訊號';
+      el.querySelector('[data-k=c]').textContent = f1(p.cmd) + '°'; el.querySelector('[data-k=a]').textContent = f1(p.angle) + '°' + (p.moving ? '（轉動中）' : '');
+    }
+  },
+  arm: {
+    build(p) {
+      const el = card(p, '三軸手臂（工作台上的實物）', `肩高 ${p.H}、上臂 ${p.L1}、前臂 ${p.L2} cm`, true);
+      el.insertAdjacentHTML('beforeend', `<div class="armgrid"><div><svg viewBox="-20 -2 40 26" aria-label="側視圖"><g transform="scale(1,-1) translate(0,-22)"><line x1="-20" y1="0" x2="20" y2="0" stroke="var(--line)" stroke-width=".3"/><rect x="-3" y="0" width="6" height="${p.H}" fill="var(--metal)" rx=".6"/><line data-k="l1" stroke="var(--arm)" stroke-width="1.6" stroke-linecap="round"/><line data-k="l2" stroke="var(--arm)" stroke-width="1.2" stroke-linecap="round"/><line data-k="c1" stroke="var(--cmd)" stroke-width=".35" stroke-dasharray=".8 .6"/><line data-k="c2" stroke="var(--cmd)" stroke-width=".35" stroke-dasharray=".8 .6"/><circle data-k="tip" r=".9" fill="var(--cmd)"/></g></svg><span class="nofb">側視（沿手臂轉向的平面）。實線：伺服的實際角度；虛線：脈寬換算的命令。</span></div><div><svg viewBox="-20 -20 40 40" aria-label="俯視圖"><circle r="18" fill="none" stroke="var(--line)" stroke-width=".3"/><line x1="-19" y1="0" x2="19" y2="0" stroke="var(--line)" stroke-width=".2"/><line x1="0" y1="-19" x2="0" y2="19" stroke="var(--line)" stroke-width=".2"/><line data-k="top" x1="0" y1="0" stroke="var(--arm)" stroke-width="1.4" stroke-linecap="round"/><circle r="2.2" fill="var(--metal)"/><text x="12" y="-1.5" style="font-size:2.4px">+X</text></svg><span class="nofb">俯視（底座轉向）</span></div></div><table class="j"><thead><tr><th>關節</th><th>伺服</th><th>命令角</th><th>實際角</th></tr></thead><tbody data-k="rows"></tbody></table><div class="kv"><span>末端位置</span><b data-k="tipxyz"></b></div>`);
+      return el;
+    },
+    update(el, p) {
+      const r = a => a * Math.PI / 180;
+      const seg = (k1, k2, q) => {
+        const l1 = el.querySelector(`[data-k=${k1}]`), l2 = el.querySelector(`[data-k=${k2}]`);
+        if (q.some(a => a === null)) { l1.setAttribute('opacity', '0'); l2.setAttribute('opacity', '0'); return null; }
+        const ex = p.L1 * Math.cos(r(q[1])), ey = p.H + p.L1 * Math.sin(r(q[1])), tx = ex + p.L2 * Math.cos(r(q[1] - q[2])), ty = ey + p.L2 * Math.sin(r(q[1] - q[2]));
+        for (const [l, a, b, c, d] of [[l1, 0, p.H, ex, ey], [l2, ex, ey, tx, ty]]) { l.setAttribute('opacity', '1'); l.setAttribute('x1', a); l.setAttribute('y1', b); l.setAttribute('x2', c); l.setAttribute('y2', d); }
+        return [tx, ty];
+      };
+      const q = p.joints.map(j => j.q), c = p.joints.map(j => j.cmd);
+      const tip = seg('l1', 'l2', q); seg('c1', 'c2', c);
+      const t = el.querySelector('[data-k=tip]'); if (tip) { t.setAttribute('cx', tip[0]); t.setAttribute('cy', tip[1]); }
+      const top = el.querySelector('[data-k=top]'); if (p.pos) { top.setAttribute('x2', (p.pos.tip.r * Math.cos(r(q[0]))).toFixed(2)); top.setAttribute('y2', (-p.pos.tip.r * Math.sin(r(q[0]))).toFixed(2)); }
+      el.querySelector('[data-k=rows]').innerHTML = p.joints.map(j => `<tr><td>${j.name}</td><td>${j.servo}</td><td>${f1(j.cmd)}°</td><td>${f1(j.q)}°</td></tr>`).join('');
+      el.querySelector('[data-k=tipxyz]').textContent = p.pos ? `x ${f1(p.pos.tip.x)}、y ${f1(p.pos.tip.y)}、z ${f1(p.pos.tip.z)} cm` : '—';
+    }
+  }
+};
+
+function render(s) {
+  lastState = s; window.__bench = s;
+  $('#title').textContent = `虛擬工作台 · ${s.id}`;
+  $('#meta').innerHTML = `<span>工作台 <b>${s.bench.id}</b>（${s.bench.name}）</span><span>韌體 <b>${s.firmware.name}</b></span><span>晶片時間 <b>${(s.devMs / 1000).toFixed(1)} s</b></span><span>速度 <b>${s.realtime ?? '—'}×</b> 即時</span><span>DofLab <b id="linked">${s.linked ? '已連線' : '沒有連線'}</b></span>`;
+  const n = $('#note'); n.hidden = !s.bench.note; n.textContent = s.bench.note || '';
+  for (const p of s.bench.parts) { const k = KIND[p.type]; if (!k) continue; if (!built[p.id]) built[p.id] = k.build(p); k.update(built[p.id], p); }
+  $('#log').textContent = s.bench.log.slice().reverse().map(e => `${(e.devMs / 1000).toFixed(3)} s  ${e.part} ${e.action}${e.light !== undefined ? ' ' + e.light + ' %' : ''}${e.cm !== undefined ? ' ' + (e.cm === null ? '移走物體' : e.cm + ' cm') : ''}${e.bounces ? '（彈跳 ' + e.bounces + ' 次）' : ''}`).join('\n') || '（還沒有操作）';
+}
+async function loop() {
+  try {
+    if (!dev) { const list = await (await fetch('/api/devices')).json(); dev = list[0] && list[0].id; }
+    if (dev) render(await (await fetch(`/api/devices/${dev}`, { cache: 'no-store' })).json());
+  } catch (e) { $('#meta').innerHTML = '<span class="warn">連不到虛擬設備主機（node tools/vdev/server.js 是否還在執行？）</span>'; }
+  setTimeout(loop, 100);
+}
+loop();
+</script>
+</body>
+</html>

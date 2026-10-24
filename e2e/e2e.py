@@ -426,6 +426,175 @@ async def vdev_flow(p):
     finally:
         await b.close(); srv.kill()
 
+async def bench_flow(p):
+    """雲端虛擬硬體第 2 階段：兩個介面同時開著——DofLab（左）與虛擬設備的工作台頁（右，另一個程序提供的網頁）。
+    工作台的按鈕、拉桿都在工作台頁上用滑鼠操作；DofLab 那邊只看得到 Firmata 回報的量測與回讀。"""
+    import urllib.request
+    from PIL import Image
+    VPORT = 8770; api = f'http://127.0.0.1:{VPORT}/api/devices/uno-1'
+    def start(bench):
+        pr = subprocess.Popen(['node', str(ROOT / 'tools' / 'vdev' / 'server.js'), '--port', str(VPORT), '--bench', bench], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(VPORT); return pr
+    def state(): return json.loads(urllib.request.urlopen(api, timeout=5).read())
+    def part(st, pid): return next(x for x in st['bench']['parts'] if x['id'] == pid)
+    def pair(name, left, right):   # 兩個介面並排成一張截圖
+        a, b = Image.open(left), Image.open(right); h = max(a.height, b.height)
+        out = Image.new('RGB', (a.width + b.width + 12, h), (120, 110, 170)); out.paste(a, (0, 0)); out.paste(b, (a.width + 12, 0)); out.save(SHOTS / name)
+        os.remove(left); os.remove(right)
+    async def shots(name, pg, bp):
+        await asyncio.gather(pg.screenshot(path=str(SHOTS / '_l.png')), bp.screenshot(path=str(SHOTS / '_r.png')))   # 兩個介面同一時刻截圖
+        pair(name, SHOTS / '_l.png', SHOTS / '_r.png')
+    async def hold(bp, pid, ms):
+        h = await bp.locator(f'#hold-{pid}').bounding_box()
+        await bp.mouse.move(h['x'] + h['width'] / 2, h['y'] + h['height'] / 2); await bp.mouse.down(); await bp.wait_for_timeout(ms); await bp.mouse.up()
+    async def connect(pg):
+        await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+        await pg.check('input[name="hwSrc"][value="virtual"]'); await pg.fill('#vdevUrl', f'ws://127.0.0.1:{VPORT}/dev/uno-1')
+        await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=20000); await pg.wait_for_timeout(300)
+    def load(exp):
+        return f"(()=>{{const r=DL.experiments.solved('{exp}','uno'); doflab.load(DL.project.clone(r.project,{{name:'工作台 {exp}',origin:{{kind:'custom'}},lock:{{components:false,behavior:false,board:false}}}})); }})()"
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 940})
+    errs = []; srv = None
+    try:
+        pg = await ctx.new_page(); pg.on('pageerror', lambda e: errs.append(str(e)))
+        bp = await ctx.new_page(); bp.on('pageerror', lambda e: errs.append('工作台頁：' + str(e))); await bp.set_viewport_size({'width': 900, 'height': 940})
+        await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p")
+
+        # ---------- 1. 按鈕彈跳：按一下切換（toggle-led）＋工作台 hold-blink（0–8 ms 隨機彈跳） ----------
+        srv = start('hold-blink'); await bp.goto(f'http://127.0.0.1:{VPORT}/'); await bp.wait_for_function("window.__bench && document.querySelector('#hold-BTN1')")
+        check("工作台頁：另一個程序提供的網頁，標示「虛擬設備，不是實體板子」，列出接線與元件", '不是實體板子' in await bp.inner_text('header') and 'D2 → GND' in await bp.inner_text('#parts') and 'LED1' in await bp.inner_text('#parts'))
+        await ev(pg, load('toggle-led')); await pg.click('#t-behavior'); await pg.wait_for_timeout(300); await pg.click('#btnConfirm')
+        await connect(pg)
+        await hold(bp, 'BTN1', 300)
+        try: await pg.wait_for_function("document.querySelector('#saw-BTN1').textContent.includes('已偵測到變化')", timeout=5000); ok = True
+        except Exception: ok = False
+        check("唯讀：在工作台頁用滑鼠按 BTN1 → DofLab 核對接線顯示「已偵測到變化」，設備端沒有收到寫入", ok and state()['traffic']['writeCount'] == 0)
+        for cb in await pg.locator('[data-chk]').all(): await cb.check()
+        await pg.click('#hwAuth'); await pg.wait_for_timeout(200); await pg.click('#simRun'); await pg.wait_for_timeout(300)
+        st0 = state(); t0, e0 = part(st0, 'LED1')['toggles'], part(st0, 'BTN1')['edges']
+        m0 = await ev(pg, "doflab.twin.log.filter(e=>e.type==='measure' && e.name==='BTN1.pressed').length")
+        for i in range(4):
+            await hold(bp, 'BTN1', 250); await bp.wait_for_timeout(450)
+        await bp.wait_for_timeout(600)
+        st1 = state(); led, btn = part(st1, 'LED1'), part(st1, 'BTN1')
+        m1 = await ev(pg, "doflab.twin.log.filter(e=>e.type==='measure' && e.name==='BTN1.pressed').length")
+        check("去彈跳：在工作台頁按 4 下（每下按下與放開都有彈跳）→ 工作台上的 LED 正好切換 4 次", led['toggles'] - t0 == 4 and btn['edges'] - e0 > 8, json.dumps([led['toggles'] - t0, btn['edges'] - e0]))
+        check("彈跳真的傳到 DofLab：BTN1 的量測筆數多於按放次數（8 次），行為仍只切換 4 次", m1 - m0 > 8, str(m1 - m0))
+        await shots('w1_bounce_toggle.png', pg, bp)
+        await pg.click('#simRun'); await pg.click('#hwDisc'); await pg.wait_for_timeout(300); srv.kill(); srv.wait()
+
+        # ---------- 2. 接錯線：專案 D2／D13，工作台實際接 D3／D12 ----------
+        srv = start('hold-blink-miswired'); await bp.goto(f'http://127.0.0.1:{VPORT}/'); await bp.wait_for_function("window.__bench && document.querySelector('#hold-BTN1')")
+        check("工作台頁顯示這是故意接錯的接線（按鈕 D3、LED D12）", 'D3 → GND' in await bp.inner_text('#parts') and '核對接線' in await bp.inner_text('#note'))
+        await ev(pg, load('hold-blink')); await pg.click('#t-behavior'); await pg.wait_for_timeout(300); await pg.click('#btnConfirm')
+        await connect(pg)
+        check("接錯線：空接的 D2 開了上拉，DofLab 讀到「放開」（和實體晶片一樣，不會誤判成按下）", await ev(pg, "(v=>v.measured && v.measured.v===false)(doflab.twin.view('BTN1.pressed'))"))
+        await hold(bp, 'BTN1', 400); await bp.wait_for_timeout(300); await hold(bp, 'BTN1', 400); await pg.wait_for_timeout(1200)
+        check("核對接線失敗：在工作台頁按了兩次 BTN1，DofLab 的 BTN1 仍是「等待變化」", '等待變化' in await pg.inner_text('#saw-BTN1') and part(state(), 'BTN1')['edges'] >= 4)
+        for cb in await pg.locator('[data-chk]').all(): await cb.check()
+        await pg.click('#hwAuth'); await pg.wait_for_timeout(200)
+        # 行為不會讓 LED 亮（按鈕沒接上）；這裡用和行為相同的路徑（Twin 命令 → 驅動）送一次 LED 亮的命令
+        await ev(pg, "(()=>{const b=doflab.analysis.bindings.LED1; const r=doflab.twin.command('LED1.state', 1, 'test'); doflab.hw.driver.write(r.cmd, {num:b.num, kind:'digital'});})()")
+        try: await pg.wait_for_function("(v=>v.ack && v.ack.matches)(doflab.twin.view('LED1.state'))", timeout=4000); ok = True
+        except Exception: ok = False
+        await bp.wait_for_timeout(400); st = state()
+        check("接錯線：LED 命令得到回讀 ACK（D13 確實是 HIGH），但工作台上接在 D12 的 LED 沒有亮", ok and st['pins']['13'] == 'high' and not part(st, 'LED1')['on'] and await ev(pg, "doflab.twin.view('LED1.state').quality") == 'none', json.dumps([ok, st['pins']['13'], part(st, 'LED1')]))
+        await pg.click('#t-observe'); await pg.wait_for_timeout(300); await shots('w2_miswired.png', pg, bp)
+        await pg.click('#hwDisc'); await pg.wait_for_timeout(300); srv.kill(); srv.wait()
+
+        # ---------- 3. 三軸手臂：DofLab 手臂頁（左）與工作台上的手臂（右）同步 ----------
+        srv = start('arm-3dof'); await bp.goto(f'http://127.0.0.1:{VPORT}/'); await bp.wait_for_function("window.__bench && window.__bench.bench.parts.some(p=>p.type==='arm')")
+        await ev(pg, load('arm-3dof')); await pg.click('#t-arm'); await pg.wait_for_timeout(600)
+        await pg.click('#armConfirm'); await pg.wait_for_timeout(200)
+        J = "doflab.arm.q.map(x=>Math.round(x*10)/10)"
+        async def slide(target):
+            for i, v in enumerate(target):
+                await pg.locator(f'#armJ{i}').fill(str(v)); await pg.locator(f'#armJ{i}').dispatch_event('input')
+        # 先在模擬中記下姿態 A、B（改動作序列＝改行為，連線授權後再改會撤銷寫入授權，所以要先記好）
+        for target in ([30, 70, 60], [-40, 110, 90]):
+            await slide(target); await pg.wait_for_function(f"(q=>q.every((a,i)=>Math.abs(a-{target}[i])<0.6))(doflab.arm.q)", timeout=8000)
+            await pg.click('#armSavePose'); await pg.wait_for_timeout(150)
+        check("手臂頁記下兩個姿態 A、B（模擬中）", await ev(pg, "doflab.p.arm.poses.map(x=>x.name).join()") == 'A,B')
+        await connect(pg)
+        for cb in await pg.locator('[data-chk]').all(): await cb.check()
+        await pg.click('#hwAuth'); await pg.wait_for_timeout(200)
+        # 記錄 DofLab 經驅動送出的每一筆伺服命令（腳位、角度）：只是旁聽，不改變送出的內容；在開始送出之前裝好；Twin Core 的紀錄只留最近 500 筆，不夠用
+        await ev(pg, "(()=>{const d=doflab.hw.driver, w=d.write.bind(d); window.__sent=[]; d.write=(c,o)=>{ if(o.kind==='servo') window.__sent.push([o.num, Math.round(c.v)]); return w(c,o); };})()")
+        await pg.click('#t-arm'); await pg.wait_for_timeout(500); await pg.check('#armStream'); await pg.wait_for_timeout(300)
+        check("手臂頁：授權後勾選「把手臂命令送到設備」，模式為「虛擬設備 · 受控寫入」", await ev(pg, "doflab.arm.stream && doflab.twin.mode==='hw-control' && doflab.twin.conn.virtual"))
+        BQ = "window.__bench.bench.parts.find(p=>p.type==='arm').joints.map(j=>j.q)"
+        async def meet(pose, tol=1.5, timeout=6000):
+            # 先等 DofLab 手臂頁的命令姿態到達，再等工作台頁上的手臂（伺服實際角度）到達同一個姿態；回傳兩者相差多久
+            js = lambda expr: f"(q => q && q.every((a,i) => a !== null && Math.abs(a - {json.dumps(pose)}[i]) <= {tol}))({expr})"
+            await pg.wait_for_function(js("doflab.arm.q"), timeout=timeout); t0 = time.monotonic()
+            try: await bp.wait_for_function(js(BQ), timeout=3000, polling=20); return round((time.monotonic() - t0) * 1000)
+            except Exception: return None
+        def servo_cmds(): return ev(pg, "window.__sent")
+        async def quiet(w0=0, n0=0):   # 等兩邊都不再變：DofLab 不再送出新命令，設備端收到的筆數追上（最多 3 秒）；回傳（送出的、設備的寫入筆數）
+            last = None
+            for k in range(30):
+                await pg.wait_for_timeout(100); cur = (len(await servo_cmds()) - n0, state()['traffic']['writeCount'] - w0)
+                if cur == last and cur[0] == cur[1]: break
+                last = cur
+            return cur
+        def device_writes(st):   # 設備端收到的伺服寫入（D9／D10／D11）
+            return [[w['pin'], w['v']] for w in st['traffic']['writes'] if w['kind'] == 'analog' and w['pin'] in (9, 10, 11)]
+        res = []
+        for target in ([30, 70, 60], [-40, 110, 90], [10, 45, 20]):
+            await slide(target); ms = await meet(target)
+            res.append({'target': target, 'benchMs': ms, 'bench': await ev(bp, BQ)})
+            if target == [-40, 110, 90]: await shots('w3_arm_sync.png', pg, bp)
+        check("兩個介面同步（手動）：DofLab 手臂頁拉到 3 個姿態，工作台上的手臂（由 D9／D10／D11 的脈寬換算）都到達相同的關節角（誤差 ≤ 1.5°）", all(r['benchMs'] is not None for r in res), json.dumps(res))
+        tip = await ev(bp, "window.__bench.bench.parts.find(p=>p.type==='arm').pos.tip"); ref = await ev(pg, "DL.arm.fk(doflab.p.arm.config, doflab.arm.q)")
+        check("工作台自己算的手臂末端位置（不用 DofLab 的程式）和 DofLab 的命令姿態一致（≤ 0.5 cm）", ((tip['x'] - ref['x']) ** 2 + (tip['y'] - ref['y']) ** 2 + (tip['z'] - ref['z']) ** 2) ** 0.5 <= 0.5, json.dumps([tip, ref]))
+        await quiet(); st = state(); sent = await servo_cmds(); got = device_writes(st)
+        check("命令一個不少、順序相同：DofLab 送出的每一筆伺服命令，設備端都依序收到，沒有多出別的寫入", len(sent) > 10 and st['traffic']['writeCount'] == len(sent) and got == sent[-len(got):], json.dumps([len(sent), st['traffic']['writeCount'], got[-4:], sent[-4:]]))
+        await pg.click('#t-observe'); await pg.wait_for_timeout(300); tw = await pg.inner_text('#twinRows')
+        check("SG90 沒有回授：工作台看得到伺服的實際角度，DofLab 的量測欄三顆伺服仍是「無回授」", tw.count('無回授') == 3 and await ev(pg, "['SERVO1','SERVO2','SERVO3'].every(id=>doflab.twin.view(id+'.angle').quality==='none')"), tw[:200])
+        await pg.click('#t-arm'); await pg.wait_for_timeout(300)
+        # 自動序列：連線前記下的姿態 A、B，在手臂頁按「▶ 執行序列」，同時看兩個介面
+        check("整段操作中寫入授權都還在（手動拖動不算改行為）", await ev(pg, "doflab.twin.mode") == 'hw-control')
+        n0 = len(await servo_cmds()); w0 = state()['traffic']['writeCount']
+        await pg.click('#armRun')
+        home = await ev(pg, "DL.arm.homeQ(doflab.p.arm.config).map(x=>Math.round(x*10)/10)")
+        way = [('預備姿態', home), ('A', [30, 70, 60]), ('B', [-40, 110, 90]), ('預備姿態', home), ('A', [30, 70, 60])]
+        seq = []
+        for name, pose in way:
+            ms = await meet(pose, timeout=8000); seq.append({'step': name, 'pose': pose, 'benchMs': ms})
+            if name == 'B': await shots('w4_arm_sequence.png', pg, bp)
+        await pg.click('#armRun')
+        check("自動序列（預備姿態 → A → B → 預備姿態 → A）：DofLab 每到一個姿態，工作台上的手臂都到達同一個姿態（≤ 1.5°）", all(x['benchMs'] is not None for x in seq), json.dumps(seq))
+        await quiet(w0, n0); st = state(); sent = (await servo_cmds())[n0:]; got = device_writes(st)
+        check("自動序列的命令也一個不少、順序相同（設備端的寫入筆數與內容和 DofLab 送出的一致）", len(sent) > 10 and st['traffic']['writeCount'] - w0 == len(sent) and got == ((await servo_cmds())[-len(got):]), json.dumps([len(sent), st['traffic']['writeCount'] - w0]))
+        print('ARMSYNC', json.dumps({'manual': res, 'sequence': seq}, ensure_ascii=False))
+        await pg.click('#t-observe'); await pg.click('#hwDisc'); await pg.wait_for_timeout(300); srv.kill(); srv.wait()
+
+        # ---------- 4. 超音波距離指針：在工作台頁拉距離 → DofLab 量到距離、行為算出角度 → 工作台上的 SG90 轉過去 ----------
+        srv = start('dist-gauge'); await bp.goto(f'http://127.0.0.1:{VPORT}/'); await bp.wait_for_function("window.__bench && document.querySelector('#us-US1')")
+        await ev(pg, load('dist-gauge')); await pg.click('#t-behavior'); await pg.wait_for_timeout(300); await pg.click('#btnConfirm')
+        await connect(pg)
+        await bp.locator('#us-US1').fill('30'); await bp.locator('#us-US1').dispatch_event('input')
+        try: await pg.wait_for_function("(v=>v.measured && Math.abs(v.measured.v-30)<=1 && v.quality==='ok')(doflab.twin.view('US1.distance'))", timeout=5000); ok = True
+        except Exception: ok = False
+        check("唯讀：在工作台頁把物體拉到 30 cm → DofLab 的量測層顯示 30 cm（經 DofLabFirmata 量回波），設備端沒有收到寫入", ok and state()['traffic']['writeCount'] == 0)
+        for cb in await pg.locator('[data-chk]').all(): await cb.check()
+        await pg.click('#hwAuth'); await pg.wait_for_timeout(200); await pg.click('#simRun'); await pg.wait_for_timeout(300)
+        await bp.locator('#us-US1').fill('12'); await bp.locator('#us-US1').dispatch_event('input')
+        try:
+            await pg.wait_for_function("(v=>v.ack && v.ack.v===152)(doflab.twin.view('SERVO1.angle'))", timeout=6000)
+            await bp.wait_for_function("(s=>s.cmd!==null && Math.abs(s.cmd-152)<=1.5 && Math.abs(s.angle-152)<=1.5)(window.__bench.bench.parts.find(p=>p.id==='SERVO1'))", timeout=4000); ok = True
+        except Exception: ok = False
+        check("受控寫入：工作台頁拉到 12 cm → DofLab 的行為算出 152° 並收到 ACK → 工作台上的 SG90 轉到 152°；DofLab 量測欄仍是「無回授」", ok and await ev(pg, "doflab.twin.view('SERVO1.angle').quality") == 'none', json.dumps(await ev(bp, "window.__bench.bench.parts.find(p=>p.id==='SERVO1')")))
+        await shots('w5_dist_gauge.png', pg, bp)
+        await bp.click('[data-part="US1"] [data-k="far"]')
+        try: await pg.wait_for_function("(v=>v.measured && v.measured.v>=400)(doflab.twin.view('US1.distance')) && document.querySelector('#twinRows').textContent.includes('沒有回波')", timeout=5000); ok = True
+        except Exception: ok = False
+        check("在工作台頁按「移走物體」→ DofLab 顯示沒有回波（≥ 400 cm）", ok)
+        await pg.click('#simRun')
+        check("工作台流程沒有頁面錯誤（兩個介面）", not errs, "; ".join(errs[:3]))
+    finally:
+        await b.close()
+        if srv: srv.kill()
+
 async def breadboard_flow(p):
     b = await p.chromium.launch(args=ARGS)
     ctx = await b.new_context(viewport={'width': 1440, 'height': 940})
@@ -974,6 +1143,7 @@ async def main():
             if on('v27'): await v27_flow(p)
             if on('uno'): await uno_virtual(p)
             if on('vdev'): await vdev_flow(p)
+            if on('bench'): await bench_flow(p)
             if on('upload'): await upload_flow(p)
             if on('pideploy'): await pi_deploy(p)
             if on('mobile'): await mobile(p)

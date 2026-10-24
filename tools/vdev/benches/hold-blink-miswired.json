@@ -1,0 +1,20 @@
+{
+ "id": "hold-blink-miswired",
+ "name": "接錯線：按鈕接 D3、LED 接 D12（專案寫的是 D2、D13）",
+ "seed": 20261024,
+ "note": "故意和專案不一致，用來練習「核對接線」：按按鈕畫面沒有變化；LED 命令有 ACK，但工作台上的 LED 不亮。",
+ "parts": [
+  {
+   "id": "BTN1",
+   "type": "button",
+   "pin": 3,
+   "bounceMs": 8
+  },
+  {
+   "id": "LED1",
+   "type": "led",
+   "pin": 12,
+   "ohm": 220
+  }
+ ]
+}
