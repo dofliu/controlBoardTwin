@@ -1,0 +1,20 @@
+{
+ "id": "night-light",
+ "name": "光敏模組＋LED（與「光控夜燈」「太亮警示」相同接線）",
+ "seed": 20261024,
+ "parts": [
+  {
+   "id": "LDR1",
+   "type": "ldr",
+   "pin": 14,
+   "light": 60,
+   "noise": 0.01
+  },
+  {
+   "id": "LED1",
+   "type": "led",
+   "pin": 13,
+   "ohm": 220
+  }
+ ]
+}

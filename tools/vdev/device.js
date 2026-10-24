@@ -2,10 +2,19 @@
 // 由 server.js 放在自己的 worker thread 裡執行（每台設備一個），晶片模擬不會卡住網路。
 // 時間：晶片時間以 1 倍速對齊實際時間；CPU 跟不上時晶片時間會落後（state().realtime 顯示比例），不會跳過指令。
 const fs = require('fs'); const path = require('path');
-const { VirtualUno } = require('./avrsim');
+const { VirtualUno, RESET, loadHex, FREQ } = require('./avrsim');
 const { Bench, DEFAULT_BENCH } = require('./bench');
 
-const DEFAULT_HEX = path.join(__dirname, '..', '..', 'tests', 'fixtures', 'DofLabFirmata-uno.hex');
+const FIXTURES = path.join(__dirname, '..', '..', 'tests', 'fixtures');
+const DEFAULT_HEX = path.join(FIXTURES, 'DofLabFirmata-uno.hex');
+// Arduino 官方 Optiboot（與實體 Uno 出廠的開機程式相同）：DTR 重置後等待約 1 秒接收 STK500 上傳，沒有就執行應用程式（第 4 階段）
+const OPTIBOOT_HEX = path.join(FIXTURES, 'optiboot_atmega328.hex');
+const APP_WORDS = 0x3F00;   // 應用程式區（開機程式區之前）
+const sha = buf => require('crypto').createHash('sha256').update(buf).digest('hex');
+// 快閃記憶體應用程式區的雜湊（不認得的程式用它識別）
+const appHash = flash => sha(Buffer.from(flash.buffer, flash.byteOffset, APP_WORDS * 2));
+// hex → 快閃記憶體映像（補滿到整頁 128 位元組）。Optiboot 只寫上傳的那幾頁、不會整片抹除，後面可能留著舊程式，所以比對時只比映像的長度
+function image(hexText) { const f = new Uint16Array(0x4000).fill(0xffff); loadHex(hexText, f); const b = new Uint8Array(f.buffer); let n = APP_WORDS * 2; while (n > 0 && b[n - 1] === 0xff) n--; return b.slice(0, Math.ceil(n / 128) * 128); }
 
 // 解析「介面送給設備」的 Firmata 位元組，只用來記錄與驗收（例如「唯讀期間沒有任何寫入」），不改變傳送內容
 class FirmataSniffer {
@@ -50,8 +59,13 @@ class VirtualDevice {
     this.id = opts.id || 'uno-1'; this.board = 'uno';
     const hexPath = opts.hex || DEFAULT_HEX;
     this.hexText = String(hexPath).startsWith(':') ? hexPath : fs.readFileSync(hexPath, 'utf8');
-    this.firmware = { name: opts.firmwareName || (/DofLabFirmata/.test(hexPath) ? 'DofLabFirmata' : path.basename(String(hexPath)).replace(/\.hex$/, '')), sha256: require('crypto').createHash('sha256').update(this.hexText).digest('hex') };
-    this.uno = new VirtualUno(this.hexText);
+    const name0 = opts.firmwareName || (/DofLabFirmata/.test(hexPath) ? 'DofLabFirmata' : path.basename(String(hexPath)).replace(/\.hex$/, ''));
+    // 認得的程式（依快閃記憶體內容）：開機時的韌體、DofLabFirmata；其他都是「上傳的程式」
+    this.known = [{ name: 'DofLabFirmata', img: image(fs.readFileSync(DEFAULT_HEX, 'utf8')) }, { name: name0, img: image(this.hexText) }];
+    const boot = opts.bootloader === false ? null : fs.readFileSync(opts.bootloader || OPTIBOOT_HEX, 'utf8');
+    this.uno = new VirtualUno(this.hexText, { bootloader: boot });
+    this.uploads = 0; this.seenResets = 0; this.seenSpm = 0; this.resetLog = [];
+    this.firmware = this.identify();
     this.bench = new Bench(this.uno, opts.bench || DEFAULT_BENCH);
     this.speed = opts.speed || 1;
     this.sniff = new FirmataSniffer(); this.total = new FirmataSniffer();
@@ -65,7 +79,25 @@ class VirtualDevice {
   signals(s) {
     if (s && typeof s.dtr === 'boolean') { if (s.dtr && this.dtr === false) this.reset('DTR 觸發重置（與 Arduino IDE 開啟序列埠相同）'); this.dtr = s.dtr; }
   }
-  reset(why) { this.uno.reset(); this.resets++; this.event({ kind: 'reset', text: '虛擬晶片重新啟動：' + why }); }
+  // 現在快閃記憶體裡的程式：{ name, sha256（應用程式區）, uploaded（是否經 STK500 上傳）}
+  identify() {
+    const f = new Uint8Array(this.uno.flash.buffer); const same = img => img.every((v, i) => f[i] === v);
+    const k = this.known.find(x => same(x.img));
+    return { name: k ? k.name : '上傳的程式', sha256: k ? sha(k.img) : appHash(this.uno.flash), uploaded: this.uploads > 0, bootloader: this.uno.bootloader ? 'Optiboot' : null };
+  }
+  // 檢查晶片的重置紀錄：Optiboot 寫入快閃記憶體後以看門狗重置離開 → 視為「上傳完成」，更新韌體識別並發出事件
+  checkResets() {
+    const r = this.uno.resets; if (r.length === this.seenResets) return;
+    for (let i = this.seenResets; i < r.length; i++) { this.resetLog.push({ devMs: Math.round(r[i].at / FREQ * 1e4) / 10, flags: r[i].flags }); if (this.resetLog.length > 50) this.resetLog.shift(); }
+    this.seenResets = r.length; this.bench.onReset();
+    const spm = this.uno.spmLog.write;
+    if (spm !== this.seenSpm && r[r.length - 1].flags === RESET.WDRF) {
+      const pages = spm - this.seenSpm; this.seenSpm = spm; this.uploads++; this.firmware = this.identify();
+      this.bench.note('chip', 'upload', { pages, firmware: this.firmware.name });
+      this.event({ kind: 'upload', text: `收到新程式（Optiboot 寫入 ${pages} 頁）：${this.firmware.name}，已重新啟動執行`, firmware: this.firmware });
+    }
+  }
+  reset(why, flags) { this.uno.reset(flags); this.resets++; this.event({ kind: 'reset', text: '虛擬晶片重新啟動：' + why }); }
   event(e) { e.devMs = Math.round(this.uno.timeMs); this.onEvent && this.onEvent(e); }
   link() { this.links++; this.linked = true; this.sniff.reset(); this.dtr = null; }
   unlink() { this.linked = false; }
@@ -79,7 +111,7 @@ class VirtualDevice {
       let behind = (wall - this.wall0) * this.speed - (this.uno.timeMs - this.chip0);
       if (behind > 1000) { this.lagResets++; this.wall0 = wall; this.chip0 = this.uno.timeMs; behind = 0; }
       if (behind >= 1) this.uno.runMs(Math.min(behind, 50));
-      this.flush();
+      this.checkResets(); this.flush();
       this.window.push([wall, this.uno.timeMs]); while (this.window.length > 2 && wall - this.window[0][0] > 3000) this.window.shift();
     }, 4);
   }
@@ -87,19 +119,25 @@ class VirtualDevice {
   realtime() { const w = this.window || []; if (w.length < 2) return null; const a = w[0], b = w[w.length - 1]; return b[0] > a[0] ? Math.round((b[1] - a[1]) / (b[0] - a[0]) * 100) / 100 : null; }
   pins() { const out = {}; for (let n = 0; n < 20; n++) { const s = this.uno.pinState(n); out[n] = ['low', 'high', 'input', 'input-pullup'][s] || String(s); } return out; }
   state() {
-    return { id: this.id, kind: 'virtual', board: this.board, firmware: this.firmware, devMs: Math.round(this.uno.timeMs), realtime: this.realtime(), lagResets: this.lagResets || 0, resets: this.resets, linked: this.linked, links: this.links, pins: this.pins(), bench: this.bench.state(), traffic: this.sniff.summary(), trafficTotal: this.total.summary() };
+    return { id: this.id, kind: 'virtual', board: this.board, firmware: this.firmware, uploads: this.uploads, devMs: Math.round(this.uno.timeMs), realtime: this.realtime(), lagResets: this.lagResets || 0, resets: this.resets, linked: this.linked, links: this.links, pins: this.pins(), bench: this.bench.state(), traffic: this.sniff.summary(), trafficTotal: this.total.summary() };
   }
   // 主執行緒的查詢與工作台操作
   handle(q) {
     if (q.op === 'state') return this.state();
     if (q.op === 'time') return { devMs: Math.round(this.uno.timeMs) };
-    if (q.op === 'bench') { this.bench.act(q); return this.state(); }
+    if (q.op === 'bench') { const r = this.bench.act(q); const st = this.state(); if (r && r.scheduled !== undefined) st.scheduled = r.scheduled; return st; }
     if (q.op === 'link') { this.link(); return this.hello(); }
+    if (q.op === 'hello') return this.hello();   // 第二個以後的連線：只要識別資料，不重設紀錄
     if (q.op === 'unlink') { this.unlink(); return {}; }
     if (q.op === 'signals') { this.signals(q); return {}; }
+    // 輸出軌跡（第 4 階段驗收用）：工作台記下的輸入操作與 LED／伺服變化（設備時間），以及晶片重置紀錄
+    if (q.op === 'trace') { const t = { trace: this.bench.trace.slice(), resets: this.resetLog.slice(), firmware: this.firmware, devMs: Math.round(this.uno.timeMs) }; if (q.clear) this.bench.trace.length = 0; return t; }
+    // 故障注入（第 3 階段）：按 RESET 鍵、電壓瞬間掉太低（brown-out）。晶片重新開機，快閃記憶體裡的韌體不變
+    if (q.op === 'fault' && q.fault === 'reset') { this.reset('有人按了 RESET 鍵（故障注入）', RESET.EXTRF); return this.state(); }
+    if (q.op === 'fault' && q.fault === 'brownout') { this.reset('電壓瞬間掉太低（brown-out，故障注入）', RESET.BORF); return this.state(); }
     throw new Error('未知的查詢 ' + q.op);
   }
-  hello() { return { kind: 'virtual', board: this.board, device: this.id, firmware: this.firmware, bench: this.bench.spec.id, clock: 'virtual', speed: this.speed, mcu: 'ATmega328P（avr8js 模擬）' }; }
+  hello() { return { kind: 'virtual', board: this.board, device: this.id, firmware: this.firmware, bench: this.bench.spec.id, benchName: this.bench.spec.name, clock: 'virtual', speed: this.speed, mcu: 'ATmega328P（avr8js 模擬）' }; }
 }
 
 // 在 worker thread 裡執行：與 server.js 以訊息溝通
@@ -119,4 +157,4 @@ if (!wt.isMainThread && wt.workerData && wt.workerData.vdev) {
   port.postMessage({ t: 'ready', hello: dev.hello() });
 }
 
-module.exports = { VirtualDevice, FirmataSniffer, DEFAULT_HEX };
+module.exports = { VirtualDevice, FirmataSniffer, DEFAULT_HEX, OPTIBOOT_HEX };

@@ -1,0 +1,21 @@
+{
+ "id": "dist-gauge",
+ "name": "超音波＋SG90（與「超音波距離指針」相同接線）",
+ "seed": 20261024,
+ "parts": [
+  {
+   "id": "US1",
+   "type": "ultrasonic",
+   "trig": 7,
+   "echo": 8,
+   "cm": 100,
+   "drop": 0
+  },
+  {
+   "id": "SERVO1",
+   "type": "servo",
+   "pin": 9,
+   "speed": 600
+  }
+ ]
+}

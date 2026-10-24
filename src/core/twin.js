@@ -8,6 +8,8 @@
  *
  * 模式：sim（模擬）→ hw-read（真機唯讀）→ hw-control（受控寫入，需明確授權）
  * 斷線／過期／重連：量測標為過期；未確認命令列出但「不重送」；重連後回到唯讀，需重新授權。
+ * 設備重新開機（連線還在）：與斷線相同——未確認命令作廢、不重送，撤銷授權回到唯讀，開機前的量測標為過期。
+ * 定期回報的訊號（meta.periodic，例如類比、超音波）：超過 staleMs 沒有新讀值就標為過期（感測器卡住）。
  */
 (function (root) {
   const DL = (root.DL = root.DL || {});
@@ -98,6 +100,7 @@
       if (!s.measured) return 'unknown';
       if (s.measured.session !== conn.session || conn.state !== 'connected') return 'stale';
       if (conn.lastHeard && clock() - conn.lastHeard > staleMs) return 'stale';
+      if (s.periodic && clock() - s.measured.t > staleMs) return 'stale';   // 應該一直有新讀值的訊號停了：感測器卡住或回報中斷
       return 'ok';
     }
 
@@ -122,6 +125,18 @@
       emit('mode', { from: prev, to: 'sim', why: '設備斷線' });
       return { dropped };
     }
+    // 設備重新開機（例如按了 RESET、瞬間斷電）：連線還在，但設備的狀態已經不是剛才的樣子
+    function rebooted(reason) {
+      if (conn.state !== 'connected') return { dropped: [] };
+      const lost = [...pending.values()]; pending.clear();
+      dropped = dropped.concat(lost);
+      conn = Object.assign({}, conn, { session: conn.session + 1, lastHeard: clock() });   // 開機前的量測都變成過期
+      for (const k of Object.keys(lastSeq)) delete lastSeq[k];
+      const prev = mode; auth = null; mode = 'hw-read';
+      emit('reboot', { reason: reason || '', dropped: lost.map(c => c.id) });
+      if (prev !== 'hw-read') emit('mode', { from: prev, to: 'hw-read', why: '設備重新開機，撤銷寫入授權' });
+      return { dropped: lost };
+    }
     function authorize(outputs, check) {
       if (conn.state !== 'connected') return { ok: false, msg: '沒有連線中的設備。' };
       if (check && !check.ok) return { ok: false, msg: check.msg };
@@ -139,7 +154,7 @@
     function reset() { for (const k of Object.keys(sig)) delete sig[k]; pending.clear(); seenAck.clear(); superseded.clear(); log.length = 0; }
 
     return {
-      define, simulate, target, command, ack, measure, heard, quality, view, setMode, connected, disconnected, authorize, revoke, reset,
+      define, simulate, target, command, ack, measure, heard, quality, view, setMode, connected, disconnected, rebooted, authorize, revoke, reset,
       get mode() { return mode; }, get conn() { return Object.assign({}, conn); }, get auth() { return auth && Object.assign({}, auth); },
       get pending() { return [...pending.values()]; }, get dropped() { return dropped.slice(); }, get log() { return log.slice(); },
       signals: () => Object.keys(sig), on: f => (listeners.add(f), () => listeners.delete(f))

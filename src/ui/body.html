@@ -1,6 +1,6 @@
 <header class="bar">
   <div class="wrap">
-    <div class="brand"><span class="logo" aria-hidden="true"></span><b>DofLab</b><span class="ver">V2.8 原型</span></div>
+    <div class="brand"><span class="logo" aria-hidden="true"></span><b>DofLab</b><span class="ver">V2.12 原型</span></div>
     <div class="proj"><input id="projName" aria-label="專案名稱" maxlength="80"><span id="projMeta" class="meta">r0</span></div>
     <div class="status">
       <span class="chip" id="boardChip">—</span>
@@ -179,7 +179,7 @@
       </div>
       <div class="card">
         <h3>事件與錯誤 <button class="btn sm" id="clearEvents">清除</button></h3>
-        <div class="bd"><ul class="events" id="eventList" aria-live="polite"></ul></div>
+        <div class="bd"><div class="row rec-row"><button class="btn sm" id="recExport" disabled title="下載這次（或上一次）連線的紀錄：量測、模擬的輸出、命令與回讀">匯出紀錄</button><button class="btn sm" id="recReplay" disabled title="在模擬中照紀錄的時刻重送量測，重算輸出並和紀錄比對（不連設備、不送命令）">重播剛才的紀錄</button><button class="btn sm" id="recOpen" title="開啟匯出的紀錄檔來重播">開啟紀錄檔…</button><input type="file" id="recFile" accept=".json,application/json" hidden></div><p class="hint" id="recStatus"></p><ul class="events" id="eventList" aria-live="polite"></ul></div>
       </div>
     </div>
   </section>

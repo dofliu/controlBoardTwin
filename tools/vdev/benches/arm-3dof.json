@@ -1,0 +1,55 @@
+{
+ "id": "arm-3dof",
+ "name": "三軸機械手臂：三顆 SG90 接 D9、D10、D11（與「三軸機械手臂」相同接線與安裝）",
+ "seed": 20261024,
+ "parts": [
+  {
+   "id": "SERVO1",
+   "type": "servo",
+   "pin": 9,
+   "speed": 600,
+   "start": 90
+  },
+  {
+   "id": "SERVO2",
+   "type": "servo",
+   "pin": 10,
+   "speed": 600,
+   "start": 90
+  },
+  {
+   "id": "SERVO3",
+   "type": "servo",
+   "pin": 11,
+   "speed": 600,
+   "start": 90
+  },
+  {
+   "id": "ARM",
+   "type": "arm",
+   "H": 7,
+   "L1": 8,
+   "L2": 8,
+   "joints": [
+    {
+     "servo": "SERVO1",
+     "name": "底座",
+     "zero": 90,
+     "dir": 1
+    },
+    {
+     "servo": "SERVO2",
+     "name": "肩",
+     "zero": 0,
+     "dir": 1
+    },
+    {
+     "servo": "SERVO3",
+     "name": "肘",
+     "zero": 170,
+     "dir": -1
+    }
+   ]
+  }
+ ]
+}

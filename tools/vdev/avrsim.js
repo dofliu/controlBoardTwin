@@ -19,7 +19,7 @@ function loadHex(text, into) {
 }
 const BOOT_WORD = 0x3F00;   // Optiboot 位於 0x7E00（BOOTRST 熔絲：重置後從這裡開始執行）
 const MCUSR = 0x54, SPMCSR = 0x57;
-const RESET = { PORF: 0x01, EXTRF: 0x02, WDRF: 0x08 };
+const RESET = { PORF: 0x01, EXTRF: 0x02, BORF: 0x04, WDRF: 0x08 };
 
 // Uno 腳位 → (port, bit)
 const PIN = n => n < 8 ? ['D', n] : n < 14 ? ['B', n - 8] : ['C', n - 14];
@@ -44,6 +44,11 @@ class VirtualUno {
     const clock = new avr.AVRClock(cpu, FREQ, avr.clockConfig);
     this.timers = [avr.timer0Config, avr.timer1Config, avr.timer2Config].map(c => new avr.AVRTimer(cpu, c));
     this.port = { B: new avr.AVRIOPort(cpu, avr.portBConfig), C: new avr.AVRIOPort(cpu, avr.portCConfig), D: new avr.AVRIOPort(cpu, avr.portDConfig) };
+    // 沒有外部電路驅動的腳位：avr8js 一律讀成 LOW；實體晶片開了內部上拉（輸入模式且 PORT 位元為 1）時讀成 HIGH。照實體晶片處理（V2.9，接錯線時按鈕腳是空接的）
+    for (const [name, pt] of Object.entries(this.port)) {
+      const orig = pt.updatePinRegister.bind(pt), PORTR = pt.portConfig.PORT;
+      pt.updatePinRegister = ddr => { const driven = this.drivenMask(name), saved = pt.pinValue; pt.pinValue = (saved & driven) | (cpu.data[PORTR] & ~driven & 0xFF); orig(ddr); pt.pinValue = saved; };
+    }
     this.adc = new avr.AVRADC(cpu, avr.adcConfig); Object.assign(this.adc.channelValues, this.analog);
     this.usart = new avr.AVRUSART(cpu, avr.usart0Config, FREQ);
     this.watchdog = new avr.AVRWatchdog(cpu, avr.watchdogConfig, clock);
@@ -63,7 +68,8 @@ class VirtualUno {
     for (const w of this.pinWatchers) for (const n of ['B', 'C', 'D']) w(n);
   }
   // 外部重置（RESET 腳拉低，例如 USB 轉序列晶片的 DTR 經電容觸發）
-  reset() { this.cycleBase = (this.cycleBase || 0) + this.cpu.cycles; this.rxQueue = []; this.boot(RESET.EXTRF); }
+  // flags：EXTRF（RESET 腳，預設）、BORF（電壓瞬間掉太低）、PORF（重新上電）
+  reset(flags) { this.cycleBase = (this.cycleBase || 0) + this.cpu.cycles; this.rxQueue = []; this.boot(flags || RESET.EXTRF); }
   // SPM：自我燒錄指令（avr8js 沒有實作；Optiboot 用它寫入快閃記憶體）
   spm() {
     const d = this.cpu.data; const ctl = d[SPMCSR] & 0x3f; const z = d[30] | (d[31] << 8);
@@ -92,6 +98,10 @@ class VirtualUno {
   runMs(ms) { this.step(Math.round(ms / 1000 * FREQ)); }
   // 外部電路：設定輸入腳位的電位（例如按鈕接 GND 時按下 = LOW）
   setInput(pin, high) { this.inputs[pin] = !!high; const [p, b] = PIN(pin); this.port[p].setPin(b, !!high); }
+  // 外部電路拔掉：腳位不再被驅動（開了內部上拉就讀成 HIGH，否則 LOW）
+  release(pin) { delete this.inputs[pin]; const [p] = PIN(pin); const pt = this.port[p]; pt.updatePinRegister(this.cpu.data[pt.portConfig.DDR]); for (const w of this.pinWatchers) w(p); }
+  // 哪些腳位有外部電路驅動（呼叫過 setInput）；其餘是空接
+  drivenMask(name) { let m = 0; for (const k of Object.keys(this.inputs)) { const [p, b] = PIN(+k); if (p === name) m |= 1 << b; } return m; }
   pinState(pin) { const [p, b] = PIN(pin); return this.port[p].pinState(b); }
   isHigh(pin) { return this.pinState(pin) === avr.PinState.High; }
   // 外部電路：在指定的 CPU 週期執行（例如超音波模組的回波）

@@ -127,12 +127,14 @@ test('數位孿生整條路徑：辨識（虛擬）→ 唯讀 → 授權 → ACK
   } finally { s.p.kill('SIGKILL'); s.p.kill('SIGCONT'); if (s2) s2.p.kill('SIGKILL'); }
 });
 
-test('虛擬設備主機：只聽本機、同時只接受一個連線、DTR 重新啟動晶片、協定版本不符拒絕', { timeout: 30000 }, async () => {
+test('虛擬設備主機：只聽本機、第二個連線可以唯讀觀看、上傳需要獨占、DTR 重新啟動晶片、協定版本不符拒絕', { timeout: 30000 }, async () => {
   await assert.rejects(startServer({ port: 0, host: '0.0.0.0' }), /只允許在本機/);
   const s = await startServer({ port: 0 }); const url = `ws://127.0.0.1:${s.port}/dev/uno-1`;
   try {
     const A = mkDriver(); await A.drv.connect({ url });
-    const B = mkDriver(); await assert.rejects(B.drv.connect({ url }), /已經有其他連線/);
+    const B = mkDriver(); const rb = await B.drv.connect({ url }); assert.ok(rb.identity.ok, '第二個連線（第 5 階段）可以連上、辨識正確');
+    await assert.rejects(DL.transport.wsSerialPort(url).open(), /需要獨占/, '有人連著時不能上傳或開序列埠監看');
+    await B.drv.disconnect(); await until(async () => (await (await fetch(`http://127.0.0.1:${s.port}/api/devices/uno-1`)).json()).hub.links.length === 1);
     assert.ok(await A.drv.resetBoard(), 'DTR／RTS 經網路送到虛擬設備');
     assert.ok(await until(() => A.logs.some(l => /虛擬晶片重新啟動/.test(l) && /不是量測/.test(l))), A.logs.join('\n'));
     const st = await (await fetch(`http://127.0.0.1:${s.port}/api/devices/uno-1`)).json(); assert.strictEqual(st.resets, 1);

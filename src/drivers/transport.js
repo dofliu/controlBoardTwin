@@ -88,14 +88,17 @@
 
   /* ======================= 虛擬設備主機（WebSocket） =======================
    * 控制訊息（文字訊框，JSON）：
-   *   → {op:'hello', client:'doflab', proto:1}      ← {op:'hello', proto:1, kind:'virtual', board, device, firmware, bench, clock, host}
-   *   → {op:'signals', dtr, rts}                     對應 USB 晶片的 DTR／RTS（重新啟動板子）
+   *   → {op:'hello', client:'doflab', proto:2, name, mode:'firmata'|'raw'}
+   *                                                  ← {op:'hello', proto:2, kind:'virtual', board, device, firmware, bench, clock, host, you, name, mode}
+   *   → {op:'signals', dtr, rts}                     對應 USB 晶片的 DTR／RTS（重新啟動板子）；需要控制權（或只有自己一個連線）
    *   → {op:'ping', t}                               ← {op:'pong', t, devMs}：量網路來回時間
+   *   → {op:'lock', want:'control'|'release'}        ← {op:'lock', ok, you, holder:{id,name}, message}：控制權（第 5 階段）
+   *   ← {op:'presence', you, links:[{id,name,mode,control}], holder, why, by}：誰連著、誰有控制權
    *   ← {op:'event', kind:'reset', …}                設備事件：只寫進紀錄，不當作量測
-   *   ← {op:'error', code, message}                  例如 busy：已有其他連線（第 5 階段才支援多人觀看） */
-  const PROTO = 1;
+   *   ← {op:'error', code, message}                  busy（上傳中或要獨占時有別人連著）、not_holder（沒有控制權，寫入被擋下）、proto */
+  const PROTO = 2;   // 2（第 5 階段）：多個連線、控制權（lock）、presence
   class WebSocketTransport {
-    constructor(opts) { this.opts = opts || {}; this.url = this.opts.url; this.kind = 'virtual'; this.canSignal = true; this.ws = null; this.hello = null; this.rtt = null; this._bytes = () => { }; this._lost = () => { }; }
+    constructor(opts) { this.opts = opts || {}; this.url = this.opts.url; this.kind = 'virtual'; this.canSignal = true; this.ws = null; this.hello = null; this.rtt = null; this.presence = null; this.lockWait = []; this._bytes = () => { }; this._lost = () => { }; }
     static available() { return typeof WebSocket !== 'undefined'; }
     onBytes(cb) { this._bytes = cb; } onLost(cb) { this._lost = cb; }
     log(m, k) { this.opts.log && this.opts.log(m, k); }
@@ -108,7 +111,7 @@
         try { this.ws = new WebSocket(url); } catch (e) { done(new Error('虛擬設備網址格式不正確：' + url)); return; }
         timer = setTimeout(() => done(new Error(opened ? '已連上，但沒有收到虛擬設備的識別回應（協定不符？請更新 tools/vdev/server.js）。' : `連線逾時：請確認虛擬設備主機正在執行（node tools/vdev/server.js），網址是 ${url}。`)), ms);
         this.ws.binaryType = 'arraybuffer';
-        this.ws.onopen = () => { opened = true; this.sendJson({ op: 'hello', client: 'doflab', proto: PROTO }); };
+        this.ws.onopen = () => { opened = true; this.sendJson({ op: 'hello', client: 'doflab', proto: PROTO, name: this.opts.name || '', mode: this.opts.mode || 'firmata' }); };
         this.ws.onerror = () => { if (!opened) done(new Error(`無法連到虛擬設備 ${url}：請先在電腦上執行 node tools/vdev/server.js。若本頁是 https 網址，請改從 http://localhost 開啟。`)); };
         this.ws.onclose = ev => {
           clearInterval(this.pinger);
@@ -125,16 +128,27 @@
             this.hello = m; this.pinger = setInterval(() => this.sendJson({ op: 'ping', t: Date.now() }), 2000); this.sendJson({ op: 'ping', t: Date.now() });
             done(null, m);
           } else if (m.op === 'pong') { if (typeof m.t === 'number') this.rtt = Date.now() - m.t; }
+          else if (m.op === 'presence') { this.presence = m; if (this.opts.onPresence) this.opts.onPresence(m); }
+          else if (m.op === 'lock') { const w = this.lockWait.shift(); if (w) w(m); }
+          else if (m.op === 'error' && m.code === 'not_holder') { this.log('虛擬設備：' + m.message, 'w'); if (this.opts.onBlocked) this.opts.onBlocked(m); }
           else if (m.op === 'event') this.log(`虛擬設備事件：${m.text || m.kind}（設備時間 ${m.devMs !== undefined ? (m.devMs / 1000).toFixed(3) + ' s' : '未知'}；只是紀錄，不是量測）`, 'w');
           else if (m.op === 'error') { if (!settled) done(new Error(m.message || m.code)); else this.log('虛擬設備：' + (m.message || m.code), 'e'); }
         };
       });
     }
     sendJson(o) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(o)); }
+    // 控制權（第 5 階段）：want 'control' 取得、'release' 釋放；回傳 {ok, you, holder, message}
+    lock(want) {
+      if (!this.writable) return Promise.resolve({ ok: false, message: '虛擬設備沒有連線。' });
+      return new Promise(res => {
+        const t = setTimeout(() => { const i = this.lockWait.indexOf(f); if (i >= 0) this.lockWait.splice(i, 1); res({ ok: false, message: '虛擬設備主機沒有回應控制權要求（逾時）。' }); }, 5000);
+        const f = m => { clearTimeout(t); res(m); }; this.lockWait.push(f); this.sendJson({ op: 'lock', want });
+      });
+    }
     get writable() { return !!(this.ws && this.ws.readyState === 1 && this.hello); }
     write(bytes) { if (this.writable) this.ws.send(new Uint8Array(bytes)); return Promise.resolve(); }
     async setSignals(sig) { if (!this.writable) return false; const o = { op: 'signals' }; if ('dataTerminalReady' in sig) o.dtr = !!sig.dataTerminalReady; if ('requestToSend' in sig) o.rts = !!sig.requestToSend; this.sendJson(o); return true; }
-    info() { const h = this.hello || {}; let host = ''; try { host = new URL(this.url).host; } catch (e) { } return { kind: 'virtual', url: this.url, host, device: h.device, board: h.board, firmware: h.firmware, bench: h.bench, clock: h.clock, rtt: this.rtt }; }
+    info() { const h = this.hello || {}; let host = ''; try { host = new URL(this.url).host; } catch (e) { } return { kind: 'virtual', url: this.url, host, device: h.device, board: h.board, firmware: h.firmware, bench: h.bench, clock: h.clock, rtt: this.rtt, you: h.you, name: h.name, presence: this.presence }; }
     close() {
       this.closing = true; clearInterval(this.pinger);
       if (!this.ws || this.ws.readyState === 3) return Promise.resolve();
@@ -142,6 +156,30 @@
     }
   }
 
-  DL.transport = { WebSerialTransport, WebSocketTransport, PROTO };
+  // 虛擬設備的「序列埠」（第 4 階段）：把 WebSocketTransport 包成 Web Serial 的連接埠介面（open／readable／writable／setSignals／close），
+  // 讓瀏覽器的 STK500 上傳（stk500.js）與序列埠監看不用改就能用在虛擬 Uno 上。DTR 經網路送到虛擬晶片，和 USB 一樣會讓晶片重置進入 Optiboot。
+  function wsSerialPort(url, opts) {
+    opts = opts || {}; let t = null, ctrl = null, rs = null, wr = null;
+    const port = {
+      virtual: true, url, hello: null,
+      getInfo: () => ({ virtual: 'vdev', url }),
+      get readable() { return rs; }, get writable() { return wr; },
+      get rtt() { return t ? t.rtt : null; },
+      async open() {
+        if (t) throw Object.assign(new Error('The port is already open.'), { name: 'InvalidStateError' });
+        t = new WebSocketTransport({ url, log: opts.log, timeoutMs: opts.timeoutMs, mode: 'raw', name: opts.name || '上傳／序列埠監看' });   // raw：不是 Firmata，需要獨占整台設備
+        rs = new ReadableStream({ start(c) { ctrl = c; }, cancel() { ctrl = null; } });
+        t.onBytes(b => { try { ctrl && ctrl.enqueue(b); } catch (e) { } });
+        t.onLost(why => { try { ctrl && ctrl.error(new Error(why)); } catch (e) { } ctrl = null; if (opts.onLost) opts.onLost(why); });
+        try { port.hello = await t.open(); } catch (e) { t = null; rs = null; throw e; }
+        const tr = t; wr = new WritableStream({ write: chunk => tr.write(chunk) });
+      },
+      async setSignals(sig) { if (t) await t.setSignals(sig); },
+      async close() { const x = t; t = null; try { ctrl && ctrl.close(); } catch (e) { } ctrl = null; rs = wr = null; if (x) await x.close(); }
+    };
+    return port;
+  }
+
+  DL.transport = { WebSerialTransport, WebSocketTransport, wsSerialPort, PROTO };
   if (typeof module !== 'undefined') module.exports = DL;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

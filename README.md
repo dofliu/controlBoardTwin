@@ -1,4 +1,4 @@
-# DofLab V2.8 原型
+# DofLab V2.12 原型
 
 從電路配置、行為設計、模擬測試，到真實設備同步的教學與開發平台。本版依《DofLab 規劃文件 v0.1》重新開發。
 
@@ -32,18 +32,29 @@
 3. 到「觀測」頁按「連接 Arduino（USB）」或「連接 ESP32（USB）」，再依序完成：辨識、唯讀觀測、核對接線、授權受控寫入。
 4. 連不上時（V2.6.1）：先關掉 Arduino IDE 的序列埠監控視窗與其他開著 DofLab 的分頁。本頁上一次沒關乾淨的連線會自動關閉；被其他程式占用時會自動重試並說明；板子沒回應時會自動重新啟動板子再試一次。上傳程式前會自動中斷觀測頁的連線，上傳後按「用上次的連接埠重新連線」即可。
 
-### 虛擬設備：沒有板子也能走完數位孿生（V2.8）
+### 虛擬設備：沒有板子也能走完數位孿生（V2.8；V2.9 加上工作台；V2.11 可以上傳程式；V2.12 多人與控制權）
 
-虛擬設備是**另一個程式**裡的虛擬 Uno：avr8js 執行真的 DofLabFirmata 機器碼，外面接著「工作台」（按鈕 BTN1 接 D2、LED1 經 220 Ω 接 D13，和「按住閃爍」相同）。介面經網路（WebSocket）連過去，送出與收到的 Firmata 位元組和接 USB 時完全相同。
+虛擬設備是**另一個程式**裡的虛擬 Uno：avr8js 執行真的 DofLabFirmata 機器碼，外面接著「工作台」——這塊虛擬板子實際接了哪些元件。介面經網路（WebSocket）連過去，送出與收到的 Firmata 位元組和接 USB 時完全相同。
 
 ```bash
 npm ci
-npm run vdev        # = node tools/vdev/server.js，只聽本機 127.0.0.1:8770
+npm run vdev                              # = node tools/vdev/server.js，只聽本機 127.0.0.1:8770，工作台 hold-blink
+npm run vdev -- --bench arm-3dof          # 換一個工作台（tools/vdev/benches/ 裡的預設，或自己寫的 .json）
 ```
+
+| 工作台 `--bench` | 接線 | 搭配的引導實驗 |
+|---|---|---|
+| `hold-blink`（預設） | 按鈕 D2（0–8 ms 隨機彈跳）、LED D13 經 220 Ω | 按住閃爍、按一下切換 |
+| `hold-blink-miswired` | 故意接錯：按鈕 D3、LED D12 | 練習「核對接線」：按按鈕畫面沒反應；LED 命令有 ACK 但 LED 不亮 |
+| `night-light` | 光敏模組 A0（±1 % 雜訊）、LED D13 | 光控夜燈、太亮警示 |
+| `dist-gauge` | 超音波 TRIG D7／ECHO D8、SG90 D9 | 超音波距離指針 |
+| `arm-3dof` | 三顆 SG90 接 D9、D10、D11，裝成三軸手臂 | 三軸機械手臂 |
+
+工作台頁（`http://127.0.0.1:8770/`，DofLab 連線後按「開啟工作台」）是**第二個介面**：在這裡按按鈕、拉亮度與距離、按「移走物體」，看 LED、SG90 的命令角與實際角度、三軸手臂的側視與俯視。DofLab 看不到這一頁，只看得到 Firmata 回報的量測與回讀；SG90 的實際角度只在工作台顯示（DofLab 的量測欄仍是「無回授」）。
 
 1. 從 `http://localhost:8766`（`python3 dist/doflab_server.py`）或 `dist/index.html` 開啟 DofLab，板型選 Uno，載入「按住閃爍」並確認行為。
 2. 「觀測」頁的真機連線選「虛擬設備（網址）」，網址 `ws://127.0.0.1:8770/dev/uno-1`，按「連接虛擬 Uno」。不需要 Web Serial。
-3. 按「開啟工作台」（`http://127.0.0.1:8770/`），在工作台按住 BTN1：介面的量測層顯示按下（唯讀，不送任何命令）。
+3. 按「開啟工作台」（`http://127.0.0.1:8770/`），在工作台頁按住 BTN1：介面的量測層顯示按下（唯讀，不送任何命令）。
 4. 核對接線、授權受控寫入、按「▶ 執行」，再到工作台按住 BTN1：工作台上的 LED 依虛擬晶片 D13 的實際電位閃爍。
 5. 停掉 `npm run vdev`：介面回到模擬，未確認的命令作廢、不會重送；重新啟動後再連線，從唯讀開始。
 
@@ -54,9 +65,58 @@ npm run vdev        # = node tools/vdev/server.js，只聽本機 127.0.0.1:8770
 ```bash
 curl http://127.0.0.1:8770/api/devices/uno-1                                   # 腳位、工作台、設備收到的命令紀錄
 curl -X POST -d '{"part":"BTN1","action":"press"}' http://127.0.0.1:8770/api/devices/uno-1/bench
+curl -X POST -d '{"part":"US1","action":"set","cm":12}' http://127.0.0.1:8770/api/devices/uno-1/bench   # cm 為 null：移走物體
+curl -X POST -d '{"part":"LDR1","action":"set","light":30}' http://127.0.0.1:8770/api/devices/uno-1/bench
 ```
 
-第 1 階段的限制：只在本機、沒有通行碼；同時只接受一個連線；工作台只有按鈕與 LED。後續階段見 `docs/VIRTUAL_DEVICE_PLAN.md`。
+**手臂的兩個介面同步**：用 `--bench arm-3dof` 啟動，DofLab 載入「三軸機械手臂」、確認手臂設定、連線並授權寫入，在「手臂」頁勾選「把手臂命令送到設備」。拖曳或執行序列時，工作台頁上的手臂跟著 D9／D10／D11 的脈寬轉動。工作台用自己的方式換算（脈寬 → 伺服角 → 關節角 → 末端位置），不用 DofLab 的程式；兩邊停下時的關節角相差在 1.5° 內。動作序列（姿態）要在連線授權**之前**記好：改序列等於改行為，會撤銷寫入授權。
+
+**故障注入（V2.10）**：工作台頁上方的「故障注入」面板，或 `POST /api/devices/uno-1/fault`，用來看數位孿生遇到問題時怎麼反應：
+
+| 故障 | 怎麼做 | DofLab 應有的反應（都有自動測試） |
+|---|---|---|
+| 網路延遲 200 ± 100 ms | 面板「網路延遲」「抖動」→ 套用 | 量測與回讀晚到，但順序正確；網路來回時間跟著變大 |
+| 掉包（可選方向） | 面板「掉包（%）」與「方向」 | 遺失的命令在孿生狀態表標示「逾時未確認・不自動重送」，網路恢復後也不補送 |
+| 中斷連線 | 「中斷網路連線」 | 回到模擬；未確認命令作廢、不重送；量測標為過期 |
+| 設備重置／瞬間斷電 | 「按 RESET 鍵」「瞬間斷電（brown-out）」 | 從韌體的開機訊息偵測到重新開機 → 撤銷寫入授權、回到唯讀、恢復唯讀觀測；不重送 |
+| 感測器卡住 | 超音波卡片「模組卡住」（ECHO 一直是高電位） | 約 2.5 秒沒有新讀值就標示「已過期」，連線本身仍正常 |
+| 拔掉一條線 | 每個元件卡片的「拔掉 … 的線」 | 按了按鈕看不到變化（核對接線失敗）；LED 命令有回讀但 LED 不亮 |
+
+```bash
+curl -X POST -d '{"net":{"delayMs":200,"jitterMs":100,"loss":0.05,"dir":"both"}}' http://127.0.0.1:8770/api/devices/uno-1/fault   # null 清除
+curl -X POST -d '{"fault":"reset"}' http://127.0.0.1:8770/api/devices/uno-1/fault          # 也可以 brownout、disconnect
+curl -X POST -d '{"part":"BTN1","action":"unplug"}' http://127.0.0.1:8770/api/devices/uno-1/bench   # plug 接回；超音波另有 stuck／unstuck
+```
+
+注意：網路中斷時，設備上的輸出會停在最後的命令（Firmata 本身沒有「斷線就關掉輸出」的保護）；DofLab 回到模擬，但不會也不能去關掉設備上已經亮著的 LED。
+
+**上傳程式與序列埠監看（V2.11）**：虛擬 Uno 裡有 Arduino 官方的 Optiboot 開機程式，可以像實體 Uno 一樣上傳自己的程式：
+
+1. 「程式」頁產生並編譯（需要編譯服務）後，上傳方式選「上傳到虛擬 Uno（網路）」，逐項確認後按「上傳到虛擬 Uno」。瀏覽器用和 USB 相同的 STK500 上傳程式，只是位元組經 WebSocket 送到虛擬晶片：DTR 重置進入 Optiboot、逐頁寫入、讀回比對。
+2. 上傳後自動開啟「序列埠監看」：和 Arduino IDE 一樣，開啟時虛擬 Uno 重新啟動（Optiboot 等約 1 秒後執行程式），`Serial.println` 的文字一行一行顯示，也記進事件紀錄。
+3. 在工作台頁操作按鈕、亮度、距離：這時是**上傳的程式自己**在虛擬晶片上執行（不經過 DofLab 的模擬），工作台顯示 LED 與伺服。工作台頁的「韌體」會顯示「上傳的程式」。
+4. 想回到同步：「觀測」頁來源選虛擬設備，按「上傳 DofLabFirmata（虛擬 Uno）」，再連線（和實體板子的操作一樣）。虛擬 Uno 跑的不是 Firmata 時，連線會在幾秒內說明原因，不會空等。
+
+```bash
+curl http://127.0.0.1:8770/api/devices/uno-1/trace        # 輸出軌跡：工作台的輸入操作、LED 亮滅、伺服脈寬變化（設備時間）、晶片重置紀錄
+curl -X POST -d '{"part":"BTN1","action":"press","atDevMs":12345.5}' http://127.0.0.1:8770/api/devices/uno-1/bench   # 排定在設備時間執行
+```
+
+**多人與控制權（V2.12）**：同一台虛擬設備可以同時有好幾個 DofLab 連線（例如老師的電腦、學生的電腦），每個人都能唯讀觀看。
+
+- 連線前在網址旁邊填上你的名稱（其他人會看到）；連線後「真機連線」第 1 步顯示「這台虛擬設備有 N 個連線：…· 控制權：…」。
+- 「授權受控寫入」時向虛擬設備主機取得**唯一的控制權**；別人的畫面顯示「控制權：老師（你只能唯讀觀看）」，授權按鈕停用。
+- 沒有控制權的連線送出的寫入（輸出、伺服、重新啟動、把別人的輸出腳位改成輸入）在主機就被擋下，不會到晶片，事件紀錄會說明。
+- 控制權在「停止寫入」、中斷連線（包括直接關掉分頁）、或控制者 10 秒沒有任何訊息時釋放。
+- 查詢的回覆只送給問的人：別人連線時的交握不會讓你誤判「設備重新開機」，別人的回讀也不會變成你的確認。
+- 上傳程式與序列埠監看需要獨占：有其他人連著時會說明，請其他人先中斷。工作台頁顯示目前的連線與控制者；`GET /api/devices/uno-1` 的 `hub` 欄位列出每個連線被擋下幾則訊息。
+
+**連線紀錄：匯出與重播（V2.12）**：每次連上設備（實體或虛擬都可以）就自動記錄這次連線：量測、引擎實際收到的輸入、模擬算出的輸出、送出的命令與回讀、模式、執行／暫停。「事件與錯誤」卡片上：
+
+- 「匯出紀錄」下載 JSON（格式 `doflab-session` 第 1 版）。
+- 「重播剛才的紀錄」或「開啟紀錄檔…」：在模擬中照紀錄的模擬時間重送輸入、重算輸出，和紀錄比對；結果寫進事件紀錄（例如「1 個輸出的變化和紀錄完全相同（逐毫秒相同）；紀錄中送出的 7 個命令，7 個依序出現在重播的輸出中」）。重播不連設備、不送任何命令。可以用來確認「改了行為之後，同樣的輸入會不會得到不同的結果」。手臂專案的重播本版未包含。
+
+目前的限制：只在本機、沒有通行碼；換工作台要重新啟動主機。後續階段（虛擬樹莓派與 ESP32、雲端部署）見 `docs/VIRTUAL_DEVICE_PLAN.md`。
 
 ### Raspberry Pi 4B 真機同步
 
@@ -148,6 +208,7 @@ Arduino IDE 設定：開發板管理員安裝「esp32 by Espressif Systems」，
 | 板型 | 方式 | 說明 |
 |---|---|---|
 | Uno | 用瀏覽器上傳（USB） | 需要電腦版 Chrome／Edge。瀏覽器讓板子重置進入 Optiboot，逐頁寫入後讀回比對。不需要編譯服務以外的工具 |
+| Uno（虛擬） | 上傳到虛擬 Uno（網路） | 同一個 STK500 上傳經 WebSocket 送到虛擬設備主機（`npm run vdev`）；上傳後開序列埠監看。**虛擬設備，不是實體板子**（V2.11） |
 | Uno、ESP32 | 用編譯服務上傳 | 由 `doflab_server.py` 呼叫 `arduino-cli upload`（Uno 用 avrdude、ESP32 用 esptool）。ESP32 若沒有自動進入下載模式，上傳開始時按住 BOOT |
 | Raspberry Pi | 部署到樹莓派 | 透過 `pi_bridge.py` 存成 `~/doflab-deploy/main.py` 並執行；畫面顯示輸出，可以停止。關掉網頁後程式仍會繼續執行 |
 
@@ -186,14 +247,15 @@ src/core/      與介面無關的核心（Node 與瀏覽器共用同一份檔案
   engine.js        行為引擎（模擬與真機控制共用）
   codegen.js       Arduino C++／Python 產生器、手改腳位比對
   twin.js          Twin Core：目標／命令／ACK／量測／模擬五層狀態
+  session.js       連線紀錄的格式與重播比對（V2.12）
   experiments.js   引導實驗（含老師自訂的實驗）
   autowire.js      接線助手：推算缺少的連線、指定腳位、補元件
   arm.js           三自由度手臂：運動學、限位、連續性、限速、伺服映射
   routing.js       自動整線（A* 正交路由）
 src/drivers/   transport.js（傳輸層：USB 序列埠、虛擬設備的 WebSocket）、Firmata 與 Pi 閘道（WebSocket）驅動；stk500.js（瀏覽器上傳到 Uno）
-src/ui/        Three.js 場景與擬真模型（models.js）、Blockly 積木、五個分頁、手臂（arm.js）、上傳燒錄（upload.js）、教師模式（teacher.js）
+src/ui/        Three.js 場景與擬真模型（models.js）、Blockly 積木、五個分頁、手臂（arm.js）、上傳燒錄（upload.js）、連線紀錄的錄製／匯出／重播（record.js）、教師模式（teacher.js）
 tools/         doflab_server.py（編譯服務）、pi_bridge.py（Pi 閘道 v2）、firmware/DofLabFirmata
-tools/vdev/    虛擬設備主機：server.js（WebSocket＋HTTP）、device.js（每台設備一個 worker）、bench.js（工作台）、avrsim.js（虛擬 Uno：執行真實 hex，含 Optiboot 與自我燒錄；測試也用它）
+tools/vdev/    虛擬設備主機：server.js（WebSocket＋HTTP）、hub.js（多人連線與控制權：Firmata 轉接）、netfault.js（網路故障注入）、device.js（每台設備一個 worker）、bench.js（工作台的元件模型）、bench.html（工作台頁）、benches/（工作台預設）、avrsim.js（虛擬 Uno：執行真實 hex，含 Optiboot 與自我燒錄；測試也用它）
 tests/avr/     pty_uno.js（讓 avrdude 經 pty 上傳到虛擬 Uno）
 tests/         Node 單元與等價測試、Python 測試
 e2e/           Playwright 端到端測試
@@ -206,9 +268,9 @@ e2e/           Playwright 端到端測試
 ## 測試
 
 ```bash
-node --test --test-concurrency=1 tests/*.test.js     # 112 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
+node --test --test-concurrency=1 tests/*.test.js     # 157 項（需要 g++；虛擬硬體測試與第 4 階段驗收需要 arduino-cli 與 avr-nm）
 python3 -m unittest discover -s tests -p "test_*.py" # 17 項（上傳端到端需要 avrdude 與 socat）
-python3 e2e/e2e.py                                   # 179 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev）
+python3 e2e/e2e.py                                   # 248 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults vupload vmulti）
 ```
 
 ### 示範影片
