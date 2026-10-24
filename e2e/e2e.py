@@ -728,6 +728,95 @@ async def faults_flow(p):
         await b.close()
         if srv: srv.kill()
 
+async def vupload_flow(p):
+    """雲端虛擬硬體第 4 階段：「程式」頁上傳到虛擬 Uno（STK500 經 WebSocket → 另一個程序裡的虛擬 Optiboot）→ 程式在虛擬晶片上執行，
+    工作台頁按按鈕、LED 閃爍；Serial.println 的文字經網路送回 DofLab 的序列埠監看。之後從觀測頁上傳 DofLabFirmata，恢復同步。"""
+    import urllib.request
+    from PIL import Image
+    VPORT = 8770; api = f'http://127.0.0.1:{VPORT}/api/devices/uno-1'
+    def state(): return json.loads(urllib.request.urlopen(api, timeout=5).read())
+    def part(st, pid): return next(x for x in st['bench']['parts'] if x['id'] == pid)
+    async def shots(name, pg, bp):
+        await asyncio.gather(pg.screenshot(path=str(SHOTS / '_l.png')), bp.screenshot(path=str(SHOTS / '_r.png')))
+        a, c = Image.open(SHOTS / '_l.png'), Image.open(SHOTS / '_r.png'); out = Image.new('RGB', (a.width + c.width + 12, max(a.height, c.height)), (120, 110, 170)); out.paste(a, (0, 0)); out.paste(c, (a.width + 12, 0)); out.save(SHOTS / name)
+        os.remove(SHOTS / '_l.png'); os.remove(SHOTS / '_r.png')
+    srv = subprocess.Popen(['node', str(ROOT / 'tools' / 'vdev' / 'server.js'), '--port', str(VPORT)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(VPORT)
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 940})
+    errs = []
+    try:
+        pg = await ctx.new_page(); pg.on('pageerror', lambda e: errs.append(str(e)))
+        bp = await ctx.new_page(); bp.on('pageerror', lambda e: errs.append('工作台頁：' + str(e))); await bp.set_viewport_size({'width': 900, 'height': 940})
+        await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p")
+        await bp.goto(f'http://127.0.0.1:{VPORT}/'); await bp.wait_for_function("window.__bench && document.querySelector('#hold-BTN1')")
+        await ev(pg, """(()=>{const r=DL.experiments.solved('hold-blink','uno'); const q=DL.project.clone(r.project,{name:'虛擬 Uno 上傳',origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}});
+          q.behavior.ir.rules.push({type:'start',actions:[{type:'print',text:'DofLab 準備好了'}]},{type:'event',event:'press',comp:'BTN1',actions:[{type:'print',text:'按下'}]},{type:'event',event:'release',comp:'BTN1',actions:[{type:'print',text:'放開'}]}); doflab.load(q); })()""")
+        await pg.click('#t-behavior'); await pg.wait_for_timeout(300); await pg.click('#btnConfirm')
+        await pg.click('#t-code'); await pg.wait_for_timeout(300)
+        await pg.click('[data-upm="virtual"]'); await pg.wait_for_timeout(150)
+        body = await pg.inner_text('#uploadBody')
+        check("虛擬上傳：程式頁的上傳方式有「上傳到虛擬 Uno（網路）」，標示虛擬設備、預設網址指向本機主機", '虛擬設備，不是實體板子' in body and await pg.input_value('#upVdev') == f'ws://127.0.0.1:{VPORT}/dev/uno-1' and await pg.locator('#upStart').is_disabled(), body[:300])
+        await pg.click('#btnGen'); await pg.wait_for_timeout(200); await pg.click('#btnCompile')
+        await pg.wait_for_function("document.querySelector('#btnCompile').textContent==='編譯'", timeout=240000)
+        check("虛擬上傳：編譯成功後（真的 arduino-cli）條件全部符合", await pg.locator('#upStart').is_enabled() and 'Serial.println' in await ev(pg, "doflab.p.code.text"))
+        await pg.click('#upStart'); await pg.wait_for_timeout(150)
+        txt = await pg.inner_text('#uploadBody')
+        check("虛擬上傳：開始前逐項確認，寫明會覆蓋 DofLabFirmata、目標是虛擬設備不是實體板子", '覆蓋虛擬 Uno' in txt and '不是實體板子' in txt and await pg.locator('#upGo').is_disabled())
+        for cb in await pg.locator('[data-upchk]').all(): await cb.check()
+        await pg.click('#upGo')
+        await pg.wait_for_function("doflab.up && !doflab.up.busy && (doflab.up.last || doflab.up.log.some(l=>l.kind==='e'))", timeout=120000)
+        last = await ev(pg, "doflab.up.last || doflab.up.log.map(l=>l.msg).join(' | ')")
+        for i in range(50):   # 主機在看門狗重置（離開 Optiboot）之後才判定上傳完成
+            st = state()
+            if st['uploads'] == 1: break
+            await asyncio.sleep(0.1)
+        check("虛擬上傳：STK500 經網路寫入虛擬 Optiboot、讀回比對一致；主機端辨識為「上傳的程式」", '讀回比對一致' in (last or '') and '虛擬設備' in last and st['uploads'] == 1 and st['firmware']['name'] == '上傳的程式', (last or '') + ' | ' + json.dumps(st['firmware'], ensure_ascii=False))
+        try: await pg.wait_for_function("doflab.up.vmon && doflab.up.vmon.lines.includes('DofLab 準備好了') && document.querySelector('#upSerial').textContent.includes('DofLab 準備好了')", timeout=15000); ok = True
+        except Exception: ok = False
+        check("序列埠監看：上傳後自動開啟（虛擬 Uno 重新啟動，和 Arduino IDE 一樣），收到 setup() 印出的「DofLab 準備好了」", ok and 'DofLab 準備好了' in await pg.inner_text('#upSerial'), await ev(pg, "JSON.stringify(doflab.up.vmon && doflab.up.vmon.lines)"))
+        await bp.wait_for_function("document.querySelector('#fwName') && document.querySelector('#fwName').textContent==='上傳的程式'", timeout=5000)
+        check("工作台頁：韌體顯示「上傳的程式」", True)
+        # 在工作台頁按住 BTN1：上傳的程式自己讓 LED 閃爍（不經過 DofLab 的模擬），序列埠送回「按下」
+        h = await bp.locator('#hold-BTN1').bounding_box(); t0 = part(state(), 'LED1')['toggles']
+        await bp.mouse.move(h['x'] + h['width'] / 2, h['y'] + h['height'] / 2); await bp.mouse.down()
+        try: await pg.wait_for_function("doflab.up.vmon.lines.includes('按下')", timeout=8000); ok = True
+        except Exception: ok = False
+        for i in range(60):
+            if part(state(), 'LED1')['toggles'] - t0 >= 3: break
+            await asyncio.sleep(0.1)
+        await shots("vu1_running.png", pg, bp)
+        await bp.mouse.up()
+        check("上傳的程式在虛擬晶片上執行：按住工作台的 BTN1，LED1 自己閃爍；DofLab 的序列埠監看收到「按下」", ok and part(state(), 'LED1')['toggles'] - t0 >= 3, json.dumps(part(state(), 'LED1')))
+        try: await pg.wait_for_function("doflab.up.vmon.lines.includes('放開')", timeout=8000); ok = True
+        except Exception: ok = False
+        check("序列埠監看：放開後收到「放開」，文字順序和模擬的序列埠監看相同", ok and await ev(pg, "doflab.up.vmon.lines.filter(l=>l)") == ['DofLab 準備好了', '按下', '放開'], await ev(pg, "JSON.stringify(doflab.up.vmon.lines)"))
+        check("事件紀錄：序列埠文字記錄為「虛擬 Uno 序列埠」", await ev(pg, "doflab.events.some(e=>/虛擬 Uno 序列埠：按下/.test(e.text))"))
+        # 觀測頁：虛擬 Uno 跑的不是 Firmata → 很快說明原因與下一步（不是等很久的逾時）
+        await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+        await pg.check('input[name="hwSrc"][value="virtual"]'); await pg.wait_for_timeout(100)
+        t1 = time.time(); await pg.click('#hwConn')
+        await pg.wait_for_function("!doflab.hw.busy", timeout=20000); took = time.time() - t1
+        evs = await ev(pg, "doflab.events.slice(0, 8).map(e=>e.text).join(' | ')")
+        check("觀測頁：虛擬 Uno 跑上傳的程式時連線會先關掉序列埠監看，並在幾秒內說明「要同步請先上傳 DofLabFirmata」", await ev(pg, "doflab.twin.conn.state") != 'connected' and '上傳 DofLabFirmata' in evs and took < 10 and not await ev(pg, "doflab.up.vmon.open"), f'{took:.1f}s ' + evs[:400])
+        btn = await pg.inner_text('#fwFlash')
+        check("觀測頁：來源是虛擬設備時，「上傳 DofLabFirmata」上傳到虛擬 Uno", '虛擬 Uno' in btn, btn)
+        await pg.click('#fwFlash'); await pg.wait_for_timeout(200)
+        for cb in await pg.locator('[data-fwchk]').all(): await cb.check()
+        await pg.click('#fwGo')
+        await pg.wait_for_function("doflab.up && !doflab.up.busy && doflab.hw.firmataFlashed", timeout=120000)
+        for i in range(50):
+            st = state()
+            if st['uploads'] == 2: break
+            await asyncio.sleep(0.1)
+        check("觀測頁：DofLabFirmata 經網路上傳回去，主機端辨識為 DofLabFirmata", st['uploads'] == 2 and st['firmware']['name'] == 'DofLabFirmata', json.dumps(st['firmware'], ensure_ascii=False))
+        await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=20000); await pg.wait_for_timeout(300)
+        body = await pg.inner_text('#hwBody')
+        check("觀測頁：重新上傳 DofLabFirmata 後可以連線同步，從唯讀開始（和實體板子的操作一樣）", 'DofLabFirmata' in body and await ev(pg, "doflab.twin.mode") == 'hw-read' and await ev(pg, "doflab.twin.conn.virtual"), body[:200])
+        await shots("vu2_firmata_back.png", pg, bp)
+        await pg.click('#hwDisc'); await pg.wait_for_timeout(300)
+        check("虛擬上傳流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    finally:
+        await b.close(); srv.kill()
+
 async def breadboard_flow(p):
     b = await p.chromium.launch(args=ARGS)
     ctx = await b.new_context(viewport={'width': 1440, 'height': 940})
@@ -1279,6 +1368,7 @@ async def main():
             if on('bench'): await bench_flow(p)
             if on('faults'): await faults_flow(p)
             if on('upload'): await upload_flow(p)
+            if on('vupload'): await vupload_flow(p)
             if on('pideploy'): await pi_deploy(p)
             if on('mobile'): await mobile(p)
             if on('dark'): await dark(p)

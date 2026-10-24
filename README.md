@@ -1,4 +1,4 @@
-# DofLab V2.10 原型
+# DofLab V2.11 原型
 
 從電路配置、行為設計、模擬測試，到真實設備同步的教學與開發平台。本版依《DofLab 規劃文件 v0.1》重新開發。
 
@@ -32,7 +32,7 @@
 3. 到「觀測」頁按「連接 Arduino（USB）」或「連接 ESP32（USB）」，再依序完成：辨識、唯讀觀測、核對接線、授權受控寫入。
 4. 連不上時（V2.6.1）：先關掉 Arduino IDE 的序列埠監控視窗與其他開著 DofLab 的分頁。本頁上一次沒關乾淨的連線會自動關閉；被其他程式占用時會自動重試並說明；板子沒回應時會自動重新啟動板子再試一次。上傳程式前會自動中斷觀測頁的連線，上傳後按「用上次的連接埠重新連線」即可。
 
-### 虛擬設備：沒有板子也能走完數位孿生（V2.8；V2.9 加上工作台）
+### 虛擬設備：沒有板子也能走完數位孿生（V2.8；V2.9 加上工作台；V2.11 可以上傳程式）
 
 虛擬設備是**另一個程式**裡的虛擬 Uno：avr8js 執行真的 DofLabFirmata 機器碼，外面接著「工作台」——這塊虛擬板子實際接了哪些元件。介面經網路（WebSocket）連過去，送出與收到的 Firmata 位元組和接 USB 時完全相同。
 
@@ -90,7 +90,19 @@ curl -X POST -d '{"part":"BTN1","action":"unplug"}' http://127.0.0.1:8770/api/de
 
 注意：網路中斷時，設備上的輸出會停在最後的命令（Firmata 本身沒有「斷線就關掉輸出」的保護）；DofLab 回到模擬，但不會也不能去關掉設備上已經亮著的 LED。
 
-目前的限制：只在本機、沒有通行碼；同時只接受一個連線；換工作台要重新啟動主機。後續階段（上傳程式到虛擬 Uno、多人觀看、虛擬樹莓派與 ESP32、雲端部署）見 `docs/VIRTUAL_DEVICE_PLAN.md`。
+**上傳程式與序列埠監看（V2.11）**：虛擬 Uno 裡有 Arduino 官方的 Optiboot 開機程式，可以像實體 Uno 一樣上傳自己的程式：
+
+1. 「程式」頁產生並編譯（需要編譯服務）後，上傳方式選「上傳到虛擬 Uno（網路）」，逐項確認後按「上傳到虛擬 Uno」。瀏覽器用和 USB 相同的 STK500 上傳程式，只是位元組經 WebSocket 送到虛擬晶片：DTR 重置進入 Optiboot、逐頁寫入、讀回比對。
+2. 上傳後自動開啟「序列埠監看」：和 Arduino IDE 一樣，開啟時虛擬 Uno 重新啟動（Optiboot 等約 1 秒後執行程式），`Serial.println` 的文字一行一行顯示，也記進事件紀錄。
+3. 在工作台頁操作按鈕、亮度、距離：這時是**上傳的程式自己**在虛擬晶片上執行（不經過 DofLab 的模擬），工作台顯示 LED 與伺服。工作台頁的「韌體」會顯示「上傳的程式」。
+4. 想回到同步：「觀測」頁來源選虛擬設備，按「上傳 DofLabFirmata（虛擬 Uno）」，再連線（和實體板子的操作一樣）。虛擬 Uno 跑的不是 Firmata 時，連線會在幾秒內說明原因，不會空等。
+
+```bash
+curl http://127.0.0.1:8770/api/devices/uno-1/trace        # 輸出軌跡：工作台的輸入操作、LED 亮滅、伺服脈寬變化（設備時間）、晶片重置紀錄
+curl -X POST -d '{"part":"BTN1","action":"press","atDevMs":12345.5}' http://127.0.0.1:8770/api/devices/uno-1/bench   # 排定在設備時間執行
+```
+
+目前的限制：只在本機、沒有通行碼；同時只接受一個連線（序列埠監看與觀測頁的連線不能同時開）；換工作台要重新啟動主機。後續階段（多人觀看、虛擬樹莓派與 ESP32、雲端部署）見 `docs/VIRTUAL_DEVICE_PLAN.md`。
 
 ### Raspberry Pi 4B 真機同步
 
@@ -182,6 +194,7 @@ Arduino IDE 設定：開發板管理員安裝「esp32 by Espressif Systems」，
 | 板型 | 方式 | 說明 |
 |---|---|---|
 | Uno | 用瀏覽器上傳（USB） | 需要電腦版 Chrome／Edge。瀏覽器讓板子重置進入 Optiboot，逐頁寫入後讀回比對。不需要編譯服務以外的工具 |
+| Uno（虛擬） | 上傳到虛擬 Uno（網路） | 同一個 STK500 上傳經 WebSocket 送到虛擬設備主機（`npm run vdev`）；上傳後開序列埠監看。**虛擬設備，不是實體板子**（V2.11） |
 | Uno、ESP32 | 用編譯服務上傳 | 由 `doflab_server.py` 呼叫 `arduino-cli upload`（Uno 用 avrdude、ESP32 用 esptool）。ESP32 若沒有自動進入下載模式，上傳開始時按住 BOOT |
 | Raspberry Pi | 部署到樹莓派 | 透過 `pi_bridge.py` 存成 `~/doflab-deploy/main.py` 並執行；畫面顯示輸出，可以停止。關掉網頁後程式仍會繼續執行 |
 
@@ -240,9 +253,9 @@ e2e/           Playwright 端到端測試
 ## 測試
 
 ```bash
-node --test --test-concurrency=1 tests/*.test.js     # 128 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
+node --test --test-concurrency=1 tests/*.test.js     # 148 項（需要 g++；虛擬硬體測試與第 4 階段驗收需要 arduino-cli 與 avr-nm）
 python3 -m unittest discover -s tests -p "test_*.py" # 17 項（上傳端到端需要 avrdude 與 socat）
-python3 e2e/e2e.py                                   # 219 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults）
+python3 e2e/e2e.py                                   # 233 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults vupload）
 ```
 
 ### 示範影片

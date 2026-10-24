@@ -59,10 +59,14 @@
       await t.open();
       const vi = virtual ? t.info() : null;
       this.log(virtual ? `已經由網路連到虛擬設備 ${vi.device}（${vi.host}；avr8js 模擬的晶片，不是實體板子），等待 Firmata 回應…` : '序列埠已開啟（57600 bps），等待板子重新啟動並回應 Firmata…');
-      if (!await this.handshake(6000) && !this.closing && await this.resetBoard()) {
+      // 虛擬 Uno 上傳過別的程式（第 4 階段）：主機知道快閃記憶體裡是什麼，不是 DofLabFirmata 時先提醒，沒回應就直接說明（重新啟動也只是再跑同一個程式）
+      const otherFw = virtual && vi.firmware && vi.firmware.name && vi.firmware.name !== 'DofLabFirmata' ? vi.firmware.name : null;
+      if (otherFw) this.log(`虛擬 Uno 現在跑的是「${otherFw}」，不是 DofLabFirmata；如果不是 Firmata，就不會回應。`, 'w');
+      if (!await this.handshake(otherFw ? 3000 : 6000) && !this.closing && !otherFw && await this.resetBoard()) {
         this.log('6 秒內沒有回應：重新啟動板子後再等一次…', 'w'); this.buf = []; this.sysex = null;
         await this.handshake(7000);
       }
+      if (!this.version && otherFw) { await this.disconnect(true); throw new Error(`虛擬 Uno 現在跑的是上傳的程式（${otherFw}），不是 Firmata，所以不能同步。要同步請先按「上傳 DofLabFirmata」（和實體板子一樣）；想看程式的輸出，請用「程式」頁上傳後的序列埠監看。`); }
       if (!this.version) { await this.disconnect(true); throw new Error(virtual ? `虛擬設備 ${vi.device} 沒有回應 Firmata（已重新啟動再等一次）。請確認虛擬設備主機執行的是 DofLabFirmata 或 StandardFirmata。` : `沒有收到 Firmata 回應（已重新啟動板子再等一次）。請確認板子已上傳 ${(this.board.family || this.board.id) === 'esp32' ? 'DofLabFirmata' : 'DofLabFirmata 或 StandardFirmata'}（57600 bps），而且沒有其他程式占用序列埠。`); }
       const pinCount = this.caps ? this.caps.length : null; const want = this.board.firmataPins;
       const fw = `${this.firmware || 'Firmata'} ${this.version}`;

@@ -142,6 +142,30 @@
     }
   }
 
-  DL.transport = { WebSerialTransport, WebSocketTransport, PROTO };
+  // 虛擬設備的「序列埠」（第 4 階段）：把 WebSocketTransport 包成 Web Serial 的連接埠介面（open／readable／writable／setSignals／close），
+  // 讓瀏覽器的 STK500 上傳（stk500.js）與序列埠監看不用改就能用在虛擬 Uno 上。DTR 經網路送到虛擬晶片，和 USB 一樣會讓晶片重置進入 Optiboot。
+  function wsSerialPort(url, opts) {
+    opts = opts || {}; let t = null, ctrl = null, rs = null, wr = null;
+    const port = {
+      virtual: true, url, hello: null,
+      getInfo: () => ({ virtual: 'vdev', url }),
+      get readable() { return rs; }, get writable() { return wr; },
+      get rtt() { return t ? t.rtt : null; },
+      async open() {
+        if (t) throw Object.assign(new Error('The port is already open.'), { name: 'InvalidStateError' });
+        t = new WebSocketTransport({ url, log: opts.log, timeoutMs: opts.timeoutMs });
+        rs = new ReadableStream({ start(c) { ctrl = c; }, cancel() { ctrl = null; } });
+        t.onBytes(b => { try { ctrl && ctrl.enqueue(b); } catch (e) { } });
+        t.onLost(why => { try { ctrl && ctrl.error(new Error(why)); } catch (e) { } ctrl = null; if (opts.onLost) opts.onLost(why); });
+        try { port.hello = await t.open(); } catch (e) { t = null; rs = null; throw e; }
+        const tr = t; wr = new WritableStream({ write: chunk => tr.write(chunk) });
+      },
+      async setSignals(sig) { if (t) await t.setSignals(sig); },
+      async close() { const x = t; t = null; try { ctrl && ctrl.close(); } catch (e) { } ctrl = null; rs = wr = null; if (x) await x.close(); }
+    };
+    return port;
+  }
+
+  DL.transport = { WebSerialTransport, WebSocketTransport, wsSerialPort, PROTO };
   if (typeof module !== 'undefined') module.exports = DL;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

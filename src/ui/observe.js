@@ -371,6 +371,7 @@
     const s1 = connected ? `<span>${esc(info.label)} · ${esc(c.info || '')}</span>${virt ? `<span class="hint"><span class="ev-virt">虛擬</span>另一個程序模擬的 Uno，不是實體板子 · <span id="vdevNet">網路來回 ${this.hw.driver && this.hw.driver.transport && this.hw.driver.transport.rtt !== null ? this.hw.driver.transport.rtt + ' ms' : '量測中'}</span>${bu ? ` · <a href="${esc(bu)}" target="_blank" rel="noopener">開啟工作台</a>` : ''}</span>` : ''}<div class="row"><button class="btn danger" id="hwDisc">中斷連線</button></div>`
       : virt ? `${srcSel}<div class="row"><input class="inp mono" id="vdevUrl" value="${esc(this.vdevUrl())}" aria-label="虛擬設備網址" style="flex:1 1 200px"></div><span class="hint">虛擬設備是另一個程式（<span class="mono">node tools/vdev/server.js</span>）裡以 avr8js 模擬的 Uno，執行真的 DofLabFirmata 機器碼；資料經網路（WebSocket）交換，Firmata 位元組和 USB 完全相同。它<b>不是實體板子</b>：在這裡通過的只算「已在虛擬設備驗證」。不需要 Web Serial，手機也能連。</span>
          <div class="row"><button class="btn primary" id="hwConn" ${this.hw.busy ? 'disabled' : ''}>連接虛擬 Uno</button></div>
+         <span class="hint">虛擬 Uno 上傳過自己的程式（「程式」頁）之後，要同步請先把 DofLabFirmata 上傳回去：</span>${this.firmataFlashHtml ? this.firmataFlashHtml() : ''}
          ${c.state === 'lost' ? `<span class="hint" style="color:var(--err)">上次連線中斷${this.twin.dropped.length ? `；${this.twin.dropped.length} 個未確認命令已作廢、不會重送` : ''}。重新連線後會從唯讀開始。</span>` : ''}`
       : `${srcSel}${p.board.type === 'pi4b' ? `<div class="row"><input class="inp mono" id="wsUrl" value="${esc(urlDefault)}" aria-label="樹莓派閘道網址" style="flex:1 1 200px"></div>` : `<span class="hint">${DL.boardFamily(p.board.type) === 'esp32' ? 'ESP32 需先上傳 DofLabFirmata 韌體' : 'Uno 需先上傳 DofLabFirmata（建議）或 StandardFirmata'}，再用 USB 連接電腦；需要電腦版 Chrome／Edge。韌體在下載包的 firmware 資料夾，也可以直接按下面的按鈕上傳。</span>${this.firmataFlashHtml ? this.firmataFlashHtml() : ''}`}
          <div class="row"><button class="btn primary" id="hwConn" ${this.hw.busy ? 'disabled' : ''}>${p.board.type === 'pi4b' ? '連接樹莓派' : (DL.boardFamily(p.board.type) === 'esp32' ? '連接 ESP32（USB）' : '連接 Arduino（USB）')}</button>${p.board.type !== 'pi4b' && this.hw.lastPort ? `<button class="btn" id="hwReconn" ${this.hw.busy ? 'disabled' : ''} title="不用再選連接埠">用上次的連接埠重新連線</button>` : ''}</div>
@@ -417,6 +418,7 @@
     const url = src === 'virtual' ? ($('vdevUrl') ? $('vdevUrl').value.trim() : this.vdevUrl()) : src === 'pibridge' && $('wsUrl') ? $('wsUrl').value.trim() : null;
     if (url) try { localStorage.setItem(src === 'virtual' ? 'doflab.vdevUrl' : 'doflab.wsUrl', url); } catch (e) { }
     if (src === 'virtual') this.hw.vdevUrl = url;
+    if (src === 'virtual' && this.up && this.up.vmon && this.up.vmon.open) await this.vmonClose('「觀測」頁要連線，已關閉（虛擬設備同時只接受一個連線）');
     this.hw.busy = true; this.renderHw();
     const drv = new info.cls(this.twin, { log: (m, k) => { this.log(k || '', m); }, onLost: why => this.hwLost(why), onReboot: why => this.hwRebooted(why) }, p.board.type);
     try {

@@ -2,11 +2,11 @@
 
 DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Raspberry Pi 4B）：3D 電路配置 → 視覺積木行為 → 產生程式（C++／Python）→ 模擬 → 真機同步（數位孿生）。依《DofLab 規劃文件 v0.1》開發（規劃文件本身不在 repo 裡；需要時請使用者提供，放到 `docs/`）。
 
-目前版本：**V2.10 原型**（2026-10-24）。使用者是劉老師，介面、註解、文件、回覆一律用**繁體中文**。
+目前版本：**V2.11 原型**（2026-10-24）。使用者是劉老師，介面、註解、文件、回覆一律用**繁體中文**。
 
 ## 下一個工作
 
-**雲端虛擬硬體第 4 階段（上傳與序列埠）**：STK500 經 WebSocket 上傳到虛擬 Uno；`Serial.println` 串流回介面；所有支援 Uno 的引導實驗，產生的程式上傳後在虛擬設備上的行為和介面模擬一致。規劃與分階段驗收在 `docs/VIRTUAL_DEVICE_PLAN.md`。已完成：第 1 階段（V2.8，虛擬 Uno 經 WebSocket：`tools/vdev/`、`src/drivers/transport.js`）、第 2 階段（V2.9，工作台與工作台頁：`tools/vdev/bench.js`、`bench.html`、`benches/`）、第 3 階段（V2.10，故障與網路注入：`tools/vdev/netfault.js`、工作台頁的「故障注入」、`/fault` API；E2E `faults` 段落）。待使用者決定：斷線時設備端的輸出保護（ACCEPTANCE V2.10 第 5 點）。
+**雲端虛擬硬體第 5 階段（多人與控制權）**：規劃與分階段驗收在 `docs/VIRTUAL_DEVICE_PLAN.md`。已完成：第 1 階段（V2.8，虛擬 Uno 經 WebSocket：`tools/vdev/`、`src/drivers/transport.js`）、第 2 階段（V2.9，工作台與工作台頁：`tools/vdev/bench.js`、`bench.html`、`benches/`）、第 3 階段（V2.10，故障與網路注入：`tools/vdev/netfault.js`、`/fault` API）、第 4 階段（V2.11，上傳與序列埠：虛擬 Optiboot、`DL.transport.wsSerialPort`、程式頁「上傳到虛擬 Uno」與序列埠監看、`/trace` API、`atDevMs`；`tests/vdev_upload.test.js`、E2E `vupload` 段落）。待使用者決定：斷線時設備端的輸出保護（ACCEPTANCE V2.10 第 5 點）；產生的 Uno 程式超音波少 1 cm 要不要改產生器（ACCEPTANCE V2.11 第 5 點）。
 
 ---
 
@@ -40,7 +40,7 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 | `src/core/` | 與畫面無關的核心，**瀏覽器與 Node 共用**：`boards`（板型、腳位能力）、`components`（元件型錄）、`breadboard`、`project`（專案格式、`inputsHash`）、`netlist`（電路檢查、綁定）、`behavior`（行為 IR、驗證、摘要）、`engine`（模擬引擎）、`codegen`（C++／Python 產生器，`GENERATOR_VERSION`）、`autowire`（接線助手）、`routing`（整齊走線）、`experiments`（引導實驗）、`arm`（三軸手臂 IK、動作序列 `seqPlan／seqStep`）、`twin`（Twin Core 五層狀態） |
 | `src/ui/` | 只在瀏覽器：`app`（主程式、配置、行為、程式頁、可收合卡片、HUD）、`scene`（Three.js 3D 場景）、`models`（程序化 3D 模型）、`observe`（模擬、觀測、真機連線）、`arm`（手臂頁）、`blocks`（Blockly）、`upload`、`teacher`、`main`（啟動與版本狀態表）、`body.html`、`styles.css` |
 | `src/drivers/` | `transport.js`：傳輸層 `WebSerialTransport`（含 `DL.serial` 連接埠占用處理）、`WebSocketTransport`（虛擬設備）；`drivers.js`：`FirmataDriver`（Firmata，只透過傳輸物件收送位元組）、`PiBridgeDriver`（WebSocket）、`driverFor(board, source)`；`stk500.js`：瀏覽器上傳 Uno |
-| `tools/` | `doflab_server.py`（本機編譯／上傳服務，aiohttp，port 8766）、`pi_bridge.py`（樹莓派閘道，`--mock` 用模擬腳位，port 8765）、`firmware/DofLabFirmata/`（DofLabFirmata 1.1，含超音波擴充 `F0 62`／`F0 63`）、`vdev/`（虛擬設備主機，Node，port 8770：`server.js` WebSocket＋HTTP、`netfault.js` 網路故障注入、`device.js` 每台一個 worker、`bench.js` 工作台的元件模型、`bench.html` 工作台頁、`benches/*.json` 工作台預設（`--bench`）、`avrsim.js` avr8js 虛擬 Uno，跑真的 .hex、含 Optiboot；測試也用它） |
+| `tools/` | `doflab_server.py`（本機編譯／上傳服務，aiohttp，port 8766）、`pi_bridge.py`（樹莓派閘道，`--mock` 用模擬腳位，port 8765）、`firmware/DofLabFirmata/`（DofLabFirmata 1.1，含超音波擴充 `F0 62`／`F0 63`）、`vdev/`（虛擬設備主機，Node，port 8770：`server.js` WebSocket＋HTTP、`netfault.js` 網路故障注入、`device.js` 每台一個 worker、`bench.js` 工作台的元件模型、`bench.html` 工作台頁、`benches/*.json` 工作台預設（`--bench`）、`avrsim.js` avr8js 虛擬 Uno，跑真的 .hex、含 Optiboot；測試也用它。虛擬設備載入 Optiboot，可以經 WebSocket 用 STK500 上傳） |
 | `tests/` | Node 測試 `*.test.js`、Python 測試 `test_*.py`、`host/`（g++ 主機替身：Arduino.h、Servo.h、harness.cpp）、`avr/pty_uno.js`（avrdude 經 pty 上傳到虛擬 Uno）、`fixtures/`（韌體 .hex） |
 | `e2e/` | `e2e.py`（Playwright 瀏覽器測試，可只跑某些段落）、`virtual_entry.js`（瀏覽器內的虛擬 Uno，用 esbuild 打包成 `virtual_uno.bundle.js`，不進 git） |
 | `docs/` | 規劃文件 |
@@ -66,10 +66,10 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 npm ci                 # 安裝 three、blockly、avr8js、esbuild
 npm run check          # 所有 src/*.js 語法檢查（改完一定要跑）
 npm run build          # 產生 dist/
-npm run test:node      # Node 測試（目前 128 項；沒有 arduino-cli 時會略過 9 項）
+npm run test:node      # Node 測試（目前 148 項，含第 4 階段驗收的 15 個子測試；沒有 arduino-cli 時會略過 11 項，驗收的子測試也不會執行）
 npm run test:py        # Python 測試（17 項；沒有 arduino-cli、avrdude、socat 時會略過）
-npm run test:e2e       # 建置＋打包＋瀏覽器測試（219 項，約 20 分鐘）
-python3 e2e/e2e.py onboard v27   # 只跑部分段落：desktop breadboard teacher experiments pi ultrasonic onboard arm v27 uno vdev bench faults upload pideploy mobile dark
+npm run test:e2e       # 建置＋打包＋瀏覽器測試（233 項，約 22 分鐘）
+python3 e2e/e2e.py onboard v27   # 只跑部分段落：desktop breadboard teacher experiments pi ultrasonic onboard arm v27 uno vdev bench faults upload vupload pideploy mobile dark
 npm run vdev                     # 虛擬設備主機（node tools/vdev/server.js），ws://127.0.0.1:8770/dev/uno-1，工作台 http://127.0.0.1:8770/
 npm run vdev -- --bench arm-3dof # 換工作台：hold-blink（預設）、hold-blink-miswired、night-light、dist-gauge、arm-3dof
 python3 dist/doflab_server.py    # 本機編譯服務，開 http://localhost:8766

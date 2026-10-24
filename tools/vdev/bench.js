@@ -37,7 +37,7 @@ class Bench {
   constructor(uno, spec) {
     this.uno = uno; this.spec = loadSpec(spec);
     this.rand = rng(this.spec.seed || 1);
-    this.parts = {}; this.log = []; this.watchers = [];
+    this.parts = {}; this.log = []; this.watchers = []; this.trace = [];
     const used = {};
     const claim = (p, n, what) => {
       if (!isPin(n)) throw new Error(`${p.id} 的${what}腳位 ${n} 不是 Uno 的 D0–D13／A0–A5（14–19）`);
@@ -60,7 +60,11 @@ class Bench {
   watch(fn) { this.uno.pinWatchers.push(fn); this.watchers.push(fn); }
   at(ms, fn) { this.uno.at(this.uno.cycle + Math.max(1, Math.round(ms * 16000)), fn); }
   schedTick() { this.at(this.tickMs, () => { this.tick(); this.schedTick(); }); }
-  note(part, action, extra) { this.log.push(Object.assign({ devMs: Math.round(this.uno.timeMs * 10) / 10, part, action }, extra || {})); if (this.log.length > 100) this.log.shift(); }
+  note(part, action, extra) { const e = Object.assign({ devMs: Math.round(this.uno.timeMs * 10) / 10, part, action }, extra || {}); this.log.push(e); if (this.log.length > 100) this.log.shift(); this.rec(e); }
+  // 輸出軌跡（第 4 階段）：輸入操作、LED 亮滅、伺服脈寬變化，都以設備時間記錄；驗收測試用它和介面模擬比較（最多 20000 筆）
+  rec(e) { this.trace.push(e); if (this.trace.length > 20000) this.trace.shift(); }
+  // 晶片重置後：伺服的第一個脈衝一定記下來（即使脈寬和重置前一樣），軌跡才看得到程式開始時的角度
+  onReset() { for (const p of Object.values(this.parts)) if (p.type === 'servo') p.traceUs = undefined; }
 
   init(p) {
     if (p.type === 'button') { p.bounceMs = p.bounceMs ?? 8; p.pressed = false; p.level = true; p.edges = 0; p.gen = 0; this.uno.setInput(p.pin, true); }
@@ -101,9 +105,10 @@ class Bench {
       if (p.unplugged) { p.rise = null; return; }   // 訊號線拔掉：收不到脈衝
       if (h) { p.rise = this.uno.cycle; return; }
       if (p.rise === null) return;
-      const us = (this.uno.cycle - p.rise) / 16; p.rise = null;
+      const us = (this.uno.cycle - p.rise) / 16; p.rise0 = p.rise; p.rise = null;
       if (us < 400 || us > 2600) return;   // 不是伺服脈衝（例如一般的數位輸出）
       this.moveServo(p);   // 先轉到現在，再換新的命令
+      if (p.traceUs === undefined || Math.abs(us - p.traceUs) >= 4) { p.traceUs = us; this.rec({ devMs: Math.round(p.rise0 / 16) / 1000, part: p.id, us: Math.round(us) }); }   // 脈寬改變 ≥ 4 µs（約 0.4°）才記
       p.pulseUs = Math.round(us); p.pulses++; p.lastPulseMs = this.uno.timeMs; p.lastMoveMs = p.lastPulseMs;
       p.cmd = Math.max(0, Math.min(180, (us - SERVO_MIN_US) / (SERVO_MAX_US - SERVO_MIN_US) * 180));
       if (p.angle === null) p.angle = p.cmd;   // 開機第一個脈衝：假設伺服原本就在那裡（實物會猛轉過去）
@@ -123,14 +128,22 @@ class Bench {
     for (const p of Object.values(this.parts)) {
       if (p.type !== 'led') continue;
       const on = !p.unplugged && this.uno.pinState(p.pin) === avr.PinState.High;
-      if (on !== p.on) { p.on = on; p.toggles++; p.lastChangeMs = this.uno.timeMs; }
+      if (on !== p.on) { p.on = on; p.toggles++; p.lastChangeMs = this.uno.timeMs; this.rec({ devMs: Math.round(this.uno.timeMs * 1000) / 1000, part: p.id, on }); }
     }
   }
   // ---------- 工作台操作 ----------
   // {part, action:'press'|'release'}、{part, action:'set', light}、{part, action:'set', cm（null = 移走物體）}
+  // atDevMs：排定在設備時間（ms）執行，而不是收到時立刻執行（第 4 階段：讓測試的輸入時刻可重現、不受網路與排程影響）
   act(q) {
     const p = this.parts[q && q.part];
     if (!p) throw new Error(`工作台上沒有元件 ${q && q.part}`);
+    if (q.atDevMs !== undefined && q.atDevMs !== null) {
+      const at = Math.round(+q.atDevMs * 16000);
+      if (!Number.isFinite(at) || at <= this.uno.cycle) throw new Error(`排定時間 ${q.atDevMs} ms 已經過了（設備時間現在是 ${this.uno.timeMs.toFixed(1)} ms）`);
+      const once = Object.assign({}, q, { atDevMs: null });
+      this.uno.at(at, () => { try { this.act(once); } catch (e) { this.note(p.id, 'error', { error: e.message }); } });
+      return Object.assign(this.partState(p), { scheduled: +q.atDevMs });
+    }
     if (p.type === 'button' && ['press', 'release'].includes(q.action)) this.press(p, q.action === 'press');
     else if (p.type === 'ldr' && q.action === 'set' && Number.isFinite(+q.light)) { p.light = Math.max(0, Math.min(100, +q.light)); this.refreshLdr(p); this.note(p.id, 'set', { light: p.light }); }
     else if (p.type === 'ultrasonic' && q.action === 'set' && (q.cm === null || Number.isFinite(+q.cm))) { p.cm = q.cm === null ? null : Math.max(2, Math.min(400, +q.cm)); this.note(p.id, 'set', { cm: p.cm }); }

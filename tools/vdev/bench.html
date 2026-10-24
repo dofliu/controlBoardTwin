@@ -84,6 +84,7 @@ table.j th, table.j td { text-align:right; padding:4px 6px; border-bottom:1px so
 </div>
 <script>
 const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const qs = new URLSearchParams(location.search);
 let dev = qs.get('d'); const built = {}; let lastState = null;
 const post = (q) => fetch(`/api/devices/${dev}/bench`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(q) }).then(r => r.json()).then(s => { if (s && s.error) console.warn(s.error); });
@@ -203,14 +204,14 @@ function faultUpdate(el, p) {
 function render(s) {
   lastState = s; window.__bench = s;
   $('#title').textContent = `虛擬工作台 · ${s.id}`;
-  $('#meta').innerHTML = `<span>工作台 <b>${s.bench.id}</b>（${s.bench.name}）</span><span>韌體 <b>${s.firmware.name}</b></span><span>晶片時間 <b>${(s.devMs / 1000).toFixed(1)} s</b></span><span>速度 <b>${s.realtime ?? '—'}×</b> 即時</span><span>DofLab <b id="linked">${s.linked ? '已連線' : '沒有連線'}</b></span>`;
+  $('#meta').innerHTML = `<span>工作台 <b>${s.bench.id}</b>（${s.bench.name}）</span><span>韌體 <b id="fwName">${esc(s.firmware.name)}</b>${s.uploads ? `（已上傳 ${s.uploads} 次）` : ''}</span><span>晶片時間 <b>${(s.devMs / 1000).toFixed(1)} s</b></span><span>速度 <b>${s.realtime ?? '—'}×</b> 即時</span><span>DofLab <b id="linked">${s.linked ? '已連線' : '沒有連線'}</b></span>`;
   const n = $('#note'); n.hidden = !s.bench.note; n.textContent = s.bench.note || '';
   for (const p of s.bench.parts) { const k = KIND[p.type]; if (!k) continue; if (!built[p.id]) { built[p.id] = k.build(p); faultControls(built[p.id], p); } k.update(built[p.id], p); faultUpdate(built[p.id], p); }
   const f = s.faults || {}, nf = f.net, cut = s.bench.parts.filter(p => p.unplugged).map(p => p.id + ' 拔線'), stuck = s.bench.parts.filter(p => p.stuck).map(p => p.id + ' 卡住');
   const list = (nf ? [`網路：延遲 ${nf.delayMs} ± ${nf.jitterMs} ms、掉包 ${Math.round(nf.loss * 100)} %（${{ both: '兩個方向', up: '介面 → 設備', down: '設備 → 介面' }[nf.dir]}）`] : []).concat(cut, stuck);
   $('#fState').textContent = list.length ? '目前：' + list.join('；') : '（目前沒有故障）'; $('#fState').className = 'stat' + (list.length ? ' on' : '');
   $('#fStats').textContent = f.up ? `已送 介面→設備 ${f.up.frames} 筆（丟 ${f.up.dropped}）、設備→介面 ${f.down.frames} 筆（丟 ${f.down.dropped}）；重新開機 ${s.resets} 次` : `重新開機 ${s.resets} 次`;
-  $('#log').textContent = s.bench.log.slice().reverse().map(e => `${(e.devMs / 1000).toFixed(3)} s  ${e.part} ${e.action}${e.light !== undefined ? ' ' + e.light + ' %' : ''}${e.cm !== undefined ? ' ' + (e.cm === null ? '移走物體' : e.cm + ' cm') : ''}${e.bounces ? '（彈跳 ' + e.bounces + ' 次）' : ''}`).join('\n') || '（還沒有操作）';
+  $('#log').textContent = s.bench.log.slice().reverse().map(e => `${(e.devMs / 1000).toFixed(3)} s  ${e.part} ${e.action}${e.light !== undefined ? ' ' + e.light + ' %' : ''}${e.cm !== undefined ? ' ' + (e.cm === null ? '移走物體' : e.cm + ' cm') : ''}${e.bounces ? '（彈跳 ' + e.bounces + ' 次）' : ''}${e.action === 'upload' ? '：收到新程式（' + e.pages + ' 頁）' + e.firmware : ''}`).join('\n') || '（還沒有操作）';
 }
 async function loop() {
   try {
