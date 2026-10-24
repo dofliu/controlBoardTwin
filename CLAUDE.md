@@ -68,9 +68,9 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 npm ci                 # 安裝 three、blockly、avr8js、esbuild
 npm run check          # 所有 src/*.js 語法檢查（改完一定要跑）
 npm run build          # 產生 dist/
-npm run test:node      # Node 測試（目前 159 項，含第 4 階段驗收的 15 個子測試；沒有 arduino-cli 時會略過 11 項，驗收的子測試也不會執行）
-npm run test:py        # Python 測試（17 項；沒有 arduino-cli、avrdude、socat 時會略過）
-npm run test:e2e       # 建置＋打包＋瀏覽器測試（249 項，約 24 分鐘）
+npm run test:node      # Node 測試（目前 196 項，含第 4 階段驗收的 15 個子測試、第 6 階段驗收的 27 個子測試；沒有 arduino-cli 時會略過 11 項；沒有 Python 的 gpiozero／aiohttp 時略過虛擬樹莓派）
+npm run test:py        # Python 測試（20 項；沒有 arduino-cli、avrdude、socat 時會略過）
+npm run test:e2e       # 建置＋打包＋瀏覽器測試（263 項，約 25 分鐘）
 python3 e2e/e2e.py onboard v27   # 只跑部分段落：desktop breadboard teacher experiments pi ultrasonic onboard arm v27 uno vdev bench faults upload vupload vmulti vboards pideploy mobile dark
 DOFLAB_SYNC_ONLY=dist-alarm node --test tests/vdev_sync.test.js   # 第 6 階段驗收只跑某些實驗
 npm run vdev                     # 虛擬設備主機（node tools/vdev/server.js），ws://127.0.0.1:8770/dev/uno-1，工作台 http://127.0.0.1:8770/
