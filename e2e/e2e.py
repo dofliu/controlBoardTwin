@@ -480,6 +480,13 @@ async def bench_flow(p):
         check("去彈跳：在工作台頁按 4 下（每下按下與放開都有彈跳）→ 工作台上的 LED 正好切換 4 次", led['toggles'] - t0 == 4 and btn['edges'] - e0 > 8, json.dumps([led['toggles'] - t0, btn['edges'] - e0]))
         check("彈跳真的傳到 DofLab：BTN1 的量測筆數多於按放次數（8 次），行為仍只切換 4 次", m1 - m0 > 8, str(m1 - m0))
         await shots('w1_bounce_toggle.png', pg, bp)
+        # 快速點一下（100 ms，比 headless 繪圖的一幀還短）：DofLab 依按鈕量測收到的時刻推進行為，不會整個漏掉（V2.10 修正）
+        t0 = part(state(), 'LED1')['toggles']
+        for i in range(4):
+            await hold(bp, 'BTN1', 100); await bp.wait_for_timeout(350)
+        await bp.wait_for_timeout(800)
+        n = part(state(), 'LED1')['toggles'] - t0
+        check("快速點 4 下（每下 100 ms，比畫面一幀還短）→ 工作台上的 LED 也正好切換 4 次，沒有漏掉", n == 4, str(n))
         await pg.click('#simRun'); await pg.click('#hwDisc'); await pg.wait_for_timeout(300); srv.kill(); srv.wait()
 
         # ---------- 2. 接錯線：專案 D2／D13，工作台實際接 D3／D12 ----------

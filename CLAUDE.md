@@ -68,7 +68,7 @@ npm run check          # 所有 src/*.js 語法檢查（改完一定要跑）
 npm run build          # 產生 dist/
 npm run test:node      # Node 測試（目前 128 項；沒有 arduino-cli 時會略過 9 項）
 npm run test:py        # Python 測試（17 項；沒有 arduino-cli、avrdude、socat 時會略過）
-npm run test:e2e       # 建置＋打包＋瀏覽器測試（218 項，約 20 分鐘）
+npm run test:e2e       # 建置＋打包＋瀏覽器測試（219 項，約 20 分鐘）
 python3 e2e/e2e.py onboard v27   # 只跑部分段落：desktop breadboard teacher experiments pi ultrasonic onboard arm v27 uno vdev bench faults upload pideploy mobile dark
 npm run vdev                     # 虛擬設備主機（node tools/vdev/server.js），ws://127.0.0.1:8770/dev/uno-1，工作台 http://127.0.0.1:8770/
 npm run vdev -- --bench arm-3dof # 換工作台：hold-blink（預設）、hold-blink-miswired、night-light、dist-gauge、arm-3dof
@@ -86,6 +86,7 @@ CI（`.github/workflows/ci.yml`）只跑不需要 Arduino 工具鏈的部分。2
 - **E2E 不要用固定延遲取樣。** headless Chromium 的軟體繪圖一幀可能 300 ms 以上；請等狀態（`wait_for_function`）或用模擬時間（`doflab.sim.time`、`doflab.events` 的 `simT`）判斷。
 - 測試用的 port 8766／8765／8770 卡住時用 `fuser -k 8766/tcp 8765/tcp 8770/tcp`，**不要** `pkill -f`。
 - avr8js 0.20.1 寫入 UCSR0B 會清掉 RXC，`VirtualUno.boot()` 已照實體晶片修正（否則約每 0.5 秒遺失一個收到的位元組）；空接、開了內部上拉的腳位 avr8js 讀成 LOW，也已修正成 HIGH（V2.9）。升級 avr8js 時要重新確認這兩點。
+- 真機模式的按鈕量測依收到的時刻排隊（`noteButtonEvent`／`feedButtons`），模擬推進到那一毫秒才生效；不要改回「每一幀讀一次」，否則畫面慢時短按會被漏掉。
 - 手臂連線授權後**不要再記姿態**：改動作序列＝改行為，會撤銷寫入授權（產品規則）。E2E 要先記好姿態再連線。
 - 比對兩個介面時不要用固定的時間門檻：headless 繪圖下 DofLab 一幀可能 0.3–0.6 秒，手臂命令每一幀送一次。等狀態（兩邊都到達同一個姿態），並比對設備端收到的命令筆數與內容。
 - Python 的 Playwright 版本要和 `/opt/pw-browsers` 的瀏覽器版本一致（例如系統的 Node 版 playwright 1.63.0 → `pip install playwright==1.63.0`），否則會要求下載瀏覽器。

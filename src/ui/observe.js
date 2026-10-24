@@ -66,18 +66,28 @@
   };
 
   // 前進 ms 毫秒的模擬時間（1 ms 步進，與產生的程式等價測試一致）
-  P.advance = function (ms) {
+  // 真機的按鈕量測：依收到的時刻排隊，模擬推進到那個時刻才生效。畫面很慢（一幀幾百 ms）時，短按也不會被整個跳過
+  P.noteButtonEvent = function (e) {
+    if (this.twin.mode === 'sim' || !/\.pressed$/.test(e.name)) return;
+    const q = this.hw.btnQ = this.hw.btnQ || []; q.push({ name: e.name, v: !!e.v, at: performance.now() }); if (q.length > 500) q.shift();
+  };
+  P.feedButtons = function (until) {
+    const q = this.hw.btnQ || [], fed = this.hw.fed = this.hw.fed || {};
+    while (q.length && q[0].at <= until) { const x = q.shift(); fed[x.name] = x.v; }
+  };
+  P.advance = function (ms, wall) {
     const e = this.sim.engine; const mode = this.twin.mode; const p = this.p;
     const bnd = this.analysis.bindings; const board = DL.boards[p.board.type]; const armIds = this.armServoIds ? this.armServoIds() : [];
     const armAuto = !!(p.arm && this.arm && this.arm.mode === 'auto' && this.armHasSeq());
     for (let i = 0; i < ms; i++) {
       this.sim.time++;
       const t = this.sim.time;
+      if (mode !== 'sim') this.feedButtons(wall ? wall.from + (wall.to - wall.from) * (i + 1) / ms : Infinity);
       if (armAuto) this.armSeqTick(t);   // 手臂行為序列（與產生的程式同一套規則）
       for (const c of p.components) {
         if (isBtn(c)) {
           if (mode === 'sim') e.setButton(c.id, !!this.sim.held[c.id]);
-          else { const s = this.twin.view(c.id + '.pressed'); e.setButton(c.id, s.quality === 'ok' ? !!(s.measured && s.measured.v) : false); }
+          else { const s = this.twin.view(c.id + '.pressed'); const f = (this.hw.fed || {})[c.id + '.pressed']; e.setButton(c.id, s.quality === 'ok' ? (f !== undefined ? f : !!(s.measured && s.measured.v)) : false); }
         } else if (c.type === 'LDR') {
           if (mode === 'sim') e.setLightPercent(c.id, this.sim.light[c.id]);
           else { const s = this.twin.view(c.id + '.level'); if (s.quality === 'ok' && s.measured) e.setAdcRaw(c.id, s.measured.raw !== undefined ? s.measured.raw : s.measured.v); }
@@ -150,9 +160,10 @@
     if (this.armTick) this.armTick(dtFrame);
     if (this.sim.running) {
       if (this.sim.last === null) this.sim.last = now;
+      const from = this.sim.last;
       this.sim.acc = (this.sim.acc || 0) + Math.min(1000, now - this.sim.last) * this.sim.speed; this.sim.last = now;   // 畫面很慢（軟體繪圖）時也跟上真實時間；分頁在背景太久才截斷
       const step = Math.floor(this.sim.acc); this.sim.acc -= step;
-      if (step > 0) this.advance(step);
+      if (step > 0) this.advance(step, { from, to: now });   // 這一幀涵蓋的實際時間：真機的按鈕變化依收到的時刻放進對應的那一毫秒
     }
     // 波形取樣（牆上時間軸，像示波器）
     if (!this._lastSample || now - this._lastSample > 30) { this._lastSample = now; this.sample(now); }
@@ -315,7 +326,7 @@
     else if (e.type === 'disconnected') this.log('e', `連線中斷：${e.reason || ''}${e.dropped.length ? `；${e.dropped.length} 個未確認命令已作廢，不會重送` : ''}`);
     else if (e.type === 'authorized') this.log('s', `已授權受控寫入：${e.outputs.join('、')}`);
     else if (e.type === 'warn') this.log('w', e.msg);
-    else if (e.type === 'measure') this.noteMeasure(e);
+    else if (e.type === 'measure') { this.noteMeasure(e); this.noteButtonEvent(e); }
     else if (e.type === 'reboot') this.log('e', `設備重新開機（${e.reason}）：已撤銷寫入授權、回到唯讀${e.dropped.length ? `；${e.dropped.length} 個未確認命令作廢，不會重送` : ''}。開機前的量測已標為過期。`);
   };
   // 核對接線用：每一筆量測都比對上一筆（不靠畫面取樣，快速按放也不會漏掉）
@@ -413,6 +424,7 @@
       if (drv.port) this.hw.lastPort = drv.port;   // 記住連接埠：之後可以不經選擇視窗直接重新連線（瀏覽器已授權過）
       if (this.sim.running) this.toggleRun();
       this.hw.driver = drv; this.hw.connSrc = src; this.hw.vdevConnUrl = src === 'virtual' ? url : null; this.hw.identity = r.identity; this.hw.checks = {}; this.hw.sawChange = {}; this.hw.lastSeen = {};
+      this.hw.btnQ = []; this.hw.fed = {};
       this.twin.connected(r.deviceId, r.info, { virtual: !!r.virtual });
       this.defineSignals();
       const touch = Object.values(this.analysis.bindings).filter(b => b.role === 'touch').map(b => b.comp);
