@@ -1,4 +1,4 @@
-# DofLab V2.9 原型
+# DofLab V2.10 原型
 
 從電路配置、行為設計、模擬測試，到真實設備同步的教學與開發平台。本版依《DofLab 規劃文件 v0.1》重新開發。
 
@@ -71,7 +71,26 @@ curl -X POST -d '{"part":"LDR1","action":"set","light":30}' http://127.0.0.1:877
 
 **手臂的兩個介面同步**：用 `--bench arm-3dof` 啟動，DofLab 載入「三軸機械手臂」、確認手臂設定、連線並授權寫入，在「手臂」頁勾選「把手臂命令送到設備」。拖曳或執行序列時，工作台頁上的手臂跟著 D9／D10／D11 的脈寬轉動。工作台用自己的方式換算（脈寬 → 伺服角 → 關節角 → 末端位置），不用 DofLab 的程式；兩邊停下時的關節角相差在 1.5° 內。動作序列（姿態）要在連線授權**之前**記好：改序列等於改行為，會撤銷寫入授權。
 
-目前的限制：只在本機、沒有通行碼；同時只接受一個連線；換工作台要重新啟動主機。後續階段（故障與網路注入、上傳程式到虛擬 Uno、多人觀看、虛擬樹莓派與 ESP32、雲端部署）見 `docs/VIRTUAL_DEVICE_PLAN.md`。
+**故障注入（V2.10）**：工作台頁上方的「故障注入」面板，或 `POST /api/devices/uno-1/fault`，用來看數位孿生遇到問題時怎麼反應：
+
+| 故障 | 怎麼做 | DofLab 應有的反應（都有自動測試） |
+|---|---|---|
+| 網路延遲 200 ± 100 ms | 面板「網路延遲」「抖動」→ 套用 | 量測與回讀晚到，但順序正確；網路來回時間跟著變大 |
+| 掉包（可選方向） | 面板「掉包（%）」與「方向」 | 遺失的命令在孿生狀態表標示「逾時未確認・不自動重送」，網路恢復後也不補送 |
+| 中斷連線 | 「中斷網路連線」 | 回到模擬；未確認命令作廢、不重送；量測標為過期 |
+| 設備重置／瞬間斷電 | 「按 RESET 鍵」「瞬間斷電（brown-out）」 | 從韌體的開機訊息偵測到重新開機 → 撤銷寫入授權、回到唯讀、恢復唯讀觀測；不重送 |
+| 感測器卡住 | 超音波卡片「模組卡住」（ECHO 一直是高電位） | 約 2.5 秒沒有新讀值就標示「已過期」，連線本身仍正常 |
+| 拔掉一條線 | 每個元件卡片的「拔掉 … 的線」 | 按了按鈕看不到變化（核對接線失敗）；LED 命令有回讀但 LED 不亮 |
+
+```bash
+curl -X POST -d '{"net":{"delayMs":200,"jitterMs":100,"loss":0.05,"dir":"both"}}' http://127.0.0.1:8770/api/devices/uno-1/fault   # null 清除
+curl -X POST -d '{"fault":"reset"}' http://127.0.0.1:8770/api/devices/uno-1/fault          # 也可以 brownout、disconnect
+curl -X POST -d '{"part":"BTN1","action":"unplug"}' http://127.0.0.1:8770/api/devices/uno-1/bench   # plug 接回；超音波另有 stuck／unstuck
+```
+
+注意：網路中斷時，設備上的輸出會停在最後的命令（Firmata 本身沒有「斷線就關掉輸出」的保護）；DofLab 回到模擬，但不會也不能去關掉設備上已經亮著的 LED。
+
+目前的限制：只在本機、沒有通行碼；同時只接受一個連線；換工作台要重新啟動主機。後續階段（上傳程式到虛擬 Uno、多人觀看、虛擬樹莓派與 ESP32、雲端部署）見 `docs/VIRTUAL_DEVICE_PLAN.md`。
 
 ### Raspberry Pi 4B 真機同步
 
@@ -208,7 +227,7 @@ src/core/      與介面無關的核心（Node 與瀏覽器共用同一份檔案
 src/drivers/   transport.js（傳輸層：USB 序列埠、虛擬設備的 WebSocket）、Firmata 與 Pi 閘道（WebSocket）驅動；stk500.js（瀏覽器上傳到 Uno）
 src/ui/        Three.js 場景與擬真模型（models.js）、Blockly 積木、五個分頁、手臂（arm.js）、上傳燒錄（upload.js）、教師模式（teacher.js）
 tools/         doflab_server.py（編譯服務）、pi_bridge.py（Pi 閘道 v2）、firmware/DofLabFirmata
-tools/vdev/    虛擬設備主機：server.js（WebSocket＋HTTP）、device.js（每台設備一個 worker）、bench.js（工作台的元件模型）、bench.html（工作台頁）、benches/（工作台預設）、avrsim.js（虛擬 Uno：執行真實 hex，含 Optiboot 與自我燒錄；測試也用它）
+tools/vdev/    虛擬設備主機：server.js（WebSocket＋HTTP）、netfault.js（網路故障注入）、device.js（每台設備一個 worker）、bench.js（工作台的元件模型）、bench.html（工作台頁）、benches/（工作台預設）、avrsim.js（虛擬 Uno：執行真實 hex，含 Optiboot 與自我燒錄；測試也用它）
 tests/avr/     pty_uno.js（讓 avrdude 經 pty 上傳到虛擬 Uno）
 tests/         Node 單元與等價測試、Python 測試
 e2e/           Playwright 端到端測試
@@ -221,9 +240,9 @@ e2e/           Playwright 端到端測試
 ## 測試
 
 ```bash
-node --test --test-concurrency=1 tests/*.test.js     # 119 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
+node --test --test-concurrency=1 tests/*.test.js     # 128 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
 python3 -m unittest discover -s tests -p "test_*.py" # 17 項（上傳端到端需要 avrdude 與 socat）
-python3 e2e/e2e.py                                   # 201 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench）
+python3 e2e/e2e.py                                   # 218 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults）
 ```
 
 ### 示範影片

@@ -2,11 +2,11 @@
 
 DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Raspberry Pi 4B）：3D 電路配置 → 視覺積木行為 → 產生程式（C++／Python）→ 模擬 → 真機同步（數位孿生）。依《DofLab 規劃文件 v0.1》開發（規劃文件本身不在 repo 裡；需要時請使用者提供，放到 `docs/`）。
 
-目前版本：**V2.9 原型**（2026-10-24）。使用者是劉老師，介面、註解、文件、回覆一律用**繁體中文**。
+目前版本：**V2.10 原型**（2026-10-24）。使用者是劉老師，介面、註解、文件、回覆一律用**繁體中文**。
 
 ## 下一個工作
 
-**雲端虛擬硬體第 3 階段（故障與網路注入）**：延遲、掉包、中斷、設備重置、感測器卡住、拔線，§4.4 每一列一個自動測試。規劃與分階段驗收在 `docs/VIRTUAL_DEVICE_PLAN.md`。已完成：第 1 階段（V2.8，虛擬 Uno 經 WebSocket：`tools/vdev/`、`src/drivers/transport.js`）、第 2 階段（V2.9，工作台與工作台頁：`tools/vdev/bench.js`、`bench.html`、`benches/`；E2E `bench` 段落同時開 DofLab 與工作台頁）。
+**雲端虛擬硬體第 4 階段（上傳與序列埠）**：STK500 經 WebSocket 上傳到虛擬 Uno；`Serial.println` 串流回介面；所有支援 Uno 的引導實驗，產生的程式上傳後在虛擬設備上的行為和介面模擬一致。規劃與分階段驗收在 `docs/VIRTUAL_DEVICE_PLAN.md`。已完成：第 1 階段（V2.8，虛擬 Uno 經 WebSocket：`tools/vdev/`、`src/drivers/transport.js`）、第 2 階段（V2.9，工作台與工作台頁：`tools/vdev/bench.js`、`bench.html`、`benches/`）、第 3 階段（V2.10，故障與網路注入：`tools/vdev/netfault.js`、工作台頁的「故障注入」、`/fault` API；E2E `faults` 段落）。待使用者決定：斷線時設備端的輸出保護（ACCEPTANCE V2.10 第 5 點）。
 
 ---
 
@@ -40,7 +40,7 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 | `src/core/` | 與畫面無關的核心，**瀏覽器與 Node 共用**：`boards`（板型、腳位能力）、`components`（元件型錄）、`breadboard`、`project`（專案格式、`inputsHash`）、`netlist`（電路檢查、綁定）、`behavior`（行為 IR、驗證、摘要）、`engine`（模擬引擎）、`codegen`（C++／Python 產生器，`GENERATOR_VERSION`）、`autowire`（接線助手）、`routing`（整齊走線）、`experiments`（引導實驗）、`arm`（三軸手臂 IK、動作序列 `seqPlan／seqStep`）、`twin`（Twin Core 五層狀態） |
 | `src/ui/` | 只在瀏覽器：`app`（主程式、配置、行為、程式頁、可收合卡片、HUD）、`scene`（Three.js 3D 場景）、`models`（程序化 3D 模型）、`observe`（模擬、觀測、真機連線）、`arm`（手臂頁）、`blocks`（Blockly）、`upload`、`teacher`、`main`（啟動與版本狀態表）、`body.html`、`styles.css` |
 | `src/drivers/` | `transport.js`：傳輸層 `WebSerialTransport`（含 `DL.serial` 連接埠占用處理）、`WebSocketTransport`（虛擬設備）；`drivers.js`：`FirmataDriver`（Firmata，只透過傳輸物件收送位元組）、`PiBridgeDriver`（WebSocket）、`driverFor(board, source)`；`stk500.js`：瀏覽器上傳 Uno |
-| `tools/` | `doflab_server.py`（本機編譯／上傳服務，aiohttp，port 8766）、`pi_bridge.py`（樹莓派閘道，`--mock` 用模擬腳位，port 8765）、`firmware/DofLabFirmata/`（DofLabFirmata 1.1，含超音波擴充 `F0 62`／`F0 63`）、`vdev/`（虛擬設備主機，Node，port 8770：`server.js` WebSocket＋HTTP、`device.js` 每台一個 worker、`bench.js` 工作台的元件模型、`bench.html` 工作台頁、`benches/*.json` 工作台預設（`--bench`）、`avrsim.js` avr8js 虛擬 Uno，跑真的 .hex、含 Optiboot；測試也用它） |
+| `tools/` | `doflab_server.py`（本機編譯／上傳服務，aiohttp，port 8766）、`pi_bridge.py`（樹莓派閘道，`--mock` 用模擬腳位，port 8765）、`firmware/DofLabFirmata/`（DofLabFirmata 1.1，含超音波擴充 `F0 62`／`F0 63`）、`vdev/`（虛擬設備主機，Node，port 8770：`server.js` WebSocket＋HTTP、`netfault.js` 網路故障注入、`device.js` 每台一個 worker、`bench.js` 工作台的元件模型、`bench.html` 工作台頁、`benches/*.json` 工作台預設（`--bench`）、`avrsim.js` avr8js 虛擬 Uno，跑真的 .hex、含 Optiboot；測試也用它） |
 | `tests/` | Node 測試 `*.test.js`、Python 測試 `test_*.py`、`host/`（g++ 主機替身：Arduino.h、Servo.h、harness.cpp）、`avr/pty_uno.js`（avrdude 經 pty 上傳到虛擬 Uno）、`fixtures/`（韌體 .hex） |
 | `e2e/` | `e2e.py`（Playwright 瀏覽器測試，可只跑某些段落）、`virtual_entry.js`（瀏覽器內的虛擬 Uno，用 esbuild 打包成 `virtual_uno.bundle.js`，不進 git） |
 | `docs/` | 規劃文件 |
@@ -52,7 +52,8 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 - **程式與模擬一致**：模擬引擎、產生的 C++、產生的 Python 用同一套時序規則（1 ms 一輪、去彈跳、閃爍相位、超音波每 60 ms、手臂序列每 1 ms 且用 32 位元浮點數）。改其中一邊就要改另外兩邊，並跑等價測試（`tests/equivalence.test.js`、`arm_seq.test.js`、`ultrasonic.test.js`、`onboard.test.js`、Python 的 `test_pi_codegen.py`）。
 - **改了產生器的輸出就調 `GENERATOR_VERSION`**（`src/core/codegen.js`）；`inputsHash` 會讓舊程式顯示「過期」。
 - **行為確認**：產生程式前，使用者要先在行為頁確認摘要；接線、參數、行為一改就要重新確認。手臂專案改成確認「手臂設定」。
-- **Twin Core 五層**：target／commanded／ack／measured／simulated 不混用；斷線不重送未確認的命令；重連一律從唯讀開始。
+- **Twin Core 五層**：target／commanded／ack／measured／simulated 不混用；斷線不重送未確認的命令；重連一律從唯讀開始。設備重新開機（`twin.rebooted()`，由驅動從「沒問過的韌體名稱」判斷）視同斷線處理；`define(name, {periodic: true})` 的訊號超過 staleMs 沒有新讀值就過期。
+- **回讀（ACK）配對**：`FirmataDriver.lastCmdByPin` 是每個腳位一條在途佇列，回讀給最早一個值相同的命令；畫面上最新命令未確認時不顯示上一個命令的確認。
 - **虛擬設備一律標示**：`twin.connected(id, info, {virtual: true})`、`DL.modeLabel(mode, virtual)`；介面各處（模式標籤、量測欄、3D 標籤、事件紀錄）都要分得出虛擬與實體。工作台（`tools/vdev/bench.js`）**不可以** require `src/core/engine.js`。
 - **3D 場景只在有變化時重畫**（`scene.dirty`，最多 1 秒補畫一次）：改了 3D 物件要設 `this.dirty = true`。
 - **手臂**：三顆伺服裝在手臂模型的關節上（配置頁與手臂頁共用 `DL.models.arm`，手臂頁借用配置頁場景的 `root`）。兩種模式：自動（行為頁的動作序列，按「▶ 執行」）與手動（拖曳、滑桿、輸入）。
@@ -65,10 +66,10 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 npm ci                 # 安裝 three、blockly、avr8js、esbuild
 npm run check          # 所有 src/*.js 語法檢查（改完一定要跑）
 npm run build          # 產生 dist/
-npm run test:node      # Node 測試（目前 119 項；沒有 arduino-cli 時會略過 9 項）
+npm run test:node      # Node 測試（目前 128 項；沒有 arduino-cli 時會略過 9 項）
 npm run test:py        # Python 測試（17 項；沒有 arduino-cli、avrdude、socat 時會略過）
-npm run test:e2e       # 建置＋打包＋瀏覽器測試（201 項，約 18 分鐘）
-python3 e2e/e2e.py onboard v27   # 只跑部分段落：desktop breadboard teacher experiments pi ultrasonic onboard arm v27 uno vdev bench upload pideploy mobile dark
+npm run test:e2e       # 建置＋打包＋瀏覽器測試（218 項，約 20 分鐘）
+python3 e2e/e2e.py onboard v27   # 只跑部分段落：desktop breadboard teacher experiments pi ultrasonic onboard arm v27 uno vdev bench faults upload pideploy mobile dark
 npm run vdev                     # 虛擬設備主機（node tools/vdev/server.js），ws://127.0.0.1:8770/dev/uno-1，工作台 http://127.0.0.1:8770/
 npm run vdev -- --bench arm-3dof # 換工作台：hold-blink（預設）、hold-blink-miswired、night-light、dist-gauge、arm-3dof
 python3 dist/doflab_server.py    # 本機編譯服務，開 http://localhost:8766

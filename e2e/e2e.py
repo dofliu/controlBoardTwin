@@ -595,6 +595,132 @@ async def bench_flow(p):
         await b.close()
         if srv: srv.kill()
 
+async def faults_flow(p):
+    """雲端虛擬硬體第 3 階段：故障與網路注入（規劃文件 §4.4，每一列至少一項）。
+    故障都在工作台頁（第二個介面）的「故障注入」面板上用滑鼠觸發；檢查的是 DofLab 畫面上的反應。"""
+    import urllib.request
+    from PIL import Image
+    VPORT = 8770; api = f'http://127.0.0.1:{VPORT}/api/devices/uno-1'
+    def start(bench):
+        pr = subprocess.Popen(['node', str(ROOT / 'tools' / 'vdev' / 'server.js'), '--port', str(VPORT), '--bench', bench], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(VPORT); return pr
+    def state(): return json.loads(urllib.request.urlopen(api, timeout=5).read())
+    def part(st, pid): return next(x for x in st['bench']['parts'] if x['id'] == pid)
+    async def shots(name, pg, bp):
+        await asyncio.gather(pg.screenshot(path=str(SHOTS / '_l.png')), bp.screenshot(path=str(SHOTS / '_r.png')))
+        a, b = Image.open(SHOTS / '_l.png'), Image.open(SHOTS / '_r.png'); out = Image.new('RGB', (a.width + b.width + 12, max(a.height, b.height)), (120, 110, 170)); out.paste(a, (0, 0)); out.paste(b, (a.width + 12, 0)); out.save(SHOTS / name)
+        os.remove(SHOTS / '_l.png'); os.remove(SHOTS / '_r.png')
+    async def hold(bp, pid, ms):
+        h = await bp.locator(f'#hold-{pid}').bounding_box()
+        await bp.mouse.move(h['x'] + h['width'] / 2, h['y'] + h['height'] / 2); await bp.mouse.down(); await bp.wait_for_timeout(ms); await bp.mouse.up()
+    async def net(bp, delay=0, jitter=0, loss=0, dir='both'):
+        await bp.fill('#netDelay', str(delay)); await bp.fill('#netJitter', str(jitter)); await bp.fill('#netLoss', str(loss)); await bp.select_option('#netDir', dir); await bp.click('#netApply')
+        await bp.wait_for_function("document.querySelector('#fState').textContent.includes('網路')", timeout=3000)
+    async def wf(pg, js, timeout=6000):
+        try: await pg.wait_for_function(js, timeout=timeout); return True
+        except Exception: return False
+    async def connect(pg):
+        await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+        if await pg.locator('input[name="hwSrc"][value="virtual"]').count(): await pg.check('input[name="hwSrc"][value="virtual"]')
+        await pg.fill('#vdevUrl', f'ws://127.0.0.1:{VPORT}/dev/uno-1'); await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=20000); await pg.wait_for_timeout(300)
+    async def authorize(pg):
+        for cb in await pg.locator('[data-chk]').all(): await cb.check()
+        await pg.click('#hwAuth'); await pg.wait_for_function("doflab.twin.mode==='hw-control'", timeout=3000)
+    def load(exp):
+        return f"(()=>{{const r=DL.experiments.solved('{exp}','uno'); doflab.load(DL.project.clone(r.project,{{name:'故障 {exp}',origin:{{kind:'custom'}},lock:{{components:false,behavior:false,board:false}}}})); }})()"
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 940})
+    errs = []; srv = None
+    try:
+        pg = await ctx.new_page(); pg.on('pageerror', lambda e: errs.append(str(e)))
+        bp = await ctx.new_page(); bp.on('pageerror', lambda e: errs.append('工作台頁：' + str(e))); await bp.set_viewport_size({'width': 900, 'height': 940})
+        bp.on('dialog', lambda d: asyncio.ensure_future(d.dismiss()))
+        await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p")
+        srv = start('hold-blink'); await bp.goto(f'http://127.0.0.1:{VPORT}/'); await bp.wait_for_function("window.__bench && document.querySelector('#hold-BTN1')")
+        check("工作台頁有「故障注入」面板：網路延遲、掉包、RESET、瞬間斷電、中斷連線，每個元件都有「拔線」", await bp.locator('#netApply').count() == 1 and await bp.locator('#fBrownout').count() == 1 and await bp.locator('[data-part="BTN1"] [data-k="wire"]').count() == 1)
+        await ev(pg, load('toggle-led')); await pg.click('#t-behavior'); await pg.wait_for_timeout(300); await pg.click('#btnConfirm')
+
+        # ---------- 1. 延遲 200 ± 100 ms ----------
+        await net(bp, 200, 100)
+        await connect(pg)
+        ok = await wf(pg, "(t=>t && t.rtt>=200)(doflab.hw.driver.transport) && /網路來回 \\d{3,}/.test(document.querySelector('#vdevNet').textContent)", 8000)
+        check("延遲 200 ± 100 ms：仍能連線辨識；DofLab 顯示的網路來回時間 ≥ 200 ms", ok and 'DofLabFirmata' in await pg.inner_text('#hwBody'), await pg.inner_text('#vdevNet') if await pg.locator('#vdevNet').count() else '')
+        await authorize(pg); await pg.click('#simRun'); await pg.wait_for_timeout(300)
+        t0 = time.monotonic(); await hold(bp, 'BTN1', 250)
+        ok = await wf(pg, "(v=>v.ack && v.ack.v===1 && v.ack.matches)(doflab.twin.view('LED1.state'))", 8000); dt = time.monotonic() - t0
+        await bp.wait_for_function("window.__bench.bench.parts.find(p=>p.id==='LED1').on", timeout=4000)
+        check("延遲時：在工作台頁按一下 → LED 亮（工作台），DofLab 收到一致的回讀，而且比沒有延遲時晚（> 0.4 秒來回）", ok and dt > 0.4, str(round(dt, 2)))
+        await hold(bp, 'BTN1', 250)
+        ok = await wf(pg, "(v=>v.ack && v.ack.v===0 && v.ack.matches)(doflab.twin.view('LED1.state'))", 8000)
+        check("延遲時：再按一下 → LED 熄滅，回讀的順序正確（最後是 0，沒有被前一個回讀蓋掉）", ok and not part(state(), 'LED1')['on'])
+        await shots('f1_delay.png', pg, bp)
+
+        # ---------- 2. 掉包：介面 → 設備全部遺失 ----------
+        await net(bp, 0, 0, 100, 'up'); await bp.wait_for_timeout(200)
+        w0 = state()['traffic']['writeCount']
+        await hold(bp, 'BTN1', 250)
+        ok = await wf(pg, "document.querySelector('#twinRows').textContent.includes('逾時未確認')", 6000)
+        check("掉包：命令在路上遺失 → DofLab 的孿生狀態表標示「逾時未確認・不自動重送」", ok and await ev(pg, "doflab.twin.pending.length") == 1)
+        await shots('f2_loss.png', pg, bp)
+        await bp.click('#netClear'); await bp.wait_for_timeout(1800)
+        st = state()
+        check("網路恢復後，遺失的命令沒有被補送（設備端寫入筆數不變、工作台的 LED 仍不亮）", st['traffic']['writeCount'] == w0 and not part(st, 'LED1')['on'] and await ev(pg, "doflab.twin.pending.length") == 1, json.dumps([w0, st['traffic']['writeCount']]))
+
+        # ---------- 3. 連線中斷 ----------
+        await bp.click('#fDisconnect')
+        ok = await wf(pg, "doflab.twin.mode==='sim' && doflab.twin.conn.state==='lost'", 6000)
+        hw = await pg.inner_text('#hwBody')
+        check("中斷連線：DofLab 回到模擬，剛才未確認的 1 個命令作廢、不會重送，量測標為過期", ok and '1 個未確認命令已作廢' in hw and await ev(pg, "doflab.twin.quality('BTN1.pressed')") == 'stale' and '連線中斷' in await pg.inner_text('#connPill'), hw[:200])
+        await shots('f3_disconnect.png', pg, bp)
+
+        # ---------- 4. 工作台拔掉一條線 ----------
+        await connect(pg)
+        check("重新連線從唯讀開始，設備端沒有收到舊命令", await ev(pg, "doflab.twin.mode") == 'hw-read' and state()['traffic']['writeCount'] == 0)
+        await bp.click('[data-part="BTN1"] [data-k="wire"]'); await bp.wait_for_function("window.__bench.bench.parts.find(p=>p.id==='BTN1').unplugged")
+        await hold(bp, 'BTN1', 400); await bp.wait_for_timeout(300); await hold(bp, 'BTN1', 400); await pg.wait_for_timeout(1000)
+        check("拔掉 BTN1 的線：在工作台頁按了兩次，DofLab 的核對接線仍是「等待變化」（核對接線失敗）", '等待變化' in await pg.inner_text('#saw-BTN1') and await ev(pg, "doflab.twin.view('BTN1.pressed').measured.v") is False)
+        await shots('f4_unplug.png', pg, bp)
+        await bp.click('[data-part="BTN1"] [data-k="wire"]'); await bp.wait_for_function("!window.__bench.bench.parts.find(p=>p.id==='BTN1').unplugged")
+        await hold(bp, 'BTN1', 400)
+        check("接回後按一下：DofLab 顯示「已偵測到變化」", await wf(pg, "document.querySelector('#saw-BTN1').textContent.includes('已偵測到變化')", 5000))
+
+        # ---------- 5. 設備重置（RESET）與瞬間斷電 ----------
+        await authorize(pg); await pg.click('#simRun'); await pg.wait_for_timeout(500)
+        for k in range(3):   # 按一下切換：按到工作台的 LED 亮為止（切換狀態接著前面的操作）
+            if part(state(), 'LED1')['on']: break
+            await hold(bp, 'BTN1', 250); await bp.wait_for_timeout(600)
+        await wf(pg, "(v=>v.ack && v.ack.v===1)(doflab.twin.view('LED1.state'))", 5000)
+        on0 = part(state(), 'LED1')['on']; w0 = state()['traffic']['writeCount']
+        await bp.click('#fReset')
+        ok = await wf(pg, "doflab.twin.mode==='hw-read' && doflab.events.some(e=>/設備重新開機/.test(e.text))", 6000)
+        pill = await pg.inner_text('#modePill')
+        check("按 RESET：DofLab 偵測到重新開機 → 撤銷寫入授權、回到「虛擬設備 · 唯讀」、模擬暫停，事件紀錄寫明原因", on0 and ok and pill.endswith('虛擬設備 · 唯讀') and not await ev(pg, "doflab.sim.running"), pill)
+        st = state()
+        check("重新開機後：晶片的 D13 回到輸入、工作台的 LED 熄滅，DofLab 沒有重送任何命令", st['pins']['13'] == 'input' and not part(st, 'LED1')['on'] and st['traffic']['writeCount'] == w0)
+        await shots('f5_reboot.png', pg, bp)
+        await hold(bp, 'BTN1', 300)
+        check("重新開機後唯讀觀測自動恢復：在工作台頁按 BTN1，DofLab 量到按下", await wf(pg, "doflab.twin.log.some(e=>e.type==='measure' && e.name==='BTN1.pressed' && e.v===true && e.t > (doflab.twin.log.filter(x=>x.type==='reboot').pop()||{t:0}).t)", 5000))
+        await authorize(pg)
+        await bp.click('#fBrownout')
+        check("瞬間斷電（brown-out）：一樣偵測到重新開機、撤銷授權回到唯讀", await wf(pg, "doflab.twin.mode==='hw-read' && doflab.twin.log.filter(e=>e.type==='reboot').length>=2", 6000))
+        await pg.click('#hwDisc'); await pg.wait_for_timeout(300); srv.kill(); srv.wait()
+
+        # ---------- 6. 感測器卡住 ----------
+        srv = start('dist-gauge'); await bp.goto(f'http://127.0.0.1:{VPORT}/'); await bp.wait_for_function("window.__bench && document.querySelector('#us-US1')")
+        await ev(pg, load('dist-gauge')); await pg.click('#t-behavior'); await pg.wait_for_timeout(300); await pg.click('#btnConfirm')
+        await connect(pg)
+        await bp.locator('#us-US1').fill('30'); await bp.locator('#us-US1').dispatch_event('input')
+        await wf(pg, "(v=>v.measured && Math.abs(v.measured.v-30)<=1 && v.quality==='ok')(doflab.twin.view('US1.distance'))", 5000)
+        await bp.click('[data-part="US1"] [data-k="stuck"]')
+        ok = await wf(pg, "doflab.twin.quality('US1.distance')==='stale' && document.querySelector('#twinRows').textContent.includes('已過期')", 8000)
+        check("超音波模組卡住（韌體不再回報）：約 2.5 秒後 DofLab 把距離標為「已過期」，連線本身仍正常", ok and await ev(pg, "doflab.twin.conn.state") == 'connected')
+        await shots('f6_stuck.png', pg, bp)
+        await bp.click('[data-part="US1"] [data-k="stuck"]')
+        check("模組恢復：距離又是「有效」", await wf(pg, "doflab.twin.quality('US1.distance')==='ok'", 6000))
+        await pg.click('#hwDisc')
+        check("故障流程沒有頁面錯誤（兩個介面）", not errs, "; ".join(errs[:3]))
+    finally:
+        await b.close()
+        if srv: srv.kill()
+
 async def breadboard_flow(p):
     b = await p.chromium.launch(args=ARGS)
     ctx = await b.new_context(viewport={'width': 1440, 'height': 940})
@@ -1144,6 +1270,7 @@ async def main():
             if on('uno'): await uno_virtual(p)
             if on('vdev'): await vdev_flow(p)
             if on('bench'): await bench_flow(p)
+            if on('faults'): await faults_flow(p)
             if on('upload'): await upload_flow(p)
             if on('pideploy'): await pi_deploy(p)
             if on('mobile'): await mobile(p)

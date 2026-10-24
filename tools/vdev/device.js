@@ -2,7 +2,7 @@
 // 由 server.js 放在自己的 worker thread 裡執行（每台設備一個），晶片模擬不會卡住網路。
 // 時間：晶片時間以 1 倍速對齊實際時間；CPU 跟不上時晶片時間會落後（state().realtime 顯示比例），不會跳過指令。
 const fs = require('fs'); const path = require('path');
-const { VirtualUno } = require('./avrsim');
+const { VirtualUno, RESET } = require('./avrsim');
 const { Bench, DEFAULT_BENCH } = require('./bench');
 
 const DEFAULT_HEX = path.join(__dirname, '..', '..', 'tests', 'fixtures', 'DofLabFirmata-uno.hex');
@@ -65,7 +65,7 @@ class VirtualDevice {
   signals(s) {
     if (s && typeof s.dtr === 'boolean') { if (s.dtr && this.dtr === false) this.reset('DTR 觸發重置（與 Arduino IDE 開啟序列埠相同）'); this.dtr = s.dtr; }
   }
-  reset(why) { this.uno.reset(); this.resets++; this.event({ kind: 'reset', text: '虛擬晶片重新啟動：' + why }); }
+  reset(why, flags) { this.uno.reset(flags); this.resets++; this.event({ kind: 'reset', text: '虛擬晶片重新啟動：' + why }); }
   event(e) { e.devMs = Math.round(this.uno.timeMs); this.onEvent && this.onEvent(e); }
   link() { this.links++; this.linked = true; this.sniff.reset(); this.dtr = null; }
   unlink() { this.linked = false; }
@@ -97,6 +97,9 @@ class VirtualDevice {
     if (q.op === 'link') { this.link(); return this.hello(); }
     if (q.op === 'unlink') { this.unlink(); return {}; }
     if (q.op === 'signals') { this.signals(q); return {}; }
+    // 故障注入（第 3 階段）：按 RESET 鍵、電壓瞬間掉太低（brown-out）。晶片重新開機，快閃記憶體裡的韌體不變
+    if (q.op === 'fault' && q.fault === 'reset') { this.reset('有人按了 RESET 鍵（故障注入）', RESET.EXTRF); return this.state(); }
+    if (q.op === 'fault' && q.fault === 'brownout') { this.reset('電壓瞬間掉太低（brown-out，故障注入）', RESET.BORF); return this.state(); }
     throw new Error('未知的查詢 ' + q.op);
   }
   hello() { return { kind: 'virtual', board: this.board, device: this.id, firmware: this.firmware, bench: this.bench.spec.id, benchName: this.bench.spec.name, clock: 'virtual', speed: this.speed, mcu: 'ATmega328P（avr8js 模擬）' }; }

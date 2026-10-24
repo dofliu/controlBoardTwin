@@ -30,7 +30,7 @@
   P.defineSignals = function () {
     for (const c of this.p.components) {
       const s = sigOf(c); if (!s) continue;
-      this.twin.define(s, { kind: INPUTS.includes(c.type) ? 'input' : 'output', comp: c.id, ctype: c.type, feedback: INPUTS.includes(c.type) });
+      this.twin.define(s, { kind: INPUTS.includes(c.type) ? 'input' : 'output', comp: c.id, ctype: c.type, feedback: INPUTS.includes(c.type), periodic: c.type === 'LDR' || c.type === 'US' });   // 光敏、超音波每 50／60 ms 回報一次：停了就是卡住
     }
   };
   P.resetSim = function () {
@@ -187,7 +187,7 @@
         vis[c.id] = isBtn(c) ? { pressed: q === 'ok' && m && m.v, tag: { cls: q === 'ok' ? 'meas' : q === 'stale' ? 'stale' : 'unk', text: q === 'ok' ? MEAS : q === 'stale' ? '量測已過期' : '未知' } }
           : { light: m ? m.v : 50, tag: { cls: q === 'ok' ? 'meas' : q === 'stale' ? 'stale' : 'unk', text: q === 'ok' ? `${MEAS} ${Math.round(m.v)}%` : '未知' } };
       } else {
-        const a = v.ack, cmd = v.commanded; const has = mode === 'hw-control' && (a || cmd);
+        const cmd = v.commanded, a = v.ack && (!cmd || v.ack.id === cmd.id) ? v.ack : null; const has = mode === 'hw-control' && (v.ack || cmd);   /* 確認的是較早的命令時，顯示最新的命令（未確認） */
         const val = a ? a.v : cmd ? cmd.v : null;
         if (isLed(c)) vis[c.id] = has ? { on: !!val, dim: !a, tag: a ? { cls: 'ack', text: '已確認（非實測）' } : { cls: 'cmd', text: '命令未確認' } } : { on: null, unknown: true, tag: { cls: 'unk', text: '未知：無回授' } };
         else vis[c.id] = has ? { angle: val, tag: { cls: a ? 'ack' : 'cmd', text: `命令 ${Math.round(val)}°（非實測）` } } : { angle: null, tag: { cls: 'unk', text: '角度未知' } };
@@ -235,7 +235,7 @@
     const el = $('hudObserve'); if (!el) return; const mode = this.twin.mode; const rows = [];
     for (const c of this.p.components) {
       const s = sigOf(c); if (!s) continue; const v = this.twin.view(s);
-      const x = mode === 'sim' ? v.simulated : (INPUTS.includes(c.type) ? v.measured : (v.ack || v.commanded || v.simulated));
+      const x = mode === 'sim' ? v.simulated : (INPUTS.includes(c.type) ? v.measured : ((v.commanded && (!v.ack || v.ack.id !== v.commanded.id) ? v.commanded : v.ack) || v.simulated));
       rows.push(`<span class="k">${esc(c.id)}</span><span class="v ${mode === 'sim' ? 'sim' : INPUTS.includes(c.type) ? 'meas' : 'cmd'}">${x ? fmt(c, x.v) : '—'}</span>`);
     }
     const head = `<button type="button" class="hc ${this.sim.running ? 'ok' : ''}" data-card="twinCard"><b>${this.sim.running ? '執行中' : '已暫停'}</b> · ${DL.modeLabel(mode, this.twin.conn.virtual)} · t = ${(this.sim.time / 1000).toFixed(1)} s</button>`;
@@ -251,7 +251,11 @@
       const sim = v.simulated ? `<span class="v sim">${fmt(c, v.simulated.v)}</span>${mode !== 'sim' && isOut ? '<small>推算</small>' : ''}` : '<span class="na">—</span>';
       const tgt = isOut ? (v.target ? `<span class="v">${fmt(c, v.target.v)}</span>` : '<span class="na">—</span>') : '<span class="na">不適用</span>';
       const cmd = isOut ? (v.commanded ? `<span class="v cmd">${fmt(c, v.commanded.v)}</span><small class="mono">${v.commanded.id}</small>` : '<span class="na">—</span>') : '<span class="na">不適用</span>';
-      const ack = isOut ? (v.ack ? `<span class="v ack">${fmt(c, v.ack.v)}</span><small>${v.ack.matches ? '回讀一致' : '回讀不一致'}</small>` : this.twin.pending.some(x => x.name === s) ? (this.twin.pending.some(x => x.name === s && Date.now() - x.t > 1000) ? '<span class="q stale">逾時未確認</span><small>不自動重送</small>' : '<span class="na">等待中</span>') : '<span class="na">—</span>') : '<span class="na">不適用</span>';
+      // 最新的命令還沒確認時，ACK 欄顯示它的狀態（不能讓上一個命令的回讀看起來像是現在的）
+      const pend = this.twin.pending.filter(x => x.name === s).pop();
+      const ack = !isOut ? '<span class="na">不適用</span>'
+        : pend ? (Date.now() - pend.t > 1000 ? `<span class="q stale">逾時未確認</span><small>不自動重送${v.ack ? '；上一次確認：' + esc(fmt(c, v.ack.v)) : ''}</small>` : `<span class="na">等待中</span>${v.ack ? `<small>上一次確認：${esc(fmt(c, v.ack.v))}</small>` : ''}`)
+        : v.ack ? `<span class="v ack">${fmt(c, v.ack.v)}</span><small>${v.ack.matches ? '回讀一致' : '回讀不一致'}</small>` : '<span class="na">—</span>';
       let meas;
       if (!v.feedback) meas = `<span class="q none">無回授</span><small>${c.type === 'SERVO' ? 'SG90 沒有角度回授' : 'LED 亮度沒有感測'}</small>`;
       else if (!v.measured) meas = `<span class="q unknown">${mode === 'sim' ? '未連線' : '尚無讀值'}</span>`;
@@ -312,6 +316,7 @@
     else if (e.type === 'authorized') this.log('s', `已授權受控寫入：${e.outputs.join('、')}`);
     else if (e.type === 'warn') this.log('w', e.msg);
     else if (e.type === 'measure') this.noteMeasure(e);
+    else if (e.type === 'reboot') this.log('e', `設備重新開機（${e.reason}）：已撤銷寫入授權、回到唯讀${e.dropped.length ? `；${e.dropped.length} 個未確認命令作廢，不會重送` : ''}。開機前的量測已標為過期。`);
   };
   // 核對接線用：每一筆量測都比對上一筆（不靠畫面取樣，快速按放也不會漏掉）
   P.noteMeasure = function (e) {
@@ -402,7 +407,7 @@
     if (url) try { localStorage.setItem(src === 'virtual' ? 'doflab.vdevUrl' : 'doflab.wsUrl', url); } catch (e) { }
     if (src === 'virtual') this.hw.vdevUrl = url;
     this.hw.busy = true; this.renderHw();
-    const drv = new info.cls(this.twin, { log: (m, k) => { this.log(k || '', m); }, onLost: why => this.hwLost(why) }, p.board.type);
+    const drv = new info.cls(this.twin, { log: (m, k) => { this.log(k || '', m); }, onLost: why => this.hwLost(why), onReboot: why => this.hwRebooted(why) }, p.board.type);
     try {
       const r = await drv.connect(src === 'usb' ? { port: reuse ? this.hw.lastPort : null } : { url });
       if (drv.port) this.hw.lastPort = drv.port;   // 記住連接埠：之後可以不經選擇視窗直接重新連線（瀏覽器已授權過）
@@ -439,6 +444,15 @@
     this.hw.driver = null; if (this.sim.running) this.toggleRun();
     this.twin.disconnected(why || '中斷連線'); const done = d.disconnect();
     this.hw.identity = null; this.renderAll(); return done;
+  };
+  // 設備重新開機（連線還在）：撤銷授權、回到唯讀，未確認命令不重送；重新送出唯讀的輸入設定（板子開機後全部回到預設）
+  P.hwRebooted = function (why) {
+    if (!this.hw.driver) return;
+    if (this.sim.running) this.toggleRun();
+    this.twin.rebooted(why);
+    this.hw.driver.rewatch().catch(() => { });
+    this.toast(`${this.twin.conn.virtual ? '虛擬設備' : '設備'}重新開機：已撤銷寫入授權、回到唯讀，未確認的命令不會重送。要再控制請重新授權。`, 'e');
+    this.renderAll();
   };
   P.hwLost = function (why) {
     if (!this.hw.driver) return; this.hw.driver = null; if (this.sim.running) this.toggleRun();

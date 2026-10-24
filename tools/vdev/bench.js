@@ -9,6 +9,7 @@
 //   servo       SG90：從腳位高電位寬度算命令角（544 µs = 0°、2400 µs = 180°，與 Arduino Servo 函式庫預設相同），
 //               再以有限速度（預設 600°/s，約 SG90 規格 0.1 s／60°）轉到該角度。**只在工作台顯示，不回報給介面**（SG90 沒有回授）。
 //   arm         三軸手臂：三顆 servo 的實際角度 →（各自的零位與方向）→ 關節角，並算出關節位置（只用來畫圖與比對）。
+// 故障（第 3 階段）：每個元件都可以「拔線／接回」（unplug／plug）；超音波可以「卡住」（stuck：ECHO 一直是高電位，韌體就不再量測、不再回報）。
 const avr = require('avr8js');
 const path = require('path'); const fs = require('fs');
 
@@ -71,6 +72,7 @@ class Bench {
   }
   // ---------- 光敏模組 ----------
   refreshLdr(p) {
+    if (p.unplugged) { p.volts = 0; this.uno.setAnalog(p.pin - 14, 0); return; }   // AO 拔掉：類比腳空接，這裡當成 0 V
     const ratio = Math.max(0, Math.min(100, p.light)) / 100;
     const v = VCC * (p.inverted ? 1 - ratio : ratio) * (1 + (this.rand() * 2 - 1) * p.noise);
     p.volts = Math.max(0, Math.min(VCC, v)); this.uno.setAnalog(p.pin - 14, p.volts);
@@ -81,6 +83,7 @@ class Bench {
     let last = this.uno.isHigh(p.trig), hi = null;
     this.watch(() => {
       const h = this.uno.isHigh(p.trig); if (h === last) return; last = h;
+      if (p.unplugged || p.stuck) return;   // 拔線或模組卡住：不回應觸發
       if (h) { hi = this.uno.cycle; return; }
       if (hi === null) return;
       if (this.uno.cycle - hi < 160) { p.short++; return; }   // 觸發脈衝短於 10 µs：模組不動作
@@ -95,6 +98,7 @@ class Bench {
     let last = this.uno.isHigh(p.pin);
     this.watch(() => {
       const h = this.uno.isHigh(p.pin); if (h === last) return; last = h;
+      if (p.unplugged) { p.rise = null; return; }   // 訊號線拔掉：收不到脈衝
       if (h) { p.rise = this.uno.cycle; return; }
       if (p.rise === null) return;
       const us = (this.uno.cycle - p.rise) / 16; p.rise = null;
@@ -118,7 +122,7 @@ class Bench {
   sense() {
     for (const p of Object.values(this.parts)) {
       if (p.type !== 'led') continue;
-      const on = this.uno.pinState(p.pin) === avr.PinState.High;
+      const on = !p.unplugged && this.uno.pinState(p.pin) === avr.PinState.High;
       if (on !== p.on) { p.on = on; p.toggles++; p.lastChangeMs = this.uno.timeMs; }
     }
   }
@@ -130,12 +134,25 @@ class Bench {
     if (p.type === 'button' && ['press', 'release'].includes(q.action)) this.press(p, q.action === 'press');
     else if (p.type === 'ldr' && q.action === 'set' && Number.isFinite(+q.light)) { p.light = Math.max(0, Math.min(100, +q.light)); this.refreshLdr(p); this.note(p.id, 'set', { light: p.light }); }
     else if (p.type === 'ultrasonic' && q.action === 'set' && (q.cm === null || Number.isFinite(+q.cm))) { p.cm = q.cm === null ? null : Math.max(2, Math.min(400, +q.cm)); this.note(p.id, 'set', { cm: p.cm }); }
+    else if (p.type !== 'arm' && (q.action === 'unplug' || q.action === 'plug')) this.wire(p, q.action === 'plug');
+    else if (p.type === 'ultrasonic' && (q.action === 'stuck' || q.action === 'unstuck')) { p.stuck = q.action === 'stuck'; if (p.stuck) this.uno.setInput(p.echo, true); else if (!p.unplugged) this.uno.setInput(p.echo, false); this.note(p.id, q.action); }
     else throw new Error(`${p.id}（${p.type}）不能做「${q.action}」`);
     return this.partState(p);
   }
-  // 按鈕：電位先在高低之間彈跳幾次，最後停在新的狀態
+  // 拔線／接回：元件和晶片之間的線斷了，元件怎麼動都影響不到腳位（腳位也驅動不了元件）
+  wire(p, on) {
+    if (!p.unplugged === on) return;
+    p.unplugged = !on; this.note(p.id, on ? 'plug' : 'unplug');
+    if (p.type === 'button') { p.gen++; if (on) { p.level = !p.pressed; this.uno.setInput(p.pin, p.level); } else this.uno.release(p.pin); }
+    else if (p.type === 'ultrasonic') { if (on) this.uno.setInput(p.echo, !!p.stuck); else this.uno.release(p.echo); }
+    else if (p.type === 'ldr') this.refreshLdr(p);
+    else if (p.type === 'servo') { this.moveServo(p); p.lastPulseMs = p.lastPulseMs === null ? null : -1e9; }   // 沒有訊號：停在原地
+    this.sense();
+  }
+  // 按鈕：電位先在高低之間彈跳幾次，最後停在新的狀態（拔線時只記住按住與否，不影響腳位）
   press(p, down) {
     if (p.pressed === down) return;
+    if (p.unplugged) { p.pressed = down; this.note(p.id, down ? 'press' : 'release', { unplugged: true }); return; }
     p.pressed = down; const gen = ++p.gen; const target = !down;
     const n = p.bounceMs > 0 ? 1 + Math.floor(this.rand() * 3) : 0;   // 1–3 次來回
     const times = Array.from({ length: n * 2 }, () => this.rand() * p.bounceMs).sort((a, b) => a - b);
@@ -158,6 +175,11 @@ class Bench {
     return { id: p.id, type: 'arm', H: p.H, L1: p.L1, L2: p.L2, joints: p.joints.map((j, i) => ({ servo: j.servo, name: j.name, q: q[i] === null ? null : Math.round(q[i] * 10) / 10, cmd: cmd[i] === null ? null : Math.round(cmd[i] * 10) / 10 })), pos };
   }
   partState(p) {
+    const st = this.partState0(p);
+    if (p.type !== 'arm') { st.unplugged = !!p.unplugged; if (p.type === 'ultrasonic') st.stuck = !!p.stuck; }
+    return st;
+  }
+  partState0(p) {
     const r1 = x => x === null || x === undefined ? null : Math.round(x * 10) / 10;
     if (p.type === 'button') return { id: p.id, type: p.type, pin: p.pin, pressed: p.pressed, level: p.level ? 'high' : 'low', edges: p.edges, bounceMs: p.bounceMs };
     if (p.type === 'led') { const mA = p.on ? Math.round((VCC - LED_VF) / p.ohm * 1000 * 10) / 10 : 0; return { id: p.id, type: p.type, pin: p.pin, ohm: p.ohm, on: p.on, mA, overCurrent: mA > 20, toggles: p.toggles, lastChangeMs: p.lastChangeMs }; }

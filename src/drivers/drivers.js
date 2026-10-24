@@ -31,7 +31,7 @@
     async handshake(ms) {
       const t0 = Date.now(); let asked = 0;
       while ((!this.version || !this.caps) && Date.now() - t0 < ms && !this.closing) {
-        if (Date.now() - t0 > asked * 1500) { asked++; await this.send([0xF9]); await this.send([0xF0, 0x79, 0xF7]); await this.send([0xF0, 0x6B, 0xF7]); await this.send([0xF0, 0x69, 0xF7]); }
+        if (Date.now() - t0 > asked * 1500) { asked++; await this.send([0xF9]); this.fwAsked = (this.fwAsked || 0) + 1; await this.send([0xF0, 0x79, 0xF7]); await this.send([0xF0, 0x6B, 0xF7]); await this.send([0xF0, 0x69, 0xF7]); }
         await sleep(100);
       }
       return !!(this.version && this.caps);   // 板子開機時自己會送版本；要連腳位能力也回應了，才算真的在聽
@@ -72,6 +72,7 @@
       if (virtual) identity.virtual = true;
       if (this.firmware === 'StandardFirmata') this.log('注意：StandardFirmata 開機時會自行把數位腳設為 OUTPUT LOW（韌體預設，不是 DofLab 送出）。建議改用 DofLabFirmata，開機時腳位維持輸入。', 'w');
       this.hb = setInterval(() => this.send([0xF9]), 1000);
+      this.readyAt = Date.now() + 1500;   // 之後才開始判斷「設備重新開機」：交握時重問的查詢可能晚一點才回來
       if (virtual) return { deviceId: `vdev:${vi.device}@${vi.host}`, info: `虛擬設備 ${vi.device} · ${fw}`, identity, virtual: true };
       return { deviceId: 'firmata:' + (this.port.getInfo ? JSON.stringify(this.port.getInfo()) : 'serial'), info: fw, identity };
     }
@@ -105,21 +106,39 @@
         this.caps = pins;
       } else if (cmd === 0x6E) { // PIN_STATE_RESPONSE：pin, mode, state(7 位元一組)
         const pin = d[1]; let state = 0; for (let i = 3; i < d.length; i++) state |= d[i] << (7 * (i - 3));
-        const id = this.lastCmdByPin[pin];
-        if (id) { delete this.lastCmdByPin[pin]; const o = this.outPins[pin]; this.twin.ack(id, o && o.kind === 'servo' ? state : state ? 1 : 0); }
+        // 每個腳位一條在途命令的佇列（網路慢時同一個腳位可能同時有好幾個命令在途）。Firmata 依序回答，回讀是腳位當下的值：
+        // 給最早一個「值相同」的命令（更早的視為回讀遺失）；都不相同就給最早的命令，顯示「回讀不一致」（命令沒有生效）
+        const q = this.lastCmdByPin[pin];
+        if (q && q.length) {
+          const o = this.outPins[pin]; const v = o && o.kind === 'servo' ? state : state ? 1 : 0;
+          const k = Math.max(0, q.findIndex(e => e.v === v)); const e = q[k]; q.splice(0, k + 1);
+          if (!q.length) delete this.lastCmdByPin[pin];
+          this.twin.ack(e.id, v);
+        }
       } else if (cmd === 0x79) { // REPORT_FIRMWARE：主次版本＋名稱（每字 2 個 7 位元）
         let name = ''; for (let i = 3; i + 1 < d.length; i += 2) name += String.fromCharCode(d[i] | (d[i + 1] << 7));
         this.firmware = name.replace(/\.ino$/, '') || null; this.fwVersion = [d[1], d[2]];
+        // 韌體名稱只有兩種時候會來：回應我們的查詢（只在交握時問），或是設備剛開機（Firmata 開機時自己送）
+        if (this.fwAsked > 0) this.fwAsked--;
+        else if (this.readyAt && Date.now() > this.readyAt && !this.closing) this.rebooted('收到韌體的開機訊息');
       } else if (cmd === 0x63) { // DofLab 擴充：超音波距離（trig、cm 兩個 7 位元）
         const s = this.sonarSignals[d[1]]; if (s) { this.twin.measure(s, d[2] | (d[3] << 7), { seq: ++this.seq }); this.twin.heard(); }
       } else if (cmd === 0x6A) { // ANALOG_MAPPING_RESPONSE：每個腳位對應的類比通道（0x7F = 無）
         this.analogMap = {}; for (let i = 1; i < d.length; i++) if (d[i] !== 0x7F) this.analogMap[i - 1] = d[i];
       }
     }
+    // 設備重新開機（RESET、瞬間斷電、看門狗）：板子上的腳位設定都回到開機狀態，剛才的授權與在途命令都不算數
+    rebooted(why) {
+      this.outPins = {}; this.lastCmdByPin = {}; this.buf = []; this.sysex = null;
+      this.log(`設備重新開機（${why}）。`, 'w');
+      if (this.hooks.onReboot) this.hooks.onReboot(why);
+    }
+    // 重新開機後恢復唯讀觀測：再送一次輸入腳位的設定與回報（只碰輸入，不改變任何輸出）
+    rewatch() { return this.watched ? this.watch(this.watched) : Promise.resolve({}); }
     send(bytes) { const t = this.transport; if (!t || !t.writable) return Promise.resolve(); return t.write(bytes).catch(e => this.log('寫入失敗：' + e.message, 'e')); }
     // 唯讀：只設定輸入腳位（上拉／類比）並開啟回報
     async watch(inputs) {
-      let res = {};
+      let res = {}; this.watched = (this.watched || []).filter(w => !inputs.some(i => i.signal === w.signal)).concat(inputs);   // 記住所有唯讀設定，重新開機後才能全部恢復
       for (const i of inputs.filter(x => x.kind === 'sonar')) {
         const ok = this.sonarSupport(); if (!ok.ok) { res.sonarUnsupported = ok.msg; continue; }
         this.sonarSignals[i.num] = i.signal; await this.send([0xF0, 0x62, i.num, i.echo, 0xF7]);
@@ -138,7 +157,7 @@
       if (!this.outPins[pin]) { this.log(`${cmd.name} 的腳位沒有授權，命令未送出。`, 'e'); return; }
       if (out.kind === 'servo') { const a = Math.round(cmd.v); await this.send(pin < 16 ? [0xE0 | pin, a & 0x7F, (a >> 7) & 0x7F] : [0xF0, 0x6F, pin, a & 0x7F, (a >> 7) & 0x7F, 0xF7]); }
       else await this.send([0xF5, pin, cmd.v ? 1 : 0]);
-      this.lastCmdByPin[pin] = cmd.id;
+      (this.lastCmdByPin[pin] = this.lastCmdByPin[pin] || []).push({ id: cmd.id, v: out.kind === 'servo' ? Math.round(cmd.v) : cmd.v ? 1 : 0 });
       await this.send([0xF0, 0x6D, pin, 0xF7]);   // 回讀暫存值作為 ACK（不證明 LED 真的亮或伺服到位）
     }
     async revoke() {
