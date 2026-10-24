@@ -795,7 +795,7 @@ async def faults_flow(p):
         pill = await pg.inner_text('#modePill')
         check("按 RESET：DofLab 偵測到重新開機 → 撤銷寫入授權、回到「虛擬設備 · 唯讀」、模擬暫停，事件紀錄寫明原因", on0 and ok and pill.endswith('虛擬設備 · 唯讀') and not await ev(pg, "doflab.sim.running"), json.dumps([on0, ok, pill, await ev(pg, "doflab.sim.running")], ensure_ascii=False))
         st = state()
-        check("重新開機後：晶片的 D13 回到輸入、工作台的 LED 熄滅，DofLab 沒有重送任何命令", st['pins']['13'] == 'input' and not part(st, 'LED1')['on'] and st['traffic']['writeCount'] == w0)
+        check("重新開機後：晶片的 D13 回到輸入、工作台的 LED 熄滅，DofLab 沒有重送任何命令", st['pins']['13'] == 'input' and not part(st, 'LED1')['on'] and st['traffic']['writeCount'] == w0, json.dumps([st['pins']['13'], part(st, 'LED1'), w0, st['traffic']['writeCount'], st['traffic']['writes'][-4:], st['resets'], st['devMs'], json.loads(urllib.request.urlopen(api + '/trace', timeout=5).read())['resets'][-2:], await ev(pg, "doflab.events.slice(-14).map(e=>(e.simT!==undefined?e.simT+' ':'')+e.text)")], ensure_ascii=False))
         try: await pg.wait_for_function("document.querySelector('#vdevPresence') && document.querySelector('#vdevPresence').textContent.includes('沒有人控制')", timeout=5000); ok = True
         except Exception: ok = False
         ok = ok and await wf(bp, "document.querySelector('#holder') && document.querySelector('#holder').textContent === '沒有人'", 5000)

@@ -21,7 +21,7 @@ function image(hexText) { const f = new Uint16Array(0x4000).fill(0xffff); loadHe
 
 // 解析「介面送給設備」的 Firmata 位元組，只用來記錄與驗收（例如「唯讀期間沒有任何寫入」），不改變傳送內容
 class FirmataSniffer {
-  constructor() { this.reset(); }
+  constructor(clock) { this.clock = clock || null; this.reset(); }   // clock：設備時間（ms），寫入紀錄附上收到的時刻
   reset() { this.cur = null; this.sysex = null; this.c = { bytes: 0, modes: [], writes: [], queries: 0, reports: 0, sysex: 0 }; }
   feed(bytes) {
     for (const b of bytes) {
@@ -50,7 +50,7 @@ class FirmataSniffer {
     if (d[0] === 0x6F) this.write('extended-analog', d[1], d[2] | (d[3] << 7));
     else if (d[0] === 0x62 && d[1] !== 0x7F) this.c.modes.push([d[1], 'sonar-trig']);
   }
-  write(kind, pin, v) { this.c.writes.push({ kind, pin, v }); if (this.c.writes.length > 200) this.c.writes.shift(); this.c.writeCount = (this.c.writeCount || 0) + 1; }
+  write(kind, pin, v) { const w = { kind, pin, v }; if (this.clock) w.devMs = Math.round(this.clock() * 10) / 10; this.c.writes.push(w); if (this.c.writes.length > 200) this.c.writes.shift(); this.c.writeCount = (this.c.writeCount || 0) + 1; }
   // 輸出模式：OUTPUT(1)、PWM(3)、SERVO(4)
   summary() { const c = this.c; return { bytes: c.bytes, queries: c.queries, reports: c.reports, sysex: c.sysex, modes: c.modes.slice(-50), outputModes: c.modes.filter(m => [1, 3, 4].includes(m[1])).length, writeCount: c.writeCount || 0, writes: c.writes.slice(-20) }; }
 }
@@ -68,7 +68,7 @@ class VirtualDevice {
     else throw new Error(`虛擬設備不支援板型 ${this.board}（樹莓派由 pihost.js 啟動 pi_bridge）`);
     this.bench = new Bench(this.uno, opts.bench || (this.board === 'uno' ? DEFAULT_BENCH : 'esp32-hold-blink'));
     this.speed = opts.speed || 1;
-    this.sniff = new FirmataSniffer(); this.total = new FirmataSniffer();
+    const clock = () => this.uno.timeMs; this.sniff = new FirmataSniffer(clock); this.total = new FirmataSniffer(clock);
     this.tx = []; this.onTx = null; this.onEvent = null;
     this.uno.onSerial = b => this.tx.push(b);
     this.dtr = null; this.links = 0; this.linked = false; this.resets = 0;
