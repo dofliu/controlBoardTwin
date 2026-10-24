@@ -5,47 +5,17 @@
  *   authorize(outputs)       受控寫入：把授權的輸出腳位設為輸出模式
  *   write(cmd)               送出命令；設備回覆後呼叫 twin.ack
  *   revoke() / disconnect()
- * Uno 與 ESP32 走 Firmata（StandardFirmata 或 DofLabFirmata）；樹莓派走 pi_bridge.py。缺實作的板型一律明確拒絕。
+ * Uno 與 ESP32 走 Firmata（StandardFirmata 或 DofLabFirmata），經 USB 序列埠；Uno 也可以經網路連到虛擬設備主機（tools/vdev/server.js）。樹莓派走 pi_bridge.py。缺實作的板型一律明確拒絕。
  */
 (function (root) {
   const DL = (root.DL = root.DL || {});
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  /* ======================= 序列埠的開啟與釋放 =======================
-   * 同一個連接埠同時只能被一個程式（或同一頁的一個連線）開啟。常見的卡住原因：
-   *   1. 本頁上一次的連線沒有關乾淨（讀取迴圈還鎖著串流，close() 失敗）→ 再開會得到 InvalidStateError
-   *   2. 別的程式還開著（Arduino IDE 的序列埠監控視窗、另一個 DofLab 分頁、剛結束的上傳工具還沒放開）→ NetworkError
-   * 第 1 種由這裡自動關閉後重開；第 2 種稍候重試，仍失敗就明確說明可能的占用者。 */
-  const owners = new Map();   // 連接埠 → 本頁哪個連線開著它（關閉函式）
-  const isOpen = port => !!(port && (port.readable || port.writable));
-  async function releasePort(port) {
-    const own = owners.get(port); owners.delete(port);
-    if (own) { try { await own(); } catch (e) { } }
-    if (isOpen(port)) { try { await port.close(); } catch (e) { } }
-    return !isOpen(port);
-  }
-  function busyError(e) {
-    return Object.assign(new Error(`序列埠被占用，打不開（${(e && (e.name + '：' + e.message)) || e}）。請關閉可能正在使用它的程式：Arduino IDE 的「序列埠監控視窗」或「序列繪圖家」、另一個開著 DofLab 的分頁、還在進行的上傳；仍然不行就拔插 USB 線再試。`), { code: 'port_busy', cause: e });
-  }
-  async function openPort(port, baudRate, log) {
-    log = log || (() => { });
-    if (isOpen(port)) { log('這個序列埠還開著（本頁上一次的連線沒有關乾淨），先關閉再重新開啟…', 'w'); await releasePort(port); }
-    let last = null;
-    for (let i = 0; i < 4; i++) {
-      try { await port.open({ baudRate }); return; }
-      catch (e) {
-        last = e;
-        if ((e && e.name === 'InvalidStateError') || isOpen(port)) { log('連接埠仍在開啟狀態，先關閉後重試…', 'w'); await releasePort(port); }
-        else { if (i === 0) log('序列埠暫時打不開（可能剛被其他程式放開），稍候自動重試…', 'w'); await sleep(700); }
-      }
-    }
-    throw busyError(last);
-  }
-  async function releaseAll() { for (const p of [...owners.keys()]) await releasePort(p); }
-  DL.serial = { open: openPort, release: releasePort, claim: (port, closer) => owners.set(port, closer), unclaim: port => owners.delete(port), releaseAll, isOpen, owners };
-  if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('pagehide', () => { releaseAll(); });
+  // 序列埠的開啟與釋放（DL.serial）、USB 與虛擬設備的傳輸層在 transport.js
+  if (!DL.transport && typeof require === 'function') require('./transport.js');
+  const { WebSerialTransport, WebSocketTransport } = DL.transport;
 
-  /* ======================= Arduino：Firmata over Web Serial ======================= */
+  /* ======================= Arduino／ESP32：Firmata（USB 序列埠或虛擬設備的 WebSocket） ======================= */
   class FirmataDriver {
     constructor(twin, hooks, boardId) { this.twin = twin; this.hooks = hooks || {}; this.board = DL.boards[boardId || 'uno']; this.kind = 'firmata'; this.buf = []; this.sysex = null; this.version = null; this.caps = null; this.firmware = null; this.fwVersion = null; this.analogMap = null; this.seq = 0; this.pinSignals = {}; this.sonarSignals = {}; this.outPins = {}; this.lastCmdByPin = {}; }
     // 超音波需要 DofLabFirmata 1.1 以上（StandardFirmata 沒有這個功能）
@@ -54,50 +24,56 @@
       const v = this.fwVersion || [1, 0]; if (v[0] < 1 || (v[0] === 1 && v[1] < 1)) return { ok: false, msg: `DofLabFirmata ${v.join('.')} 太舊，1.1 起才支援超音波：請重新上傳 DofLabFirmata。` };
       return { ok: true };
     }
-    static available() { return typeof navigator !== 'undefined' && 'serial' in navigator; }
+    static available() { return WebSerialTransport.available(); }
+    get port() { return this.transport && this.transport.port; }   // USB 連接埠（虛擬設備沒有）：介面記住它，下次不用再選
+    get virtual() { return !!(this.transport && this.transport.kind === 'virtual'); }
     // 送出查詢，等 Firmata 回應版本與腳位能力
     async handshake(ms) {
       const t0 = Date.now(); let asked = 0;
-      while ((!this.version || !this.caps) && Date.now() - t0 < ms) {
+      while ((!this.version || !this.caps) && Date.now() - t0 < ms && !this.closing) {
         if (Date.now() - t0 > asked * 1500) { asked++; await this.send([0xF9]); await this.send([0xF0, 0x79, 0xF7]); await this.send([0xF0, 0x6B, 0xF7]); await this.send([0xF0, 0x69, 0xF7]); }
         await sleep(100);
       }
       return !!(this.version && this.caps);   // 板子開機時自己會送版本；要連腳位能力也回應了，才算真的在聽
     }
-    // 用 USB 晶片的 DTR／RTS 線重新啟動板子（與 Arduino IDE、esptool 的做法相同；不會進入下載模式）
+    // 用 USB 晶片的 DTR／RTS 線重新啟動板子（與 Arduino IDE、esptool 的做法相同；不會進入下載模式）。虛擬設備收到同樣的控制線訊號
     async resetBoard() {
-      if (!this.port.setSignals) return false;
+      const t = this.transport; if (!t || !t.canSignal) return false;
       try {
-        if ((this.board.family || this.board.id) === 'esp32') { await this.port.setSignals({ dataTerminalReady: false, requestToSend: true }); await sleep(120); await this.port.setSignals({ dataTerminalReady: false, requestToSend: false }); }
-        else { await this.port.setSignals({ dataTerminalReady: false }); await sleep(120); await this.port.setSignals({ dataTerminalReady: true }); }
+        if ((this.board.family || this.board.id) === 'esp32') { if (!await t.setSignals({ dataTerminalReady: false, requestToSend: true })) return false; await sleep(120); await t.setSignals({ dataTerminalReady: false, requestToSend: false }); }
+        else { if (!await t.setSignals({ dataTerminalReady: false })) return false; await sleep(120); await t.setSignals({ dataTerminalReady: true }); }
         return true;
       } catch (e) { return false; }
     }
+    // opts.port：USB 連接埠（省略時跳出選擇視窗）；opts.url：虛擬設備網址（ws://…/dev/uno-1），有網址就走網路
     async connect(opts) {
-      if (!FirmataDriver.available()) throw new Error('這個瀏覽器不支援 Web Serial：請用電腦版 Chrome 或 Edge，並從 https 或 http://localhost 開啟本頁。');
-      this.port = (opts && opts.port) || await navigator.serial.requestPort();
-      await openPort(this.port, 57600, (m, k) => this.log(m, k));
-      this.closing = false; owners.set(this.port, () => this.disconnect(true));
-      this.writer = this.port.writable.getWriter();
-      this.reading = this.readLoop();
-      this.log('序列埠已開啟（57600 bps），等待板子重新啟動並回應 Firmata…');
+      opts = opts || {};
+      const virtual = !!opts.url;
+      if (virtual && !WebSocketTransport.available()) throw new Error('這個環境沒有 WebSocket，不能連虛擬設備。');
+      if (!virtual && !FirmataDriver.available()) throw new Error('這個瀏覽器不支援 Web Serial：請用電腦版 Chrome 或 Edge，並從 https 或 http://localhost 開啟本頁。（沒有實體板子時，可以改連「虛擬設備」）');
+      const log = (m, k) => this.log(m, k);
+      const t = this.transport = virtual ? new WebSocketTransport({ url: opts.url, log }) : new WebSerialTransport({ port: opts.port, log, evict: () => this.disconnect(true) });
+      t.onBytes(bytes => { for (const b of bytes) this.parse(b); });
+      t.onLost(why => this.lost(why));
+      this.closing = false;
+      await t.open();
+      const vi = virtual ? t.info() : null;
+      this.log(virtual ? `已經由網路連到虛擬設備 ${vi.device}（${vi.host}；avr8js 模擬的晶片，不是實體板子），等待 Firmata 回應…` : '序列埠已開啟（57600 bps），等待板子重新啟動並回應 Firmata…');
       if (!await this.handshake(6000) && !this.closing && await this.resetBoard()) {
         this.log('6 秒內沒有回應：重新啟動板子後再等一次…', 'w'); this.buf = []; this.sysex = null;
         await this.handshake(7000);
       }
-      if (!this.version) { await this.disconnect(true); throw new Error(`沒有收到 Firmata 回應（已重新啟動板子再等一次）。請確認板子已上傳 ${(this.board.family || this.board.id) === 'esp32' ? 'DofLabFirmata' : 'DofLabFirmata 或 StandardFirmata'}（57600 bps），而且沒有其他程式占用序列埠。`); }
+      if (!this.version) { await this.disconnect(true); throw new Error(virtual ? `虛擬設備 ${vi.device} 沒有回應 Firmata（已重新啟動再等一次）。請確認虛擬設備主機執行的是 DofLabFirmata 或 StandardFirmata。` : `沒有收到 Firmata 回應（已重新啟動板子再等一次）。請確認板子已上傳 ${(this.board.family || this.board.id) === 'esp32' ? 'DofLabFirmata' : 'DofLabFirmata 或 StandardFirmata'}（57600 bps），而且沒有其他程式占用序列埠。`); }
       const pinCount = this.caps ? this.caps.length : null; const want = this.board.firmataPins;
       const fw = `${this.firmware || 'Firmata'} ${this.version}`;
-      const identity = pinCount === want ? { ok: true, msg: `${fw}，回報 ${pinCount} 個腳位，與 ${this.board.name} 相符。` } : { ok: false, msg: `${fw}，回報 ${pinCount ?? '未知'} 個腳位，與 ${this.board.name}（${want} 個）不符。` };
+      const boardOk = !virtual || vi.board === this.board.id;
+      const who = virtual ? `虛擬設備 ${vi.device}（${vi.board}，另一個程序以 avr8js 模擬，不是實體板子）：` : '';
+      const identity = pinCount === want && boardOk ? { ok: true, msg: `${who}${fw}，回報 ${pinCount} 個腳位，與 ${this.board.name} 相符。` } : { ok: false, msg: `${who}${fw}，回報 ${pinCount ?? '未知'} 個腳位，與 ${this.board.name}（${want} 個）不符。` };
+      if (virtual) identity.virtual = true;
       if (this.firmware === 'StandardFirmata') this.log('注意：StandardFirmata 開機時會自行把數位腳設為 OUTPUT LOW（韌體預設，不是 DofLab 送出）。建議改用 DofLabFirmata，開機時腳位維持輸入。', 'w');
       this.hb = setInterval(() => this.send([0xF9]), 1000);
+      if (virtual) return { deviceId: `vdev:${vi.device}@${vi.host}`, info: `虛擬設備 ${vi.device} · ${fw}`, identity, virtual: true };
       return { deviceId: 'firmata:' + (this.port.getInfo ? JSON.stringify(this.port.getInfo()) : 'serial'), info: fw, identity };
-    }
-    async readLoop() {
-      const reader = this.reader = this.port.readable.getReader();
-      try { while (true) { const { value, done } = await reader.read(); if (done) break; for (const b of value) this.parse(b); } }
-      catch (e) { if (!this.closing) this.log('序列埠中斷：' + e.message, 'e'); }
-      finally { try { reader.releaseLock(); } catch (e) { } if (!this.closing) this.lost('序列埠中斷'); }
     }
     parse(b) {
       if (this.sysex) { if (b === 0xF7) { this.onSysex(this.sysex); this.sysex = null; } else this.sysex.push(b); return; }
@@ -140,7 +116,7 @@
         this.analogMap = {}; for (let i = 1; i < d.length; i++) if (d[i] !== 0x7F) this.analogMap[i - 1] = d[i];
       }
     }
-    send(bytes) { if (!this.writer) return Promise.resolve(); return this.writer.write(new Uint8Array(bytes)).catch(e => this.log('寫入失敗：' + e.message, 'e')); }
+    send(bytes) { const t = this.transport; if (!t || !t.writable) return Promise.resolve(); return t.write(bytes).catch(e => this.log('寫入失敗：' + e.message, 'e')); }
     // 唯讀：只設定輸入腳位（上拉／類比）並開啟回報
     async watch(inputs) {
       let res = {};
@@ -173,16 +149,9 @@
     async _disconnect(silent) {
       this.closing = true; clearInterval(this.hb);
       try { if (!silent) { if (Object.keys(this.sonarSignals).length) await this.send([0xF0, 0x62, 0x7F, 0xF7]); await this.revoke(); await sleep(150); } } catch (e) { }   // 先停止超音波（TRIG 回到輸入）；撤銷後稍等，讓設備處理完再關閉連接埠
-      if (this.reader) { try { await this.reader.cancel(); } catch (e) { } }   // 必須 await，否則 reader 已釋放時的拒絕會變成未處理錯誤
-      if (this.reading) { try { await this.reading; } catch (e) { } }   // 等讀取迴圈真的放開串流：否則 close() 會因為串流還鎖著而失敗，連接埠一直被本頁占住
-      try { this.writer && this.writer.releaseLock(); } catch (e) { }
-      this.writer = null;
-      if (this.port) {
-        if (owners.get(this.port)) owners.delete(this.port);
-        try { await this.port.close(); } catch (e) { this.log('關閉序列埠失敗：' + e.message + '（下次連線時會再試著關閉）', 'w'); }
-      }
+      if (this.transport) await this.transport.close();   // USB：等讀取迴圈放開串流再關閉連接埠（否則會一直被本頁占住）
     }
-    // 序列埠意外中斷（拔線、板子重置）：通知上層，並把連接埠關掉，下次才能重新開啟
+    // 意外中斷（拔線、板子重置、虛擬設備的網路斷了）：通知上層，並把連接埠關掉，下次才能重新開啟
     lost(why) { clearInterval(this.hb); this.hooks.onLost && this.hooks.onLost(why); this.disconnect(true); }
     log(m, k) { this.hooks.log && this.hooks.log(m, k); }
   }
@@ -236,13 +205,18 @@
     log(m, k) { this.hooks.log && this.hooks.log(m, k); }
   }
 
-  function driverFor(boardId) {
+  // source：'usb'（預設）或 'virtual'（虛擬設備主機，目前只有 Uno）；sources 列出這個板型可選的來源
+  function driverFor(boardId, source) {
     const b = DL.boards[boardId];
-    if (b.driver === 'firmata') return { cls: FirmataDriver, label: 'USB 序列埠（Firmata）', status: b.id === 'uno' ? '已在虛擬 Uno（真實韌體）驗證，未以實體板驗證' : '協定在虛擬 Uno 驗證；使用者已在實體 ESP32 DevKit V1 實測連線、BOOT 同步與藍燈（2026-10-23）' };
-    if (b.driver === 'pibridge') return { cls: PiBridgeDriver, label: '網路閘道（pi_bridge.py）', status: '已實作，僅以 --mock 模擬腳位測試' };
-    return { cls: null, label: '無', status: `${b.short} 的真機驅動尚未實作：可以模擬與產生程式，但不能連線同步。` };
+    if (b.driver === 'firmata') {
+      const sources = b.id === 'uno' ? ['usb', 'virtual'] : ['usb'];
+      if (source === 'virtual' && sources.includes('virtual')) return { cls: FirmataDriver, source: 'virtual', sources, label: '虛擬設備（WebSocket＋Firmata）', status: '已在虛擬設備驗證：另一個程序以 avr8js 執行 DofLabFirmata 機器碼，資料經網路交換；不是實體板子' };
+      return { cls: FirmataDriver, source: 'usb', sources, label: 'USB 序列埠（Firmata）', status: b.id === 'uno' ? '已在虛擬 Uno（真實韌體）驗證，未以實體板驗證' : '協定在虛擬 Uno 驗證；使用者已在實體 ESP32 DevKit V1 實測連線、BOOT 同步與藍燈（2026-10-23）' };
+    }
+    if (b.driver === 'pibridge') return { cls: PiBridgeDriver, source: 'pibridge', sources: ['pibridge'], label: '網路閘道（pi_bridge.py）', status: '已實作，僅以 --mock 模擬腳位測試' };
+    return { cls: null, source: null, sources: [], label: '無', status: `${b.short} 的真機驅動尚未實作：可以模擬與產生程式，但不能連線同步。` };
   }
 
-  DL.drivers = { FirmataDriver, PiBridgeDriver, driverFor };
+  DL.drivers = { FirmataDriver, PiBridgeDriver, driverFor, VDEV_URL: 'ws://127.0.0.1:8770/dev/uno-1' };
   if (typeof module !== 'undefined') module.exports = DL;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

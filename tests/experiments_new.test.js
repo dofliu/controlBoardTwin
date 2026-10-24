@@ -1,7 +1,7 @@
 // V2.4 新增的五個引導實驗：解答、程式產生、與模擬引擎逐毫秒等價（g++ 主機替身），以及在虛擬 Uno 上執行真實機器碼
 const test = require('node:test'); const assert = require('node:assert');
 const { execFileSync } = require('child_process'); const fs = require('fs'); const path = require('path'); const os = require('os');
-const { DL, solved, runEngine } = require('./helpers'); const { VirtualUno } = require('./avr/avrsim');
+const { DL, solved, runEngine } = require('./helpers'); const { VirtualUno } = require('../tools/vdev/avrsim');
 const HOST = path.join(__dirname, 'host');
 let hasCli = true; try { execFileSync('arduino-cli', ['version']); } catch (e) { hasCli = false; }
 const NEW = ['toggle-led', 'ped-light', 'bright-alarm', 'sun-shade', 'bb-two-toggles'];

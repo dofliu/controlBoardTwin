@@ -18,7 +18,7 @@
       this.twin = DL.createTwin();
       this.events = [];
       this.sim = { running: false, time: 0, speed: 1, engine: null, held: {}, holdStart: {}, maxHoldMs: 0, minLight: 101, maxLight: -1, presses: 0, last: null, dist: {}, minDist: 999, nearMin: 999, nearMax: -1, farAfterNear: false, serial: [], serialCount: 0 };
-      this.hw = { driver: null, identity: null, checks: {}, sawChange: {}, busy: false };
+      this.hw = { driver: null, identity: null, checks: {}, sawChange: {}, busy: false, src: (() => { try { return localStorage.getItem('doflab.hwSrc') || 'usb'; } catch (e) { return 'usb'; } })() };   // src：USB 序列埠或虛擬設備（只對 Uno 有效）
       this.trace = [];
       this.saved = null;
     }
@@ -303,9 +303,10 @@
       const m = $('projMeta'); m.textContent = `r${p.revision}${this.dirty ? ' · 未保存的變更' : ' · 已保存'}`; m.classList.toggle('dirty', this.dirty);
       $('boardChip').textContent = b.name;
       const mode = this.twin.mode; const mp = $('modePill');
-      mp.className = 'pill ' + (mode === 'sim' ? 'sim' : mode === 'hw-read' ? 'read' : 'ctl'); mp.querySelector('span').textContent = DL.modeLabel(mode);
+      const virt = mode !== 'sim' && !!this.twin.conn.virtual;   // 虛擬設備：標籤與顏色和實體設備不同
+      mp.className = 'pill ' + (mode === 'sim' ? 'sim' : mode === 'hw-read' ? 'read' : 'ctl') + (virt ? ' virt' : ''); mp.querySelector('span').textContent = DL.modeLabel(mode, virt);
       const c = this.twin.conn; const cp = $('connPill');
-      cp.className = 'pill ' + (c.state === 'connected' ? 'on' : c.state === 'lost' ? 'lost' : '');
+      cp.className = 'pill ' + (c.state === 'connected' ? 'on' : c.state === 'lost' ? 'lost' : '') + (c.state === 'connected' && c.virtual ? ' virt' : '');
       cp.querySelector('span').textContent = c.state === 'connected' ? `已連線 · ${c.info || ''}`.slice(0, 40) : c.state === 'lost' ? '連線中斷' : '未連線';
       document.title = `DofLab`;
     }
@@ -318,7 +319,7 @@
       const code = this.codeState(); const tbc = $('tbCode');
       tbc.className = 'tb ' + ({ current: 'ok', stale: 'warn', manual: 'warn', none: '' }[code.state]); tbc.textContent = { current: '最新', stale: '過期', manual: '手動修改', none: '尚未產生' }[code.state];
       const tba = $('tbArm'); if (tba) { const st = !this.p.arm ? '' : this.armConfirmState(); tba.className = 'tb ' + (st === 'current' ? 'ok' : st ? 'warn' : ''); tba.textContent = !this.p.arm ? '未啟用' : st === 'current' ? '已確認' : '未確認'; }
-      const tbo = $('tbObserve'); tbo.className = 'tb ' + (this.twin.mode === 'sim' ? '' : 'ok'); tbo.textContent = this.sim.running ? '執行中' : DL.modeLabel(this.twin.mode);
+      const tbo = $('tbObserve'); tbo.className = 'tb ' + (this.twin.mode === 'sim' ? '' : 'ok'); tbo.textContent = this.sim.running ? '執行中' : DL.modeLabel(this.twin.mode, this.twin.conn.virtual);
     }
     renderBoardSel() {
       const s = $('boardSel'); const p = this.p;
@@ -669,7 +670,7 @@
     }
     openAbout() { $('aboutBody').innerHTML = DL.ui.aboutTable(); $('dlgAbout').showModal(); }
 
-    log(kind, text, simT) { this.events.unshift({ kind, text, t: Date.now(), simT: simT === undefined ? null : simT }); if (this.events.length > 300) this.events.pop(); this._evDirty = true; }
+    log(kind, text, simT) { const c = this.twin && this.twin.conn; this.events.unshift({ kind, text, t: Date.now(), simT: simT === undefined ? null : simT, virtual: !!(c && c.state === 'connected' && c.virtual) }); if (this.events.length > 300) this.events.pop(); this._evDirty = true; }
   }
 
   DL.ui = DL.ui || {}; DL.ui.App = App; DL.ui.esc = esc; DL.ui.LV = LV;

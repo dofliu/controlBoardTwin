@@ -1,6 +1,6 @@
 # 雲端虛擬硬體（Virtual Device）規劃 v0.1
 
-日期：2026-10-23（台北）。狀態：**設計提案**，還沒有實作。
+日期：2026-10-23（台北）。狀態：第 1 階段**已實作**（V2.8，已在虛擬設備驗證，未以實體設備驗證）；第 2–7 階段仍是**設計提案**。
 標示沿用專案的四種：**已確認需求**、**設計提案**、**已實作**、**未驗證**。
 
 ---
@@ -171,8 +171,8 @@
 
 | 階段 | 內容 | 驗收（測試會檢查的事） |
 |---|---|---|
-| **0 整理** | GitHub repo、CI（Node＋Python，不含需要工具鏈的測試） | CI 在 GitHub 上通過 |
-| **1 MVP：虛擬 Uno 經 WebSocket 連線** | `tools/vdev/server.js`（一台虛擬 Uno＋DofLabFirmata）；`WebSocketTransport`；觀測頁可以連「虛擬設備」 | Node：位元組往返與 Web Serial 版相同。E2E：介面連到**另一個程序**的虛擬 Uno → 辨識顯示「虛擬」→ 唯讀：工作台按鈕變化出現在量測層，而且沒有送出任何寫入 → 授權 → LED 命令得到 ACK，虛擬晶片的 D13 真的變成 HIGH → 停掉 server → 介面回到模擬、命令不重送 |
+| **0 整理**（**已完成**：2026-10-23 CI 在 GitHub 上通過） | GitHub repo、CI（Node＋Python，不含需要工具鏈的測試） | CI 在 GitHub 上通過 |
+| **1 MVP：虛擬 Uno 經 WebSocket 連線**（**已實作**，V2.8，見下方「第 1 階段實作紀錄」） | `tools/vdev/server.js`（一台虛擬 Uno＋DofLabFirmata）；`WebSocketTransport`；觀測頁可以連「虛擬設備」 | Node：位元組往返與 Web Serial 版相同。E2E：介面連到**另一個程序**的虛擬 Uno → 辨識顯示「虛擬」→ 唯讀：工作台按鈕變化出現在量測層，而且沒有送出任何寫入 → 授權 → LED 命令得到 ACK，虛擬晶片的 D13 真的變成 HIGH → 停掉 server → 介面回到模擬、命令不重送 |
 | **2 工作台** | `/bench` 頁；按鈕彈跳、光敏雜訊、超音波、伺服脈寬→角度；接線不一致 | 去彈跳在彈跳下仍正確；接線不一致時「核對接線」失敗；伺服角度只出現在工作台，量測欄仍是「無回授」 |
 | **3 故障與網路注入** | 延遲、掉包、中斷、重置、感測器卡住、拔線 | §4.4 每一列各一個自動測試 |
 | **4 上傳與序列埠** | STK500 經 WebSocket 上傳；`Serial.println` 串流 | 所有支援 Uno 的引導實驗，產生的程式上傳後在虛擬設備上的行為和介面模擬一致 |
@@ -183,6 +183,17 @@
 建議先做第 1 階段，做完就能回答「能不能」：介面連到另一個程序上的虛擬板子，資料經過網路交換，數位孿生的狀態正確。
 
 ---
+
+### 第 1 階段實作紀錄（V2.8，2026-10-23）
+
+- 做了：`tools/vdev/server.js`（只聽本機、一台 `uno-1`、每台一個 worker thread）、`device.js`、`bench.js`（按鈕＋LED，不用 engine.js）、`src/drivers/transport.js`（`WebSerialTransport`、`WebSocketTransport`）、觀測頁的來源「虛擬設備（網址）」與各處的虛擬標示、`tests/vdev.test.js`（4 項）、E2E 段落 `vdev`（14 項）。`VirtualUno` 已搬到 `tools/vdev/avrsim.js`。
+- 和本文件原本設計不同的地方：
+  - 第 1 階段先用 HTTP API（`/api/devices/uno-1`、`/bench`）與一頁簡易工作台操作按鈕；完整的 `/bench` 頁仍在第 2 階段。
+  - 同時只接受一個連線（第 2 個連線會收到 `busy`）；§4.5 的多人唯讀觀看與 `lock` 控制訊息留到第 5 階段。
+  - 預設網址用 `ws://127.0.0.1:8770/dev/uno-1`（不用 localhost：瀏覽器可能先試 IPv6 的 ::1，而主機只聽 127.0.0.1）。
+  - 介面連線時不會重新啟動虛擬晶片（實體 Uno 開序列埠時會因 DTR 重新啟動）；DofLabFirmata 的交握兩種情況都能處理，`resetBoard()` 的 DTR 仍會經網路送到虛擬晶片。
+  - 設備重置的事件目前只寫進事件紀錄；「偵測到重新開機 → 撤銷授權」在第 3 階段。
+- 過程中發現：avr8js 0.20.1 寫入 UCSR0B 會清掉 RXC，導致約每 0.55 秒遺失一個收到的位元組（USB 版虛擬連接埠也一樣）；已在 `VirtualUno` 照實體晶片修正。詳見 ACCEPTANCE.md 的 V2.8。
 
 ## 8. ESP32 怎麼辦
 
@@ -214,3 +225,5 @@ avr8js 只模擬 AVR（Uno）。ESP32 的選項：
 - `tests/vdev.test.js`：Node 端到端（server ↔ FirmataDriver ↔ Twin）
 - `e2e/e2e.py` 新段落 `vdev`：瀏覽器連到另一個程序的虛擬 Uno
 - `VirtualUno` 目前放在 `tests/avr/`，搬到 `tools/vdev/avrsim.js`（測試改成引用新位置），因為它要變成正式功能了
+
+（以上第 1 階段的檔案都已在 V2.8 建立；第 2 階段從 `tools/vdev/bench.js` 與新的 `/bench` 頁開始。）

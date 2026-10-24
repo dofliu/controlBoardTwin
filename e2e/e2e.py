@@ -354,6 +354,78 @@ async def uno_virtual(p):
     check("虛擬 Uno 流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
     await b.close()
 
+async def vdev_flow(p):
+    """雲端虛擬硬體第 1 階段：介面經 WebSocket 連到「另一個程序」（node tools/vdev/server.js）裡的虛擬 Uno。
+    工作台的按鈕由這個測試經虛擬設備主機的 HTTP API 操作（介面以外），晶片腳位也從主機讀，不從介面讀。"""
+    import urllib.request
+    VPORT = 8770; api = f'http://127.0.0.1:{VPORT}/api/devices/uno-1'
+    def start(): pr = subprocess.Popen(['node', str(ROOT / 'tools' / 'vdev' / 'server.js'), '--port', str(VPORT)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(VPORT); return pr
+    def state(): return json.loads(urllib.request.urlopen(api, timeout=5).read())
+    def bench(part, action): urllib.request.urlopen(urllib.request.Request(api + '/bench', data=json.dumps({'part': part, 'action': action}).encode(), method='POST'), timeout=5).read()
+    srv = start()
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 1000})
+    try:
+        pg = await ctx.new_page(); errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+        await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p")
+        await ev(pg, "(()=>{const r=DL.experiments.solved('hold-blink','uno'); doflab.load(DL.project.clone(r.project,{name:'虛擬設備測試',origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}})); })()")
+        await pg.click('#t-behavior'); await pg.wait_for_timeout(400); await pg.click('#btnConfirm')
+        await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+        await pg.check('input[name="hwSrc"][value="virtual"]'); await pg.wait_for_timeout(100)
+        check("虛擬設備：來源可選「虛擬設備（網址）」，預設網址指向本機的虛擬設備主機", await pg.input_value('#vdevUrl') == f'ws://127.0.0.1:{VPORT}/dev/uno-1' and '不是實體板子' in await pg.inner_text('#hwBody'))
+        await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=20000); await pg.wait_for_timeout(300)
+        body = await pg.inner_text('#hwBody'); pill = await pg.inner_text('#modePill')
+        check("虛擬設備：經網路連到另一個程序，辨識顯示「虛擬設備」、DofLabFirmata、20 個腳位，從唯讀開始",
+              '虛擬設備' in body and 'DofLabFirmata' in body and '20 個腳位' in body and '不是實體' in body and pill.endswith('虛擬設備 · 唯讀') and await ev(pg, "doflab.twin.mode==='hw-read' && doflab.twin.conn.virtual && doflab.twin.conn.deviceId.startsWith('vdev:uno-1@')") and 'virt' in await pg.get_attribute('#modePill', 'class'), body[:300] + ' | ' + pill)
+        check("虛擬設備：孿生狀態表的量測欄標示「量測（虛擬）」", await pg.inner_text('#thMeas') == '量測（虛擬）')
+        st = state()
+        check("虛擬設備（設備端紀錄）：唯讀只把 D2 設為上拉輸入，沒有收到任何寫入，D13 仍是輸入", st['traffic']['modes'] == [[2, 11]] and st['traffic']['writeCount'] == 0 and st['pins']['13'] == 'input' and st['linked'], json.dumps(st['traffic']))
+        bench('BTN1', 'press')
+        try: await pg.wait_for_function("(v => v.measured && v.measured.v === true && v.quality === 'ok')(doflab.twin.view('BTN1.pressed'))", timeout=5000); ok = True
+        except Exception: ok = False
+        check("虛擬設備：在工作台按下 BTN1（介面以外）→ 介面的量測層顯示按下", ok)
+        bench('BTN1', 'release')
+        try: await pg.wait_for_function("doflab.twin.view('BTN1.pressed').measured.v === false", timeout=5000); await pg.wait_for_function("document.querySelector('#saw-BTN1') && document.querySelector('#saw-BTN1').textContent.includes('已偵測到變化')", timeout=3000); ok = True
+        except Exception: ok = False
+        check("虛擬設備：放開後量測回到放開，核對接線看到變化", ok)
+        check("虛擬設備（設備端紀錄）：唯讀觀測期間仍然沒有任何寫入", state()['traffic']['writeCount'] == 0)
+        await pg.screenshot(path=str(SHOTS / "v1_vdev_read.png"))
+        for cb in await pg.locator('[data-chk]').all(): await cb.check()
+        await pg.click('#hwAuth'); await pg.wait_for_timeout(300)
+        check("虛擬設備：授權後模式標籤為「虛擬設備 · 受控寫入」", (await pg.inner_text('#modePill')).endswith('虛擬設備 · 受控寫入') and await ev(pg, "doflab.twin.mode") == 'hw-control')
+        await pg.click('#simRun'); await pg.wait_for_timeout(200)
+        bench('BTN1', 'press')
+        seen = set(); toggles0 = None
+        for i in range(40):
+            await asyncio.sleep(0.1); s1 = state(); seen.add(s1['pins']['13'])
+            led = next(x for x in s1['bench']['parts'] if x['id'] == 'LED1')
+            if toggles0 is None: toggles0 = led['toggles']
+        v = await ev(pg, "(()=>{const v=doflab.twin.view('LED1.state'); return {ack: v.ack, cmd: v.commanded}})()")
+        check("虛擬設備：按住工作台按鈕 → 行為在介面執行、命令經網路送出 → 虛擬晶片 D13 HIGH／LOW 交替、工作台 LED 閃爍，並收到回讀 ACK",
+              {'high', 'low'} <= seen and led['toggles'] - toggles0 >= 2 and v['ack'] and v['ack']['matches'], json.dumps([sorted(seen), led, v])[:400])
+        await pg.screenshot(path=str(SHOTS / "v2_vdev_control.png"))
+        # 停掉虛擬設備主機（另一個程序）：介面回到模擬，未確認的命令作廢、不重送
+        srv.kill(); srv.wait()
+        try: await pg.wait_for_function("doflab.twin.mode==='sim' && doflab.twin.conn.state==='lost'", timeout=8000); ok = True
+        except Exception: ok = False
+        evs = await pg.inner_text('#eventList')
+        check("虛擬設備：停掉主機 → 介面偵測到中斷、回到模擬，沒有未確認命令留在佇列", ok and await ev(pg, "doflab.twin.pending.length") == 0 and '連線中斷' in evs and not await ev(pg, "doflab.sim.running"), evs[:300])
+        check("虛擬設備：事件紀錄中連線期間的事件都標示「虛擬」", await ev(pg, "document.querySelectorAll('#eventList .ev-virt').length") > 3 and await ev(pg, "doflab.events.filter(e=>/已連線 虛擬設備/.test(e.text)).every(e=>e.virtual)"))
+        srv = start()
+        await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=20000)
+        await pg.wait_for_timeout(1500)
+        st = state()
+        check("虛擬設備：主機重新啟動後重新連線 → 從唯讀開始，設備端沒有收到任何寫入（舊命令沒有重送）",
+              await ev(pg, "doflab.twin.mode") == 'hw-read' and st['traffic']['writeCount'] == 0 and st['traffic']['outputModes'] == 0 and st['pins']['13'] == 'input', json.dumps(st['traffic']))
+        await pg.click('#hwDisc'); await pg.wait_for_timeout(500)
+        linked = True
+        for i in range(30):
+            if not state()['linked']: linked = False; break
+            await asyncio.sleep(0.1)
+        check("虛擬設備：中斷連線後回到模擬，主機端連線釋放", await ev(pg, "doflab.twin.mode") == 'sim' and not linked)
+        check("虛擬設備流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    finally:
+        await b.close(); srv.kill()
+
 async def breadboard_flow(p):
     b = await p.chromium.launch(args=ARGS)
     ctx = await b.new_context(viewport={'width': 1440, 'height': 940})
@@ -895,6 +967,7 @@ async def main():
             if on('arm'): await arm_flow(p)
             if on('v27'): await v27_flow(p)
             if on('uno'): await uno_virtual(p)
+            if on('vdev'): await vdev_flow(p)
             if on('upload'): await upload_flow(p)
             if on('pideploy'): await pi_deploy(p)
             if on('mobile'): await mobile(p)

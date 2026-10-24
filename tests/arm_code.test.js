@@ -1,7 +1,7 @@
 // 手臂姿態播放程式：產生 → 驗證限制條件 →（有工具鏈時）真實編譯 → 在虛擬 Uno 上量測三個腳位的伺服脈寬
 const test = require('node:test'); const assert = require('node:assert');
 const { execFileSync } = require('child_process'); const fs = require('fs'); const os = require('os'); const path = require('path');
-const { DL, solved } = require('./helpers'); const { VirtualUno } = require('./avr/avrsim');
+const { DL, solved } = require('./helpers'); const { VirtualUno } = require('../tools/vdev/avrsim');
 let hasCli = true; try { execFileSync('arduino-cli', ['version']); } catch (e) { hasCli = false; }
 
 function armProject(board) {

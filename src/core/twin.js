@@ -102,12 +102,14 @@
     }
 
     /* ---- 連線生命週期 ---- */
-    function connected(deviceId, info) {
-      conn = { state: 'connected', deviceId, info: info || null, since: clock(), lastHeard: clock(), session: conn.session + 1 };
+    // meta.virtual：對方是虛擬設備（不是實體板子）；所有畫面與紀錄都要標示
+    function connected(deviceId, info, meta) {
+      const virtual = !!(meta && meta.virtual);
+      conn = { state: 'connected', deviceId, info: info || null, since: clock(), lastHeard: clock(), session: conn.session + 1, virtual };
       auth = null; pending.clear(); dropped = [];
       for (const k of Object.keys(lastSeq)) delete lastSeq[k];
       mode = 'hw-read';
-      emit('connected', { deviceId, info, session: conn.session });
+      emit('connected', { deviceId, info, session: conn.session, virtual });
       emit('mode', { from: 'sim', to: 'hw-read', why: '新連線一律從唯讀開始' });
     }
     function disconnected(reason) {
@@ -143,7 +145,7 @@
       signals: () => Object.keys(sig), on: f => (listeners.add(f), () => listeners.delete(f))
     };
   }
-  function modeLabel(m) { return { sim: '模擬', 'hw-read': '真機唯讀', 'hw-control': '真機受控寫入' }[m] || m; }
+  function modeLabel(m, virtual) { return (virtual ? { sim: '模擬', 'hw-read': '虛擬設備 · 唯讀', 'hw-control': '虛擬設備 · 受控寫入' } : { sim: '模擬', 'hw-read': '真機唯讀', 'hw-control': '真機受控寫入' })[m] || m; }
 
   DL.createTwin = createTwin;
   DL.modeLabel = modeLabel;

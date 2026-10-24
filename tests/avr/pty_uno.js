@@ -3,7 +3,7 @@
 // 重置的模擬：實體 Uno 在 avrdude 開啟連接埠時由 USB 晶片的 DTR 經電容觸發重置，Optiboot 接著等待約 1 秒。
 // pty 沒有 DTR，所以這裡在等待上傳期間讓晶片一直停在 Optiboot（逾時跳到應用程式就再重置一次），效果等同「開埠即重置」。
 const fs = require('fs'); const path = require('path');
-const { VirtualUno, RESET } = require('./avrsim');
+const { VirtualUno, RESET } = require('../../tools/vdev/avrsim');
 const FX = path.join(__dirname, '..', 'fixtures');
 const u = new VirtualUno(path.join(FX, 'DofLabFirmata-uno.hex'), { bootloader: fs.readFileSync(path.join(FX, 'optiboot_atmega328.hex'), 'utf8') });
 u.setInput(2, true);

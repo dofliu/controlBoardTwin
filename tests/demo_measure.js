@@ -2,7 +2,7 @@
 // 輸出 JSON：距離指針的角度精度、距離警示燈的反應時間、觸發脈衝時序、DofLabFirmata 1.1 讀值
 // 用法：node tests/demo_measure.js <輸出.json>
 const { execFileSync } = require('child_process'); const fs = require('fs'); const os = require('os'); const path = require('path');
-const { DL, solved } = require('./helpers'); require('../src/drivers/drivers.js'); const { VirtualUno, FREQ } = require('./avr/avrsim');
+const { DL, solved } = require('./helpers'); require('../src/drivers/drivers.js'); const { VirtualUno, FREQ } = require('../tools/vdev/avrsim');
 function build(code) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-demo-')); const sk = path.join(dir, 'sketch'); fs.mkdirSync(sk);
   fs.writeFileSync(path.join(sk, 'sketch.ino'), code);

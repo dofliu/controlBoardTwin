@@ -2,7 +2,7 @@
 // 虛擬連接埠的行為與 Chrome Web Serial 相同：重複開啟 → InvalidStateError；串流鎖著時 close() 失敗；被其他程式占用 → NetworkError。
 const test = require('node:test'); const assert = require('node:assert'); const path = require('path');
 const { DL } = require('./helpers'); require('../src/drivers/drivers.js');
-const { VirtualUno } = require('./avr/avrsim');
+const { VirtualUno } = require('../tools/vdev/avrsim');
 const HEX = path.join(__dirname, 'fixtures', 'DofLabFirmata-uno.hex');
 const wait = ms => new Promise(r => setTimeout(r, ms));
 

@@ -1,4 +1,4 @@
-// 虛擬 Arduino Uno：用 avr8js（開源 ATmega328P 模擬器）執行「真正編譯出來的 .hex」
+// 虛擬 Arduino Uno（V2.8 起從 tests/avr/ 搬到這裡：虛擬設備主機 tools/vdev/server.js 也用它）：用 avr8js（開源 ATmega328P 模擬器）執行「真正編譯出來的 .hex」
 // 用途：在沒有實體板子時，驗證 Firmata 驅動與產生程式在真實韌體上的行為。
 // 限制：模擬的是 MCU 指令與周邊（計時器、USART、GPIO、ADC），不模擬電氣特性、USB 晶片或燒錄流程。
 const avr = require('avr8js');
@@ -47,6 +47,10 @@ class VirtualUno {
     this.adc = new avr.AVRADC(cpu, avr.adcConfig); Object.assign(this.adc.channelValues, this.analog);
     this.usart = new avr.AVRUSART(cpu, avr.usart0Config, FREQ);
     this.watchdog = new avr.AVRWatchdog(cpu, avr.watchdogConfig, clock);
+    // avr8js 0.20.1 寫入 UCSR0B 時（RXEN 維持開啟）會清掉 RXC 旗標；Arduino 的 Serial.write 每送一個位元組都會改 UCSR0B 的 UDRIE，
+    // 結果「已收到、還沒讀走」的位元組被當成讀過、被下一個覆蓋（實測約每 0.5 秒遺失一次查詢）。實體 ATmega328P 只有讀 UDR0 才會清 RXC，這裡照實體行為保留旗標。
+    const ucsrb = avr.usart0Config.UCSRB, ucsra = avr.usart0Config.UCSRA, hookB = cpu.writeHooks[ucsrb];
+    cpu.writeHooks[ucsrb] = (v, old, addr, mask) => { const rxc = cpu.data[ucsra] & 0x80; const r = hookB(v, old, addr, mask); if (rxc && (v & 0x10) && !(cpu.data[ucsra] & 0x80)) cpu.setInterruptFlag(this.usart.RXC); return r; };
     this.usart.onByteTransmit = b => this.onSerial && this.onSerial(b);
     this.usart.onRxComplete = () => this.feed();
     for (const [name, p] of Object.entries(this.port)) p.addListener(() => { for (const w of this.pinWatchers) w(name); });
