@@ -700,9 +700,13 @@ async def faults_flow(p):
         await bp.click('#fReset')
         ok = await wf(pg, "doflab.twin.mode==='hw-read' && doflab.events.some(e=>/設備重新開機/.test(e.text))", 6000)
         pill = await pg.inner_text('#modePill')
-        check("按 RESET：DofLab 偵測到重新開機 → 撤銷寫入授權、回到「虛擬設備 · 唯讀」、模擬暫停，事件紀錄寫明原因", on0 and ok and pill.endswith('虛擬設備 · 唯讀') and not await ev(pg, "doflab.sim.running"), pill)
+        check("按 RESET：DofLab 偵測到重新開機 → 撤銷寫入授權、回到「虛擬設備 · 唯讀」、模擬暫停，事件紀錄寫明原因", on0 and ok and pill.endswith('虛擬設備 · 唯讀') and not await ev(pg, "doflab.sim.running"), json.dumps([on0, ok, pill, await ev(pg, "doflab.sim.running")], ensure_ascii=False))
         st = state()
         check("重新開機後：晶片的 D13 回到輸入、工作台的 LED 熄滅，DofLab 沒有重送任何命令", st['pins']['13'] == 'input' and not part(st, 'LED1')['on'] and st['traffic']['writeCount'] == w0)
+        try: await pg.wait_for_function("document.querySelector('#vdevPresence') && document.querySelector('#vdevPresence').textContent.includes('沒有人控制')", timeout=5000); ok = True
+        except Exception: ok = False
+        ok = ok and await wf(bp, "document.querySelector('#holder') && document.querySelector('#holder').textContent === '沒有人'", 5000)
+        check("重新開機後：控制權也交出去（DofLab 顯示「沒有人控制」，工作台頁的控制權是「沒有人」），別人才能取得", ok, await pg.inner_text('#vdevPresence') if await pg.locator('#vdevPresence').count() else '')
         await shots('f5_reboot.png', pg, bp)
         await hold(bp, 'BTN1', 300)
         check("重新開機後唯讀觀測自動恢復：在工作台頁按 BTN1，DofLab 量到按下", await wf(pg, "doflab.twin.log.some(e=>e.type==='measure' && e.name==='BTN1.pressed' && e.v===true && e.t > (doflab.twin.log.filter(x=>x.type==='reboot').pop()||{t:0}).t)", 5000))

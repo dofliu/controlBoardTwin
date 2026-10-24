@@ -146,3 +146,17 @@ test('關掉一個連線後馬上重新連線（例如關掉序列埠監看後�
     await B.drv.disconnect();
   } finally { await s.close(); }
 });
+
+test('設備重新開機（按 RESET）：控制者的授權撤銷時也交出控制權，別人可以取得', { timeout: 30000 }, async () => {
+  const s = await server();
+  try {
+    const A = user('老師'), B = user('學生'); await A.connect(s.url); await B.connect(s.url);
+    await wait(1700);   // 過了交握後的 1.5 秒，才會判斷重新開機
+    await authorize(A); assert.ok(await until(() => B.last()?.holder?.name === '老師'));
+    await fetch(`http://127.0.0.1:${s.port}/api/devices/uno-1/fault`, { method: 'POST', body: JSON.stringify({ fault: 'reset' }) });
+    assert.ok(await until(() => A.reboots.length > 0, 8000), '老師偵測到重新開機');
+    assert.ok(await until(() => B.last()?.holder === null && A.drv.holding === false), '控制權已交出');
+    await authorize(B); assert.strictEqual(B.drv.holding, true);
+    await A.drv.disconnect(); await B.drv.disconnect();
+  } finally { await s.close(); }
+});

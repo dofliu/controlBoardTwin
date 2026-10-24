@@ -448,6 +448,7 @@
     const el = $('vdevPresence'); if (el && ph === nh && prev) el.innerHTML = this.presenceText(m); else this.renderHw();   // 控制權改變：授權條件也跟著變，整個面板重畫
   };
   P.renderHwLive = function () {
+    if (this.renderRec && this.recActive && this.recActive()) this.renderRec();   // 連線紀錄的筆數即時更新
     const net = $('vdevNet'); const t = this.hw.driver && this.hw.driver.transport;
     if (net && t && t.rtt !== null && t.rtt !== undefined) net.textContent = `網路來回 ${t.rtt} ms`;
     for (const c of this.p.components) {

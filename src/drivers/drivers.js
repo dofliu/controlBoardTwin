@@ -136,6 +136,7 @@
     rebooted(why) {
       this.outPins = {}; this.lastCmdByPin = {}; this.buf = []; this.sysex = null;
       this.log(`設備重新開機（${why}）。`, 'w');
+      this.release().catch(() => { });   // 虛擬設備：授權已撤銷，控制權也交出去（否則別人一直拿不到）
       if (this.hooks.onReboot) this.hooks.onReboot(why);
     }
     // 重新開機後恢復唯讀觀測：再送一次輸入腳位的設定與回報（只碰輸入，不改變任何輸出）

@@ -107,7 +107,7 @@ curl -X POST -d '{"part":"BTN1","action":"press","atDevMs":12345.5}' http://127.
 - 連線前在網址旁邊填上你的名稱（其他人會看到）；連線後「真機連線」第 1 步顯示「這台虛擬設備有 N 個連線：…· 控制權：…」。
 - 「授權受控寫入」時向虛擬設備主機取得**唯一的控制權**；別人的畫面顯示「控制權：老師（你只能唯讀觀看）」，授權按鈕停用。
 - 沒有控制權的連線送出的寫入（輸出、伺服、重新啟動、把別人的輸出腳位改成輸入）在主機就被擋下，不會到晶片，事件紀錄會說明。
-- 控制權在「停止寫入」、中斷連線（包括直接關掉分頁）、或控制者 10 秒沒有任何訊息時釋放。
+- 控制權在「停止寫入」、中斷連線（包括直接關掉分頁）、設備重新開機、或控制者 10 秒沒有任何訊息時釋放。
 - 查詢的回覆只送給問的人：別人連線時的交握不會讓你誤判「設備重新開機」，別人的回讀也不會變成你的確認。
 - 上傳程式與序列埠監看需要獨占：有其他人連著時會說明，請其他人先中斷。工作台頁顯示目前的連線與控制者；`GET /api/devices/uno-1` 的 `hub` 欄位列出每個連線被擋下幾則訊息。
 
@@ -268,9 +268,9 @@ e2e/           Playwright 端到端測試
 ## 測試
 
 ```bash
-node --test --test-concurrency=1 tests/*.test.js     # 157 項（需要 g++；虛擬硬體測試與第 4 階段驗收需要 arduino-cli 與 avr-nm）
+node --test --test-concurrency=1 tests/*.test.js     # 158 項（需要 g++；虛擬硬體測試與第 4 階段驗收需要 arduino-cli 與 avr-nm）
 python3 -m unittest discover -s tests -p "test_*.py" # 17 項（上傳端到端需要 avrdude 與 socat）
-python3 e2e/e2e.py                                   # 248 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults vupload vmulti）
+python3 e2e/e2e.py                                   # 249 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults vupload vmulti）
 ```
 
 ### 示範影片

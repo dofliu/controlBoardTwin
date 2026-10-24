@@ -226,7 +226,7 @@
 
 ### 第 5 階段實作紀錄（V2.12，2026-10-24）
 
-- 做了：`tools/vdev/hub.js`（多個連線、控制權、Firmata 轉接：寫入只有控制者能送、查詢的回覆只送給問的人）；協定 2（`hello` 帶名稱與 `mode`，`lock`、`presence`）；觀測頁的名稱欄、連線名單與控制權、授權時取得控制權、被釋放時回到唯讀；`src/core/session.js`＋`src/ui/record.js`（連線紀錄、匯出、在模擬中重播並比對）；`tests/vdev_multi.test.js`（6 項）、`tests/session.test.js`（3 項）、E2E 段落 `vmulti`（15 項，兩個瀏覽器）。
+- 做了：`tools/vdev/hub.js`（多個連線、控制權、Firmata 轉接：寫入只有控制者能送、查詢的回覆只送給問的人）；協定 2（`hello` 帶名稱與 `mode`，`lock`、`presence`）；觀測頁的名稱欄、連線名單與控制權、授權時取得控制權、被釋放時回到唯讀；`src/core/session.js`＋`src/ui/record.js`（連線紀錄、匯出、在模擬中重播並比對）；`tests/vdev_multi.test.js`（7 項）、`tests/session.test.js`（3 項）、E2E 段落 `vmulti`（15 項，兩個瀏覽器）。
 - 和原本設計不同的地方：
   - §4.5 只寫了 `lock` 訊息；實際上晶片只有一份 Firmata 狀態，多人連線還需要「查詢回覆只給問的人」，否則 V2.10 的重新開機偵測會在別人連線時誤判。
   - 「重播」的意思定為：照紀錄重送輸入、在模擬中重算、和紀錄比對（不是把量測重新顯示一次）。用模擬時間對齊，不用實際時間（畫面慢時兩者對不上）。
