@@ -426,6 +426,99 @@ async def vdev_flow(p):
     finally:
         await b.close(); srv.kill()
 
+async def vboards_flow(p):
+    """雲端虛擬硬體第 6 階段：同一台虛擬設備主機上的虛擬樹莓派（pi_bridge＋模擬腳位）與虛擬 ESP32（協定模型，不是實際韌體）。
+    介面選「虛擬設備」來源、預設網址依板型；連線後各處標示虛擬與種類；工作台由這個測試經主機的 HTTP API 操作。"""
+    import urllib.request
+    VPORT = 8770; base = f'http://127.0.0.1:{VPORT}/api/devices/'
+    srv = subprocess.Popen(['node', str(ROOT / 'tools' / 'vdev' / 'server.js'), '--port', str(VPORT), '--pi', 'pi-dist-gauge', '--esp32', 'esp32-hold-blink'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(VPORT)
+    def state(d): return json.loads(urllib.request.urlopen(base + d, timeout=5).read())
+    def bench(d, q): urllib.request.urlopen(urllib.request.Request(base + d + '/bench', data=json.dumps(q).encode(), method='POST'), timeout=5).read()
+    def part(d, pid): return next(x for x in state(d)['bench']['parts'] if x['id'] == pid)
+    # 等虛擬樹莓派（子程序）就緒
+    for i in range(100):
+        try: state('pi-1'); break
+        except Exception: await asyncio.sleep(0.1)
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 1000})
+    try:
+        pg = await ctx.new_page(); errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+        await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p")
+        async def load(exp, board):
+            await ev(pg, "([e,b])=>{const r=DL.experiments.solved(e,b); doflab.load(DL.project.clone(r.project,{name:'虛擬'+b,origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}})); }", [exp, board])
+            await pg.click('#t-behavior'); await pg.wait_for_timeout(400); await pg.click('#btnConfirm')
+            await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+            await pg.check('input[name="hwSrc"][value="virtual"]'); await pg.wait_for_timeout(100)
+        # ---------- 虛擬樹莓派 ----------
+        await load('dist-gauge', 'pi4b')
+        body = await pg.inner_text('#hwBody')
+        check("虛擬樹莓派：來源有「網路閘道（實體樹莓派）」與「虛擬設備」；預設網址指向 pi-1；說明寫明不是實體樹莓派、只模擬距離、不能部署",
+              await pg.input_value('#vdevUrl') == f'ws://127.0.0.1:{VPORT}/dev/pi-1' and await pg.locator('input[name="hwSrc"][value="pibridge"]').count() == 1 and '不是實體樹莓派' in body and '只模擬距離' in body and '不能部署' in body and await pg.locator('#vdevName').count() == 0, body[:400])
+        await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=20000); await pg.wait_for_timeout(300)
+        body = await pg.inner_text('#hwBody'); pill = await pg.inner_text('#modePill')
+        check("虛擬樹莓派：連線後辨識寫「虛擬設備 pi-1、不是實體樹莓派」，模式標籤「虛擬設備 · 唯讀」，量測欄「量測（虛擬）」",
+              'pi-1' in body and '不是實體樹莓派' in body and pill.endswith('虛擬設備 · 唯讀') and await pg.inner_text('#thMeas') == '量測（虛擬）' and await ev(pg, "doflab.twin.conn.virtual && doflab.twin.conn.deviceId.startsWith('vdev:pi-1@')"), body[:300] + ' | ' + pill)
+        href = await pg.get_attribute('#hwBody a[target=_blank]', 'href')
+        check("虛擬樹莓派：「開啟工作台」直接選到 pi-1", href == f'http://127.0.0.1:{VPORT}/?d=pi-1', href)
+        bench('pi-1', {'part': 'US1', 'action': 'set', 'cm': 30})
+        try: await pg.wait_for_function("(v => v.measured && Math.abs(v.measured.v - 30) <= 1 && v.quality === 'ok')(doflab.twin.view('US1.distance'))", timeout=5000); ok = True
+        except Exception: ok = False
+        check("虛擬樹莓派：工作台把距離設成 30 cm → 介面的量測層 30 cm", ok, json.dumps(await ev(pg, "doflab.twin.view('US1.distance')"))[:200])
+        for cb in await pg.locator('[data-chk]').all(): await cb.check()
+        await pg.click('#hwAuth'); await pg.wait_for_timeout(300); await pg.click('#simRun')
+        try: await pg.wait_for_function("(v => v.ack && v.commanded && v.ack.id === v.commanded.id)(doflab.twin.view('SERVO1.angle'))", timeout=8000); ok = True
+        except Exception: ok = False
+        cmd = await ev(pg, "doflab.twin.view('SERVO1.angle').commanded.v"); s1 = part('pi-1', 'SERVO1')
+        check("虛擬樹莓派：受控寫入 → 伺服命令經網路到 pi_bridge，收到 ACK；工作台量到的脈寬 = 500 + 角度 × 1900 / 180 µs（pi_bridge 的設定）",
+              ok and (await pg.inner_text('#modePill')).endswith('虛擬設備 · 受控寫入') and s1['pulseUs'] is not None and abs(s1['pulseUs'] - (500 + cmd * 1900 / 180)) <= 3, json.dumps([cmd, s1]))
+        bench('pi-1', {'part': 'US1', 'action': 'set', 'cm': 12})
+        try: await pg.wait_for_function("(v => v.ack && v.commanded && v.ack.id === v.commanded.id && v.commanded.v !== %s)(doflab.twin.view('SERVO1.angle'))" % json.dumps(cmd), timeout=8000); ok = True
+        except Exception: ok = False
+        check("虛擬樹莓派：距離改成 12 cm → 介面算出新角度、命令再次確認；SG90 量測欄仍是「無回授」", ok and await ev(pg, "doflab.twin.view('SERVO1.angle').quality") == 'none')
+        await pg.screenshot(path=str(SHOTS / "v6_pi_control.png"))
+        await pg.click('#hwDisc'); await pg.wait_for_timeout(500)
+        # ---------- 虛擬 ESP32（協定模型） ----------
+        await load('hold-blink', 'esp32')
+        body = await pg.inner_text('#hwBody')
+        check("虛擬 ESP32：預設網址指向 esp32-1；說明寫明「協定模型」「不是實際韌體」；按鈕寫「連接虛擬 ESP32（協定模型）」",
+              await pg.input_value('#vdevUrl') == f'ws://127.0.0.1:{VPORT}/dev/esp32-1' and '協定模型' in body and '不是實際韌體' in body and '連接虛擬 ESP32（協定模型）' in body, body[:400])
+        await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=20000); await pg.wait_for_timeout(300)
+        body = await pg.inner_text('#hwBody')
+        check("虛擬 ESP32：連線後辨識與說明都寫「協定模型、不是實際韌體」，回報 40 個腳位；驗證狀態寫「已在虛擬設備（協定模型）驗證」",
+              '協定模型' in body and '不是實際韌體' in body and '40 個腳位' in body and '已在虛擬設備（協定模型）驗證' in body and (await pg.inner_text('#modePill')).endswith('虛擬設備 · 唯讀'), body[:500])
+        bench('esp32-1', {'part': 'BTN1', 'action': 'press'})
+        try: await pg.wait_for_function("doflab.twin.view('BTN1.pressed').measured && doflab.twin.view('BTN1.pressed').measured.v === true", timeout=5000); ok = True
+        except Exception: ok = False
+        check("虛擬 ESP32：工作台按下 GPIO4 的按鈕 → 介面量測按下", ok)
+        for cb in await pg.locator('[data-chk]').all(): await cb.check()
+        await pg.click('#hwAuth'); await pg.wait_for_timeout(300); await pg.click('#simRun')
+        t0 = part('esp32-1', 'LED1')['toggles']
+        try:
+            for i in range(60):
+                await asyncio.sleep(0.1)
+                if part('esp32-1', 'LED1')['toggles'] - t0 >= 2: break
+            ok = part('esp32-1', 'LED1')['toggles'] - t0 >= 2 and await ev(pg, "(v => !!(v.ack && v.ack.matches))(doflab.twin.view('LED1.state'))")
+        except Exception: ok = False
+        check("虛擬 ESP32：按住按鈕 → 行為在介面執行、命令送到協定模型 → 工作台 GPIO23 的 LED 閃爍，並收到回讀 ACK", ok)
+        await pg.screenshot(path=str(SHOTS / "v6_esp32_control.png"))
+        bench('esp32-1', {'part': 'BTN1', 'action': 'release'})
+        await pg.click('#hwDisc'); await pg.wait_for_timeout(300)
+        # ---------- 工作台頁：設備選單、腳位名稱、故障按鈕依板型 ----------
+        bp = await ctx.new_page(); await bp.goto(f'http://127.0.0.1:{VPORT}/?d=pi-1'); await bp.wait_for_function("window.__bench && window.__bench.board === 'pi4b' && document.querySelector('[data-part=SERVO1]')")
+        txt = await bp.inner_text('body')
+        check("工作台頁（虛擬樹莓派）：設備選單有三台、標示「pi_bridge＋gpiozero 模擬腳位」、腳位寫 GPIO、沒有 RESET 與瞬間斷電",
+              await bp.locator('#devSel option').count() == 3 and 'pi_bridge' in await bp.inner_text('#kindTag') and 'GPIO18' in txt and 'TRIG GPIO5' in txt and not await bp.is_visible('#fReset') and not await bp.is_visible('#fBrownout') and await bp.is_visible('#fDisconnect'), txt[:300])
+        await bp.screenshot(path=str(SHOTS / "v6_bench_pi.png"))
+        await bp.select_option('#devSel', 'esp32-1'); await bp.wait_for_function("window.__bench && window.__bench.board === 'esp32' && document.querySelector('[data-part=LED1]')")
+        txt = await bp.inner_text('body')
+        check("工作台頁（虛擬 ESP32）：切換設備後標示「協定模型，不是實際韌體」、腳位寫 GPIO23、有 RESET；網址改成 ?d=esp32-1",
+              '協定模型' in await bp.inner_text('#kindTag') and '不是實際韌體' in await bp.inner_text('#kindTag') and 'GPIO23 → 220 Ω' in txt and 'GPIO4 → GND' in txt and await bp.is_visible('#fReset') and bp.url.endswith('?d=esp32-1'), txt[:300])
+        await bp.screenshot(path=str(SHOTS / "v6_bench_esp32.png"))
+        check("第 6 階段流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    finally:
+        await b.close(); srv.terminate()
+        try: srv.wait(5)
+        except Exception: srv.kill()
+
 async def bench_flow(p):
     """雲端虛擬硬體第 2 階段：兩個介面同時開著——DofLab（左）與虛擬設備的工作台頁（右，另一個程序提供的網頁）。
     工作台的按鈕、拉桿都在工作台頁上用滑鼠操作；DofLab 那邊只看得到 Firmata 回報的量測與回讀。"""
@@ -1488,6 +1581,7 @@ async def main():
             if on('upload'): await upload_flow(p)
             if on('vupload'): await vupload_flow(p)
             if on('vmulti'): await vmulti_flow(p)
+            if on('vboards'): await vboards_flow(p)
             if on('pideploy'): await pi_deploy(p)
             if on('mobile'): await mobile(p)
             if on('dark'): await dark(p)

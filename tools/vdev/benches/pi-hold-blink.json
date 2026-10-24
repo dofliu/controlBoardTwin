@@ -1,0 +1,20 @@
+{
+ "id": "pi-hold-blink",
+ "board": "pi4b",
+ "name": "樹莓派：按鈕 GPIO27＋LED GPIO17（與「按住閃爍」「按一下切換」相同接線）",
+ "seed": 20261024,
+ "parts": [
+  {
+   "id": "BTN1",
+   "type": "button",
+   "pin": 27,
+   "bounceMs": 8
+  },
+  {
+   "id": "LED1",
+   "type": "led",
+   "pin": 17,
+   "ohm": 220
+  }
+ ]
+}

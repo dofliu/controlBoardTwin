@@ -1,9 +1,12 @@
 // 一台虛擬設備：avr8js 虛擬 Uno（跑真的 .hex）＋工作台＋即時時鐘＋收到的 Firmata 位元組紀錄。
+// 第 6 階段：board 為 esp32 時改用 ESP32 協定模型（esp32model.js：行為和 DofLabFirmata 相同的 JS 程式，不是實際韌體；沒有開機程式、不能上傳）。
 // 由 server.js 放在自己的 worker thread 裡執行（每台設備一個），晶片模擬不會卡住網路。
 // 時間：晶片時間以 1 倍速對齊實際時間；CPU 跟不上時晶片時間會落後（state().realtime 顯示比例），不會跳過指令。
 const fs = require('fs'); const path = require('path');
 const { VirtualUno, RESET, loadHex, FREQ } = require('./avrsim');
 const { Bench, DEFAULT_BENCH } = require('./bench');
+const { VirtualEsp32, pinValid: esp32PinValid } = require('./esp32model');
+const ESP32_NOTE = '虛擬設備：ESP32 協定模型（行為和 DofLabFirmata 相同的 JS 程式），不是實際韌體，也不是實體板子';
 
 const FIXTURES = path.join(__dirname, '..', '..', 'tests', 'fixtures');
 const DEFAULT_HEX = path.join(FIXTURES, 'DofLabFirmata-uno.hex');
@@ -56,7 +59,21 @@ class VirtualDevice {
   // opts：{ id, hex（路徑或 hex 文字）, bench（工作台規格）, speed（1 = 即時） }
   constructor(opts) {
     opts = opts || {};
-    this.id = opts.id || 'uno-1'; this.board = 'uno';
+    this.id = opts.id || 'uno-1'; this.board = opts.board || 'uno';
+    this.uploads = 0; this.seenResets = 0; this.seenSpm = 0; this.resetLog = [];
+    if (this.board === 'esp32' || this.board === 'esp32doit') {
+      this.uno = new VirtualEsp32({ board: this.board }); this.known = [];
+      this.firmware = { name: 'DofLabFirmata', model: '協定模型', note: '協定模型（JS），不是實際韌體', uploaded: false, bootloader: null };
+    } else if (this.board === 'uno') this.initUno(opts);
+    else throw new Error(`虛擬設備不支援板型 ${this.board}（樹莓派由 pihost.js 啟動 pi_bridge）`);
+    this.bench = new Bench(this.uno, opts.bench || (this.board === 'uno' ? DEFAULT_BENCH : 'esp32-hold-blink'));
+    this.speed = opts.speed || 1;
+    this.sniff = new FirmataSniffer(); this.total = new FirmataSniffer();
+    this.tx = []; this.onTx = null; this.onEvent = null;
+    this.uno.onSerial = b => this.tx.push(b);
+    this.dtr = null; this.links = 0; this.linked = false; this.resets = 0;
+  }
+  initUno(opts) {
     const hexPath = opts.hex || DEFAULT_HEX;
     this.hexText = String(hexPath).startsWith(':') ? hexPath : fs.readFileSync(hexPath, 'utf8');
     const name0 = opts.firmwareName || (/DofLabFirmata/.test(hexPath) ? 'DofLabFirmata' : path.basename(String(hexPath)).replace(/\.hex$/, ''));
@@ -64,23 +81,19 @@ class VirtualDevice {
     this.known = [{ name: 'DofLabFirmata', img: image(fs.readFileSync(DEFAULT_HEX, 'utf8')) }, { name: name0, img: image(this.hexText) }];
     const boot = opts.bootloader === false ? null : fs.readFileSync(opts.bootloader || OPTIBOOT_HEX, 'utf8');
     this.uno = new VirtualUno(this.hexText, { bootloader: boot });
-    this.uploads = 0; this.seenResets = 0; this.seenSpm = 0; this.resetLog = [];
     this.firmware = this.identify();
-    this.bench = new Bench(this.uno, opts.bench || DEFAULT_BENCH);
-    this.speed = opts.speed || 1;
-    this.sniff = new FirmataSniffer(); this.total = new FirmataSniffer();
-    this.tx = []; this.onTx = null; this.onEvent = null;
-    this.uno.onSerial = b => this.tx.push(b);
-    this.dtr = null; this.links = 0; this.linked = false; this.resets = 0;
   }
   // 介面送來的位元組（序列埠的 RX）
   rx(bytes) { this.sniff.feed(bytes); this.total.feed(bytes); this.uno.sendBytes(bytes); }
   // USB 晶片的控制線：DTR 由「未啟用」變成「啟用」時，Uno 的 RESET 腳經電容收到脈衝 → 晶片重置（與實體 Uno 相同）
+  // ESP32 協定模型不模擬 DevKit 的自動重置電路：DTR／RTS 只記錄，不重新啟動
   signals(s) {
+    if (this.board !== 'uno') { if (s && typeof s.dtr === 'boolean') this.dtr = s.dtr; return; }
     if (s && typeof s.dtr === 'boolean') { if (s.dtr && this.dtr === false) this.reset('DTR 觸發重置（與 Arduino IDE 開啟序列埠相同）'); this.dtr = s.dtr; }
   }
   // 現在快閃記憶體裡的程式：{ name, sha256（應用程式區）, uploaded（是否經 STK500 上傳）}
   identify() {
+    if (this.board !== 'uno') return this.firmware;
     const f = new Uint8Array(this.uno.flash.buffer); const same = img => img.every((v, i) => f[i] === v);
     const k = this.known.find(x => same(x.img));
     return { name: k ? k.name : '上傳的程式', sha256: k ? sha(k.img) : appHash(this.uno.flash), uploaded: this.uploads > 0, bootloader: this.uno.bootloader ? 'Optiboot' : null };
@@ -117,9 +130,9 @@ class VirtualDevice {
   }
   stop() { clearInterval(this.timer); }
   realtime() { const w = this.window || []; if (w.length < 2) return null; const a = w[0], b = w[w.length - 1]; return b[0] > a[0] ? Math.round((b[1] - a[1]) / (b[0] - a[0]) * 100) / 100 : null; }
-  pins() { const out = {}; for (let n = 0; n < 20; n++) { const s = this.uno.pinState(n); out[n] = ['low', 'high', 'input', 'input-pullup'][s] || String(s); } return out; }
+  pins() { const out = {}; for (let n = 0; n < (this.board === 'uno' ? 20 : 40); n++) { if (this.board !== 'uno' && !esp32PinValid(n)) continue; const s = this.uno.pinState(n); out[n] = ['low', 'high', 'input', 'input-pullup'][s] || String(s); } return out; }
   state() {
-    return { id: this.id, kind: 'virtual', board: this.board, firmware: this.firmware, uploads: this.uploads, devMs: Math.round(this.uno.timeMs), realtime: this.realtime(), lagResets: this.lagResets || 0, resets: this.resets, linked: this.linked, links: this.links, pins: this.pins(), bench: this.bench.state(), traffic: this.sniff.summary(), trafficTotal: this.total.summary() };
+    return { id: this.id, kind: 'virtual', board: this.board, model: this.board === 'uno' ? 'avr8js' : 'protocol', note: this.board === 'uno' ? null : ESP32_NOTE, firmware: this.firmware, uploads: this.uploads, devMs: Math.round(this.uno.timeMs), realtime: this.realtime(), lagResets: this.lagResets || 0, resets: this.resets, linked: this.linked, links: this.links, pins: this.pins(), bench: this.bench.state(), traffic: this.sniff.summary(), trafficTotal: this.total.summary() };
   }
   // 主執行緒的查詢與工作台操作
   handle(q) {
@@ -137,7 +150,11 @@ class VirtualDevice {
     if (q.op === 'fault' && q.fault === 'brownout') { this.reset('電壓瞬間掉太低（brown-out，故障注入）', RESET.BORF); return this.state(); }
     throw new Error('未知的查詢 ' + q.op);
   }
-  hello() { return { kind: 'virtual', board: this.board, device: this.id, firmware: this.firmware, bench: this.bench.spec.id, benchName: this.bench.spec.name, clock: 'virtual', speed: this.speed, mcu: 'ATmega328P（avr8js 模擬）' }; }
+  hello() {
+    const h = { kind: 'virtual', board: this.board, device: this.id, firmware: this.firmware, bench: this.bench.spec.id, benchName: this.bench.spec.name, clock: 'virtual', speed: this.speed, mcu: 'ATmega328P（avr8js 模擬）' };
+    if (this.board !== 'uno') Object.assign(h, { mcu: 'ESP32（協定模型，不模擬 Xtensa 指令）', model: 'protocol', note: ESP32_NOTE });
+    return h;
+  }
 }
 
 // 在 worker thread 裡執行：與 server.js 以訊息溝通

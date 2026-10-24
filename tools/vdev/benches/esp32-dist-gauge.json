@@ -1,0 +1,11 @@
+{
+ "id": "esp32-dist-gauge",
+ "name": "ESP32：超音波＋伺服（與 ESP32-DevKitC 的「距離儀表」相同接線）",
+ "board": "esp32",
+ "seed": 20261024,
+ "note": "協定模型，不是實際韌體",
+ "parts": [
+  { "id": "US1", "type": "ultrasonic", "trig": 26, "echo": 27, "cm": 100 },
+  { "id": "SERVO1", "type": "servo", "pin": 18 }
+ ]
+}

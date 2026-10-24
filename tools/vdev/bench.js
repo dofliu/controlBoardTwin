@@ -3,17 +3,19 @@
 // 介面看不到工作台：介面只看得到 Firmata 回報的東西（量測、回讀）。工作台的狀態只給工作台頁、測試與老師看。
 // 元件模型都是教學假設，參數寫在工作台規格裡（tools/vdev/benches/*.json），可以調整：
 //   button      按下拉到 GND；放開時視為高電位（假設韌體開了內部上拉）。按下與放開各有 0–bounceMs 的隨機彈跳。
-//   led         依腳位的實際電位（不是介面的 ACK）判斷亮滅；以 5 V、順向電壓 2.0 V、限流電阻估算電流，超過 20 mA 標示警告。
-//   ldr         光敏分壓模組：AO ≈ 5 V × 亮度比例（inverted 時相反），加上 ±noise 的隨機雜訊；10 位元量化由 avr8js 的 ADC 做。
+//   led         依腳位的實際電位（不是介面的 ACK）判斷亮滅；以電源電壓（Uno 5 V、ESP32 3.3 V）、順向電壓 2.0 V、限流電阻估算電流，超過 20 mA 標示警告。
+//   ldr         光敏分壓模組：AO ≈ 電源電壓 × 亮度比例（inverted 時相反），加上 ±noise 的隨機雜訊；量化由晶片做（Uno：avr8js 的 10 位元 ADC；ESP32：協定模型的 12 位元）。
 //   ultrasonic  HC-SR04 時序：TRIG ≥ 10 µs 後 460 µs ECHO 變高，寬度 = 距離 × 58 µs；沒有物體或掉回波時 ECHO 維持高電位 38 ms。
 //   servo       SG90：從腳位高電位寬度算命令角（544 µs = 0°、2400 µs = 180°，與 Arduino Servo 函式庫預設相同），
 //               再以有限速度（預設 600°/s，約 SG90 規格 0.1 s／60°）轉到該角度。**只在工作台顯示，不回報給介面**（SG90 沒有回授）。
 //   arm         三軸手臂：三顆 servo 的實際角度 →（各自的零位與方向）→ 關節角，並算出關節位置（只用來畫圖與比對）。
 // 故障（第 3 階段）：每個元件都可以「拔線／接回」（unplug／plug）；超音波可以「卡住」（stuck：ECHO 一直是高電位，韌體就不再量測、不再回報）。
+// 板型（第 6 階段）：規格的 board 是 uno（預設，接虛擬 Uno）或 esp32（接 ESP32 協定模型 esp32model.js）；腳位檢查、電源電壓（5 V／3.3 V）依板型。
+//   樹莓派的工作台是 Python 寫的（tools/vdev/pi_bench.py，接 pi_bridge 的 gpiozero 模擬腳位），規格格式相同。
 const avr = require('avr8js');
 const path = require('path'); const fs = require('fs');
 
-const VCC = 5, LED_VF = 2.0;
+const LED_VF = 2.0;
 const PRESET_DIR = path.join(__dirname, 'benches');
 const DEFAULT_BENCH = 'hold-blink';
 const TYPES = ['button', 'led', 'ldr', 'ultrasonic', 'servo', 'arm'];
@@ -30,25 +32,35 @@ function loadSpec(x) {
   if (!fs.existsSync(file)) throw new Error(`找不到工作台「${name}」。可用的預設：${presets().join('、')}`);
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
-const isPin = n => Number.isInteger(n) && n >= 0 && n <= 19;
-const pinName = n => n < 14 ? 'D' + n : 'A' + (n - 14);
+// 各板型：電源電壓、可用腳位、類比腳、只能輸入的腳（ESP32 的規則和 DofLabFirmata 的 pinValid 相同）
+const esp32Pin = n => n <= 5 || (n >= 12 && n <= 19) || (n >= 21 && n <= 23) || (n >= 25 && n <= 27) || (n >= 32 && n <= 36) || n === 39;
+const BOARDS = {
+  uno: { label: 'Uno', vcc: 5, isPin: n => n >= 0 && n <= 19, pinName: n => n < 14 ? 'D' + n : 'A' + (n - 14), range: 'D0–D13／A0–A5（14–19）', isAnalog: n => n >= 14, analogRange: 'A0–A5', analogCh: n => n - 14, inputOnly: () => false },
+  esp32: { label: 'ESP32', vcc: 3.3, isPin: n => n >= 0 && esp32Pin(n), pinName: n => 'GPIO' + n, range: 'ESP32 可用的 GPIO（0–5、12–19、21–23、25–27、32–36、39）', isAnalog: n => [32, 33, 34, 35, 36, 39].includes(n), analogRange: 'GPIO32–36、39（ADC1）', analogCh: n => n, inputOnly: n => n >= 34 },
+};
 
 class Bench {
   constructor(uno, spec) {
-    this.uno = uno; this.spec = loadSpec(spec);
+    this.uno = uno; this.spec = loadSpec(spec);   // uno：虛擬晶片（VirtualUno 或 ESP32 協定模型，介面相同）
+    const board = this.spec.board || 'uno', chipBoard = uno.board || 'uno';
+    const same = (a, b) => a === b || [a, b].every(x => x === 'esp32' || x === 'esp32doit');   // ESP32 兩種開發板是同一顆晶片
+    if (!same(board, chipBoard)) throw new Error(`工作台「${this.spec.id}」是 ${board} 用的，不能接在 ${chipBoard} 上`);
+    const B = this.B = BOARDS[board === 'esp32doit' ? 'esp32' : board]; if (!B) throw new Error(`工作台不支援板型 ${board}`);
+    this.vcc = B.vcc;
     this.rand = rng(this.spec.seed || 1);
     this.parts = {}; this.log = []; this.watchers = []; this.trace = [];
     const used = {};
-    const claim = (p, n, what) => {
-      if (!isPin(n)) throw new Error(`${p.id} 的${what}腳位 ${n} 不是 Uno 的 D0–D13／A0–A5（14–19）`);
-      if (used[n]) throw new Error(`${pinName(n)} 同時接了 ${used[n]} 與 ${p.id}`);
+    const claim = (p, n, what, output) => {
+      if (!Number.isInteger(n) || !B.isPin(n)) throw new Error(`${p.id} 的${what}腳位 ${n} 不是 ${B.label} 的 ${B.range}`);
+      if (output && B.inputOnly(n)) throw new Error(`${p.id} 的${what}腳位 ${B.pinName(n)} 只能輸入`);
+      if (used[n]) throw new Error(`${B.pinName(n)} 同時接了 ${used[n]} 與 ${p.id}`);
       used[n] = p.id;
     };
     for (const p of this.spec.parts) {
       if (!TYPES.includes(p.type)) throw new Error(`工作台不支援元件類型 ${p.type}（${p.id}）`);
-      if (p.type === 'ultrasonic') { claim(p, p.trig, ' TRIG '); claim(p, p.echo, ' ECHO '); }
-      else if (p.type === 'ldr') { claim(p, p.pin, '類比'); if (p.pin < 14) throw new Error(`${p.id} 必須接在 A0–A5`); }
-      else if (p.type !== 'arm') claim(p, p.pin, '');
+      if (p.type === 'ultrasonic') { claim(p, p.trig, ' TRIG ', true); claim(p, p.echo, ' ECHO '); }
+      else if (p.type === 'ldr') { claim(p, p.pin, '類比'); if (!B.isAnalog(p.pin)) throw new Error(`${p.id} 必須接在 ${B.analogRange}`); }
+      else if (p.type !== 'arm') claim(p, p.pin, '', p.type === 'led' || p.type === 'servo');
       this.parts[p.id] = Object.assign({}, p);
     }
     for (const p of Object.values(this.parts)) this.init(p);
@@ -76,10 +88,10 @@ class Bench {
   }
   // ---------- 光敏模組 ----------
   refreshLdr(p) {
-    if (p.unplugged) { p.volts = 0; this.uno.setAnalog(p.pin - 14, 0); return; }   // AO 拔掉：類比腳空接，這裡當成 0 V
+    if (p.unplugged) { p.volts = 0; this.uno.setAnalog(this.B.analogCh(p.pin), 0); return; }   // AO 拔掉：類比腳空接，這裡當成 0 V
     const ratio = Math.max(0, Math.min(100, p.light)) / 100;
-    const v = VCC * (p.inverted ? 1 - ratio : ratio) * (1 + (this.rand() * 2 - 1) * p.noise);
-    p.volts = Math.max(0, Math.min(VCC, v)); this.uno.setAnalog(p.pin - 14, p.volts);
+    const v = this.vcc * (p.inverted ? 1 - ratio : ratio) * (1 + (this.rand() * 2 - 1) * p.noise);
+    p.volts = Math.max(0, Math.min(this.vcc, v)); this.uno.setAnalog(this.B.analogCh(p.pin), p.volts);
   }
   // ---------- 超音波 ----------
   initSonar(p) {
@@ -195,14 +207,14 @@ class Bench {
   partState0(p) {
     const r1 = x => x === null || x === undefined ? null : Math.round(x * 10) / 10;
     if (p.type === 'button') return { id: p.id, type: p.type, pin: p.pin, pressed: p.pressed, level: p.level ? 'high' : 'low', edges: p.edges, bounceMs: p.bounceMs };
-    if (p.type === 'led') { const mA = p.on ? Math.round((VCC - LED_VF) / p.ohm * 1000 * 10) / 10 : 0; return { id: p.id, type: p.type, pin: p.pin, ohm: p.ohm, on: p.on, mA, overCurrent: mA > 20, toggles: p.toggles, lastChangeMs: p.lastChangeMs }; }
+    if (p.type === 'led') { const mA = p.on ? Math.round((this.vcc - LED_VF) / p.ohm * 1000 * 10) / 10 : 0; return { id: p.id, type: p.type, pin: p.pin, ohm: p.ohm, on: p.on, mA, overCurrent: mA > 20, toggles: p.toggles, lastChangeMs: p.lastChangeMs }; }
     if (p.type === 'ldr') return { id: p.id, type: p.type, pin: p.pin, light: p.light, volts: Math.round(p.volts * 1000) / 1000, noise: p.noise, inverted: !!p.inverted };
     if (p.type === 'ultrasonic') return { id: p.id, type: p.type, trig: p.trig, echo: p.echo, cm: p.cm, drop: p.drop, pulses: p.pulses, echoes: p.echoes, dropped: p.dropped };
     if (p.type === 'servo') this.moveServo(p);
     if (p.type === 'servo') return { id: p.id, type: p.type, pin: p.pin, pulseUs: p.pulseUs, cmd: r1(p.cmd), angle: r1(p.angle), moving: p.cmd !== null && p.angle !== null && Math.abs(p.cmd - p.angle) > 0.5 && this.servoPowered(p), powered: this.servoPowered(p), pulses: p.pulses, speed: p.speed };
     return this.armState(p);
   }
-  state() { return { id: this.spec.id, name: this.spec.name, note: this.spec.note || null, parts: Object.values(this.parts).map(p => this.partState(p)), log: this.log.slice(-20) }; }
+  state() { return { id: this.spec.id, name: this.spec.name, board: this.spec.board || 'uno', vcc: this.vcc, note: this.spec.note || null, parts: Object.values(this.parts).map(p => this.partState(p)), log: this.log.slice(-20) }; }
 }
 
-module.exports = { Bench, DEFAULT_BENCH, loadSpec, presets, SERVO_MIN_US, SERVO_MAX_US };
+module.exports = { Bench, DEFAULT_BENCH, loadSpec, presets, BOARDS, SERVO_MIN_US, SERVO_MAX_US };

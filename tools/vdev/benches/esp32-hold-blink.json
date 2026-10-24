@@ -1,0 +1,11 @@
+{
+ "id": "esp32-hold-blink",
+ "name": "ESP32：按鈕＋LED（與 ESP32-DevKitC 的「按住閃爍」「按一下切換」相同接線）",
+ "board": "esp32",
+ "seed": 20261024,
+ "note": "協定模型，不是實際韌體：晶片端是行為和 DofLabFirmata 相同的 JS 程式",
+ "parts": [
+  { "id": "BTN1", "type": "button", "pin": 4, "bounceMs": 8 },
+  { "id": "LED1", "type": "led", "pin": 23, "ohm": 220 }
+ ]
+}

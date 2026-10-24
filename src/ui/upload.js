@@ -93,7 +93,7 @@
     el.querySelectorAll('[data-upm]').forEach(b => b.onclick = () => { up.method = b.dataset.upm; up.confirm = null; this.renderUpload(); });
     const bp = $('upPorts'); if (bp) bp.onclick = () => this.upListPorts();
     const ps = $('upPort'); if (ps) ps.onchange = () => { up.port = ps.value; };
-    const vu = $('upVdev'); if (vu) vu.onchange = () => { this.hw.vdevUrl = vu.value.trim(); try { localStorage.setItem('doflab.vdevUrl', this.hw.vdevUrl); } catch (e) { } };
+    const vu = $('upVdev'); if (vu) vu.onchange = () => this.setVdevUrl(vu.value.trim());
     const mo = $('upMonOpen'); if (mo) mo.onclick = () => this.vmonOpen();
     const mc = $('upMonClose'); if (mc) mc.onclick = () => this.vmonClose('已關閉');
     const us = $('upSerial'); if (us) us.scrollTop = us.scrollHeight;
@@ -147,7 +147,7 @@
         up.last = `已上傳到 ${board.short}：${r.bytes} 位元組，${r.verified ? '讀回比對一致' : '未比對'}，${(r.ms / 1000).toFixed(1)} 秒。`;
       } else if (method === 'virtual') {
         const hex = what === 'firmata' ? DL.firmware.unoHex : this.lastArtifacts.artifacts.hex;
-        const ue = $('upVdev') || $('vdevUrl'); const url = (ue && ue.value.trim()) || this.vdevUrl(); this.hw.vdevUrl = url;
+        const ue = $('upVdev') || $('vdevUrl'); const url = (ue && ue.value.trim()) || this.vdevUrl(); this.setVdevUrl(url);
         this.upLog(`開始上傳到虛擬 Uno（${url}，STK500 經網路；虛擬設備，不是實體板子）`);
         const port = DL.transport.wsSerialPort(url, { log: m => this.upLog(m) });
         const r = await DL.stk500.flash(port, hex, { log: m => this.upLog(m), onProgress: pr => { up.prog = pr; this.renderUpload(); } });
@@ -182,7 +182,7 @@
       ws.onmessage = ev => {
         let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
         if (m.op === 'hello') {
-          if (!m.deploy) { clearTimeout(t); ws.close(); reject(new Error('這個 pi_bridge 版本不支援部署，請更新 pi_bridge.py')); return; }
+          if (!m.deploy) { clearTimeout(t); ws.close(); reject(new Error(m.deployWhy || '這個 pi_bridge 版本不支援部署，請更新 pi_bridge.py')); return; }   // 虛擬樹莓派：說明為什麼不能部署
           ws.send(JSON.stringify({ op: 'deploy', id: 'd' + Date.now(), code, pins, confirm: true }));
         } else if (m.op === 'deployed') { clearTimeout(t); up.pi.ws = ws; up.pi.running = m; up.pi.lines = [`$ python3 ${m.path}`]; up.last = `已部署到樹莓派並開始執行（${m.bytes} 位元組，PID ${m.pid}）。`; resolve(m); }
         else if (m.op === 'error') { clearTimeout(t); if (!up.pi.running) { ws.close(); reject(new Error(m.message)); } else { up.pi.lines.push('錯誤：' + m.message); this.renderUpload(); } }
