@@ -784,11 +784,17 @@ async def faults_flow(p):
         check("接回後按一下：DofLab 顯示「已偵測到變化」", await wf(pg, "document.querySelector('#saw-BTN1').textContent.includes('已偵測到變化')", 5000))
 
         # ---------- 5. 設備重置（RESET）與瞬間斷電 ----------
-        await authorize(pg); await pg.click('#simRun'); await pg.wait_for_timeout(500)
-        for k in range(3):   # 按一下切換：按到工作台的 LED 亮為止（切換狀態接著前面的操作）
-            if part(state(), 'LED1')['on']: break
-            await hold(bp, 'BTN1', 250); await bp.wait_for_timeout(600)
-        await wf(pg, "(v=>v.ack && v.ack.v===1)(doflab.twin.view('LED1.state'))", 5000)
+        await authorize(pg); await pg.click('#simRun')
+        # 等「安靜」：收到的按鈕都已送進引擎、之後再過 100 ms 模擬時間（去彈跳），沒有在途命令、最新的命令已確認。
+        # 不能用固定延遲：headless 繪圖一幀 0.3–0.6 秒時，LED 可能先因為授權後的命令亮起，按下造成的切換（→ 0）還沒送出（完整測試時發生過）
+        async def settled():
+            t = await ev(pg, "(async()=>{ const q=()=>!(doflab.hw.btnQ||[]).length; for(let i=0;i<200&&!q();i++) await new Promise(r=>setTimeout(r,25)); return doflab.sim.time })()")
+            return await wf(pg, "(v=>doflab.sim.time>=%d+100 && !(doflab.hw.btnQ||[]).length && doflab.twin.pending.length===0 && v.commanded && v.ack && v.ack.id===v.commanded.id)(doflab.twin.view('LED1.state'))" % t, 8000)
+        for k in range(3):   # 按一下切換：按到 LED 的命令是 1 而且工作台的 LED 亮為止（切換狀態接著前面的操作）
+            await settled()
+            if await ev(pg, "doflab.twin.view('LED1.state').commanded.v") in (1, True) and part(state(), 'LED1')['on']: break
+            await hold(bp, 'BTN1', 250)
+            await wf(pg, "doflab.twin.view('BTN1.pressed').measured && doflab.twin.view('BTN1.pressed').measured.v === false", 4000)
         on0 = part(state(), 'LED1')['on']; w0 = state()['traffic']['writeCount']
         await bp.click('#fReset')
         ok = await wf(pg, "doflab.twin.mode==='hw-read' && doflab.events.some(e=>/設備重新開機/.test(e.text))", 6000)
@@ -796,6 +802,10 @@ async def faults_flow(p):
         check("按 RESET：DofLab 偵測到重新開機 → 撤銷寫入授權、回到「虛擬設備 · 唯讀」、模擬暫停，事件紀錄寫明原因", on0 and ok and pill.endswith('虛擬設備 · 唯讀') and not await ev(pg, "doflab.sim.running"), json.dumps([on0, ok, pill, await ev(pg, "doflab.sim.running")], ensure_ascii=False))
         st = state()
         check("重新開機後：晶片的 D13 回到輸入、工作台的 LED 熄滅，DofLab 沒有重送任何命令", st['pins']['13'] == 'input' and not part(st, 'LED1')['on'] and st['traffic']['writeCount'] == w0, json.dumps([st['pins']['13'], part(st, 'LED1'), w0, st['traffic']['writeCount'], st['traffic']['writes'][-4:], st['resets'], st['devMs'], json.loads(urllib.request.urlopen(api + '/trace', timeout=5).read())['resets'][-2:], await ev(pg, "doflab.events.slice(-14).map(e=>(e.simT!==undefined?e.simT+' ':'')+e.text)")], ensure_ascii=False))
+        # 產品規則本身（和上一項的時序無關）：依設備時間，重置之後設備沒有收到任何寫入
+        rs = [r for r in json.loads(urllib.request.urlopen(api + '/trace', timeout=5).read())['resets'] if r['flags'] == 2]; t_reset = rs[-1]['devMs'] if rs else None   # 2 = EXTRF（RESET 腳）；之後 Optiboot 以看門狗重置進入程式
+        late = [w for w in st['traffic']['writes'] if t_reset is not None and w.get('devMs', 0) >= t_reset]
+        check("重新開機後（依設備時間）：重置之後設備沒有收到任何寫入", t_reset is not None and not late, json.dumps([t_reset, late]))
         try: await pg.wait_for_function("document.querySelector('#vdevPresence') && document.querySelector('#vdevPresence').textContent.includes('沒有人控制')", timeout=5000); ok = True
         except Exception: ok = False
         ok = ok and await wf(bp, "document.querySelector('#holder') && document.querySelector('#holder').textContent === '沒有人'", 5000)
