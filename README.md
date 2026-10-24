@@ -1,4 +1,4 @@
-# DofLab V2.8 原型
+# DofLab V2.8.1 原型
 
 從電路配置、行為設計、模擬測試，到真實設備同步的教學與開發平台。本版依《DofLab 規劃文件 v0.1》重新開發。
 
@@ -208,7 +208,7 @@ e2e/           Playwright 端到端測試
 ```bash
 node --test --test-concurrency=1 tests/*.test.js     # 112 項（需要 g++；虛擬硬體測試需要 arduino-cli 與 avr-nm）
 python3 -m unittest discover -s tests -p "test_*.py" # 17 項（上傳端到端需要 avrdude 與 socat）
-python3 e2e/e2e.py                                   # 179 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev）
+python3 e2e/e2e.py                                   # 180 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev）
 ```
 
 ### 示範影片

@@ -210,8 +210,8 @@
     const b = DL.boards[boardId];
     if (b.driver === 'firmata') {
       const sources = b.id === 'uno' ? ['usb', 'virtual'] : ['usb'];
-      if (source === 'virtual' && sources.includes('virtual')) return { cls: FirmataDriver, source: 'virtual', sources, label: '虛擬設備（WebSocket＋Firmata）', status: '已在虛擬設備驗證：另一個程序以 avr8js 執行 DofLabFirmata 機器碼，資料經網路交換；不是實體板子' };
-      return { cls: FirmataDriver, source: 'usb', sources, label: 'USB 序列埠（Firmata）', status: b.id === 'uno' ? '已在虛擬 Uno（真實韌體）驗證，未以實體板驗證' : '協定在虛擬 Uno 驗證；使用者已在實體 ESP32 DevKit V1 實測連線、BOOT 同步與藍燈（2026-10-23）' };
+      if (source === 'virtual' && sources.includes('virtual')) return { cls: FirmataDriver, source: 'virtual', sources, label: '虛擬設備（WebSocket＋Firmata）', tag: '已在虛擬設備驗證', status: '已在虛擬設備驗證：另一個程序以 avr8js 執行 DofLabFirmata 機器碼，資料經網路交換；不是實體板子' };
+      return { cls: FirmataDriver, source: 'usb', sources, label: 'USB 序列埠（Firmata）', tag: b.id === 'uno' ? '已在虛擬 Uno 驗證，未接實體板' : '虛擬 Uno 驗證＋使用者實測', status: b.id === 'uno' ? '已在虛擬 Uno（真實韌體）驗證，未以實體板驗證' : '協定在虛擬 Uno 驗證；使用者已在實體 ESP32 DevKit V1 實測連線、BOOT 同步與藍燈（2026-10-23）' };
     }
     if (b.driver === 'pibridge') return { cls: PiBridgeDriver, source: 'pibridge', sources: ['pibridge'], label: '網路閘道（pi_bridge.py）', status: '已實作，僅以 --mock 模擬腳位測試' };
     return { cls: null, source: null, sources: [], label: '無', status: `${b.short} 的真機驅動尚未實作：可以模擬與產生程式，但不能連線同步。` };

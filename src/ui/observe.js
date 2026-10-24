@@ -257,7 +257,8 @@
       else if (!v.measured) meas = `<span class="q unknown">${mode === 'sim' ? '未連線' : '尚無讀值'}</span>`;
       else if (c.type === 'US' && mode !== 'sim' && this.hw.sonarUnsupported) meas = `<span class="q unknown">不支援</span><small>需要 DofLabFirmata</small>`;
       else meas = `<span class="v meas">${fmt(c, v.measured.v)}</span> <span class="q ${v.quality}">${{ ok: '有效', stale: '已過期', unknown: '未知' }[v.quality]}</span>${age(v.measured)}`;
-      rows.push(`<tr><td class="sig">${esc(s)}</td><td>${sim}</td><td>${tgt}</td><td>${cmd}</td><td>${ack}</td><td>${meas}</td></tr>`);
+      const dot = s.indexOf('.');   // 訊號名分兩行（元件／訊號），讓最重要的「量測」欄在窄側欄裡也看得到
+      rows.push(`<tr><td class="sig" title="${esc(s)}">${esc(s.slice(0, dot))}<small>${esc(s.slice(dot))}</small></td><td>${sim}</td><td>${tgt}</td><td>${cmd}</td><td>${ack}</td><td>${meas}</td></tr>`);
     }
     $('twinRows').innerHTML = rows.join('') || '<tr><td colspan="6" class="na">沒有訊號</td></tr>';
   };
@@ -343,7 +344,7 @@
   P.renderHw = function () {
     const el = $('hwBody'); if (!el || !this.p) return;
     const p = this.p; const board = DL.boards[p.board.type]; const src = this.hwSource(); const info = DL.drivers.driverFor(p.board.type, src); const virt = src === 'virtual';
-    $('drvStatus').textContent = info.status.split('：')[0]; $('drvStatus').className = 'status-tag ' + (info.cls ? 'st-unver' : 'st-no');
+    $('drvStatus').textContent = info.tag || info.status.split('：')[0]; $('drvStatus').title = info.status; $('drvStatus').className = 'status-tag ' + (info.cls ? 'st-unver' : 'st-no');   // 標籤只放短句，完整說明在滑鼠提示與卡片內
     if (!info.cls) { el.innerHTML = `<p>${esc(info.status)}</p><p class="hint">缺少驅動時，平台會拒絕連線，而不是假裝同步。</p>`; return; }
     const c = this.twin.conn; const connected = c.state === 'connected'; const mode = this.twin.mode;
     const a = this.analysis; const R = this.hwRequirements();
@@ -374,7 +375,7 @@
       ${step(2, '辨識板卡與能力', this.hw.identity ? (this.hw.identity.ok ? 'done' : 'cur') : '', s2)}
       ${step(3, '唯讀觀測與核對接線', connected ? (bindings.every(b => this.hw.checks[b.comp]) ? 'done' : 'cur') : '', s3)}
       ${step(4, '受控寫入', mode === 'hw-control' ? 'done' : connected && R.ok ? 'cur' : '', s4)}
-    </ol><p class="hint">斷線、資料過期、重連或裝置重啟時，不會自動重送未確認的命令；重連一律從唯讀開始。此流程不是實際接線或機械安全操作程序，電壓、電流、共地與供電請依實物規格核對。</p>`;
+    </ol><p class="hint" id="drvStatusFull">驗證狀態：${esc(info.status)}。</p><p class="hint">斷線、資料過期、重連或裝置重啟時，不會自動重送未確認的命令；重連一律從唯讀開始。此流程不是實際接線或機械安全操作程序，電壓、電流、共地與供電請依實物規格核對。</p>`;
     const cn = $('hwConn'); if (cn) cn.onclick = () => this.hwConnect();
     const rc = $('hwReconn'); if (rc) rc.onclick = () => this.hwConnect(true);
     if (this.bindFirmataFlash) this.bindFirmataFlash();

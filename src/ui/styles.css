@@ -218,6 +218,8 @@ table.twin{width:100%;border-collapse:collapse;font-size:.8rem;font-variant-nume
 table.twin th{font-size:.68rem;letter-spacing:.04em;color:var(--muted);text-align:left;font-weight:700;padding:6px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
 table.twin td{padding:6px;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}
 table.twin td.sig{font-family:var(--font-mono);font-weight:600}
+table.twin td.sig small{font-weight:500}
+table.twin small{white-space:normal;min-width:4.5em}
 table.twin .na{color:var(--muted);opacity:.6}
 table.twin small{display:block;color:var(--muted);font-size:.68rem}
 .v{font-family:var(--font-mono);font-weight:600}
@@ -240,6 +242,7 @@ canvas.trace{width:100%;height:180px;display:block}
 .ind{font-size:.7rem;font-weight:700;padding:1px 6px;border-radius:4px;background:var(--surface-3);color:var(--muted);white-space:nowrap}
 .ind.ok{background:var(--ok-soft);color:var(--ok)}
 .status-tag{font-size:.7rem;font-weight:800;padding:1px 7px;border-radius:4px;white-space:nowrap}
+.card > h3 > .status-tag{white-space:normal;text-align:right;min-width:0;line-height:1.35}
 .st-impl{background:var(--ok-soft);color:var(--ok)} .st-unver{background:var(--warn-soft);color:var(--warn)} .st-prop{background:var(--info-soft);color:var(--info)} .st-req{background:var(--surface-3);color:var(--ink)} .st-no{background:var(--err-soft);color:var(--err)}
 
 dialog{border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);padding:0;width:min(860px,calc(100vw - 24px));max-height:calc(100vh - 40px)}

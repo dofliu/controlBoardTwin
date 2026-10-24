@@ -914,6 +914,12 @@ async def v27_flow(p):
     ho = await pg.inner_text('#hudObserve') + ' | running=' + str(await ev(pg, "doflab.sim.running")) + ' ' + str(await ev(pg, "doflab.events.slice(0,3).map(e=>e.text).join(' / ')"))
     check("觀測頁：執行狀態與各元件目前的值浮在主畫面上；執行控制在畫面內", '執行中' in ho and 'LED1' in ho and 'BTN1' in ho and await ev(pg, "(()=>{const v=document.querySelector('#vpObserve').getBoundingClientRect(), r=document.querySelector('#simRun').getBoundingClientRect(); return r.top>v.top && r.bottom<=v.bottom})()"), ho)
     await pg.click('#simRun')
+    # 右側卡片沒有被截斷（V2.8.1 修正）：孿生狀態表不用橫向捲動就看得到「量測」欄；驅動狀態標籤不超出卡片標題
+    fit = []
+    for exp, board in (('hold-blink', 'uno'), ('dist-gauge', 'uno'), ('arm-3dof', 'uno'), ('hold-blink', 'esp32doit')):
+        await ev(pg, f"(()=>{{const r=DL.experiments.solved('{exp}','{board}'); doflab.load(r.project); doflab.ui.tab!=='observe' && document.querySelector('#t-observe').click(); }})()"); await pg.wait_for_timeout(300)
+        fit.append(await ev(pg, "(()=>{const w=document.querySelector('.twinwrap'), t=document.querySelector('#drvStatus'), h=t.parentElement; return [w.scrollWidth - w.clientWidth, h.scrollWidth - h.clientWidth, t.title.length > t.textContent.length || t.title === t.textContent]})()"))
+    check("觀測頁右側（1440×900）：孿生狀態表的「量測」欄完整顯示、驅動狀態標籤沒有被截斷，完整說明在提示與卡片內（4 種專案）", all(f[0] <= 0 and f[1] <= 0 and f[2] for f in fit) and '驗證狀態：' in await pg.inner_text('#hwBody'), json.dumps(fit))
     # ---- 手臂自動序列／手動 ----
     await ev(pg, "(()=>{const r=DL.experiments.solved('arm-3dof','uno'); doflab.load(DL.project.clone(r.project,{name:'序列',origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}})); })()")
     await pg.click('#t-arm'); await pg.wait_for_timeout(500)

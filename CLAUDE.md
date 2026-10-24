@@ -2,7 +2,7 @@
 
 DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Raspberry Pi 4B）：3D 電路配置 → 視覺積木行為 → 產生程式（C++／Python）→ 模擬 → 真機同步（數位孿生）。依《DofLab 規劃文件 v0.1》開發（規劃文件本身不在 repo 裡；需要時請使用者提供，放到 `docs/`）。
 
-目前版本：**V2.8 原型**（2026-10-23）。使用者是劉老師，介面、註解、文件、回覆一律用**繁體中文**。
+目前版本：**V2.8.1 原型**（2026-10-24）。使用者是劉老師，介面、註解、文件、回覆一律用**繁體中文**。
 
 ## 下一個工作
 
@@ -67,7 +67,7 @@ npm run check          # 所有 src/*.js 語法檢查（改完一定要跑）
 npm run build          # 產生 dist/
 npm run test:node      # Node 測試（目前 112 項；沒有 arduino-cli 時會略過 9 項）
 npm run test:py        # Python 測試（17 項；沒有 arduino-cli、avrdude、socat 時會略過）
-npm run test:e2e       # 建置＋打包＋瀏覽器測試（179 項，約 15 分鐘）
+npm run test:e2e       # 建置＋打包＋瀏覽器測試（180 項，約 15 分鐘）
 python3 e2e/e2e.py onboard v27   # 只跑部分段落：desktop breadboard teacher experiments pi ultrasonic onboard arm v27 uno vdev upload pideploy mobile dark
 npm run vdev                     # 虛擬設備主機（node tools/vdev/server.js），ws://127.0.0.1:8770/dev/uno-1，工作台 http://127.0.0.1:8770/
 python3 dist/doflab_server.py    # 本機編譯服務，開 http://localhost:8766
