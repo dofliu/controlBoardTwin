@@ -25,6 +25,7 @@
     $('simReset').onclick = () => { this.resetSim(); this.log('w', '模擬已重置到 t = 0'); this.renderObserve(); };
     $('simSpeed').onchange = e => { this.sim.speed = +e.target.value; };
     $('clearEvents').onclick = () => { this.events = []; this._evDirty = true; };
+    if (this.bindRec) this.bindRec();
   };
 
   P.defineSignals = function () {
@@ -54,6 +55,7 @@
     if (this.sim.running && this.p.arm && this.armOnRun) this.armOnRun();
     $('simRun').textContent = this.sim.running ? '❚❚ 暫停' : '▶ 執行'; $('simRun').classList.toggle('primary', !this.sim.running);
     this.log(this.sim.running ? 's' : 'w', this.sim.running ? `${this.twin.mode === 'hw-control' ? '開始以行為控制真機' : this.twin.mode === 'hw-read' ? '開始執行（唯讀：只推算，不送命令）' : '開始模擬'}` : '已暫停', this.sim.time);
+    if (this.recRun) this.recRun();
     this.renderTabs();
   };
   P.setHeld = function (id, down) {
@@ -82,18 +84,29 @@
     for (let i = 0; i < ms; i++) {
       this.sim.time++;
       const t = this.sim.time;
-      if (mode !== 'sim') this.feedButtons(wall ? wall.from + (wall.to - wall.from) * (i + 1) / ms : Infinity);
+      const tw = wall ? wall.from + (wall.to - wall.from) * (i + 1) / ms : performance.now();   // 這一毫秒對應的實際時間
+      if (mode !== 'sim') this.feedButtons(wall ? tw : Infinity);
+      const rp = this.replay ? this.replayApply(t) : null;   // 重播：紀錄裡「這一毫秒送進引擎的輸入」
+      const rec = mode !== 'sim' && this.recIn ? (sig, v, raw) => this.recIn(sig, v, raw, t, tw) : null;   // 連線紀錄：記下引擎實際收到的輸入（模擬時間）
       if (armAuto) this.armSeqTick(t);   // 手臂行為序列（與產生的程式同一套規則）
       for (const c of p.components) {
         if (isBtn(c)) {
-          if (mode === 'sim') e.setButton(c.id, !!this.sim.held[c.id]);
-          else { const s = this.twin.view(c.id + '.pressed'); const f = (this.hw.fed || {})[c.id + '.pressed']; e.setButton(c.id, s.quality === 'ok' ? (f !== undefined ? f : !!(s.measured && s.measured.v)) : false); }
+          const sg = c.id + '.pressed'; let v;
+          if (rp) v = !!(rp[sg] && rp[sg].v);
+          else if (mode === 'sim') v = !!this.sim.held[c.id];
+          else { const s = this.twin.view(sg); const f = (this.hw.fed || {})[sg]; v = s.quality === 'ok' ? (f !== undefined ? f : !!(s.measured && s.measured.v)) : false; }
+          e.setButton(c.id, v); if (rec) rec(sg, v);
         } else if (c.type === 'LDR') {
-          if (mode === 'sim') e.setLightPercent(c.id, this.sim.light[c.id]);
-          else { const s = this.twin.view(c.id + '.level'); if (s.quality === 'ok' && s.measured) e.setAdcRaw(c.id, s.measured.raw !== undefined ? s.measured.raw : s.measured.v); }
+          const sg = c.id + '.level';
+          if (rp) { const x = rp[sg]; if (x) { if (x.raw !== undefined) e.setAdcRaw(c.id, x.raw); else e.setLightPercent(c.id, x.v); } }
+          else if (mode === 'sim') e.setLightPercent(c.id, this.sim.light[c.id]);
+          else { const s = this.twin.view(sg); if (s.quality === 'ok' && s.measured) { const raw = s.measured.raw !== undefined ? s.measured.raw : s.measured.v; e.setAdcRaw(c.id, raw); if (rec) rec(sg, s.measured.v, raw); } }
         } else if (c.type === 'US') {
-          if (mode === 'sim') e.setDistance(c.id, this.sim.dist[c.id]);
-          else { const s = this.twin.view(c.id + '.distance'); e.setDistance(c.id, s.quality === 'ok' && s.measured ? s.measured.v : US_FAR); }   // 沒有有效量測：當成沒有物體（不推算）
+          const sg = c.id + '.distance'; let d;
+          if (rp) d = rp[sg] ? rp[sg].v : US_FAR;
+          else if (mode === 'sim') d = this.sim.dist[c.id];
+          else { const s = this.twin.view(sg); d = s.quality === 'ok' && s.measured ? s.measured.v : US_FAR; }   // 沒有有效量測：當成沒有物體（不推算）
+          e.setDistance(c.id, d); if (rec) rec(sg, d);
         }
       }
       const r = e.tick(t);
@@ -105,6 +118,7 @@
         const s = sigOf(c); if (!s || !(c.id in r.out) || armIds.includes(c.id)) continue;   // 手臂關節的伺服由手臂分頁控制
         const v = r.out[c.id];
         this.twin.simulate(s, v);
+        if (this.recOut) this.recOut(s, v, tw, t);   // 連線紀錄（真機模式）或重播的輸出
         if (mode === 'hw-control' && bnd[c.id]) {
           this.twin.target(s, v, 'behavior');
           const res = this.twin.command(s, v, 'behavior');
@@ -113,9 +127,9 @@
         }
       }
       for (const c of p.components) {
-        if (isBtn(c) && mode === 'sim') this.twin.simulate(c.id + '.pressed', !!this.sim.held[c.id]);
-        if (c.type === 'LDR' && mode === 'sim') this.twin.simulate(c.id + '.level', this.sim.light[c.id]);
-        if (c.type === 'US' && mode === 'sim') this.twin.simulate(c.id + '.distance', this.sim.dist[c.id]);
+        if (isBtn(c) && mode === 'sim') this.twin.simulate(c.id + '.pressed', this.replay ? !!(this.replay.cur[c.id + '.pressed'] || {}).v : !!this.sim.held[c.id]);
+        if (c.type === 'LDR' && mode === 'sim') this.twin.simulate(c.id + '.level', this.replay ? (this.replay.cur[c.id + '.level'] || {}).v : this.sim.light[c.id]);
+        if (c.type === 'US' && mode === 'sim') this.twin.simulate(c.id + '.distance', this.replay ? (this.replay.cur[c.id + '.distance'] || { v: US_FAR }).v : this.sim.dist[c.id]);
       }
     }
     if (armAuto) this.armSeqSync();
@@ -157,6 +171,7 @@
   P.frame = function () {
     const now = performance.now();
     const dtFrame = this._lastFrame ? now - this._lastFrame : 16; this._lastFrame = now;
+    if (this.replay) this.replayFrame(now);   // 重播連線紀錄：進度與結束
     if (this.armTick) this.armTick(dtFrame);
     if (this.sim.running) {
       if (this.sim.last === null) this.sim.last = now;
@@ -327,6 +342,7 @@
     else if (e.type === 'authorized') this.log('s', `已授權受控寫入：${e.outputs.join('、')}`);
     else if (e.type === 'warn') this.log('w', e.msg);
     else if (e.type === 'measure') { this.noteMeasure(e); this.noteButtonEvent(e); }
+    if (this.recTwin) this.recTwin(e);
     else if (e.type === 'reboot') this.log('e', `設備重新開機（${e.reason}）：已撤銷寫入授權、回到唯讀${e.dropped.length ? `；${e.dropped.length} 個未確認命令作廢，不會重送` : ''}。開機前的量測已標為過期。`);
   };
   // 核對接線用：每一筆量測都比對上一筆（不靠畫面取樣，快速按放也不會漏掉）
@@ -346,6 +362,8 @@
       { ok: Object.keys(a.bindings).every(id => this.hw.checks[id]), text: this.twin.conn.virtual ? '每個元件都已勾選「接線已核對」（虛擬設備：核對的是工作台的接線）' : '每個元件都已勾選「實體接線已核對」' },
       { ok: outs.length > 0, text: '至少有一個輸出元件（LED／伺服）' }
     ];
+    const pr = this.twin.conn.virtual && this.twin.conn.state === 'connected' ? this.hw.presence : null;
+    if (pr && pr.holder && pr.holder.id !== pr.you) req.push({ ok: false, text: `控制權在「${pr.holder.name}」手上：同一台虛擬設備同時只有一個人能寫入，等對方停止寫入或中斷連線` });
     if (Object.values(a.bindings).some(b => b.role === 'ultrasonic')) req.push({ ok: !!this.hw.identity && !this.hw.sonarUnsupported, text: '超音波可以讀取（Uno／ESP32 需要 DofLabFirmata）' });
     return { req, ok: req.every(r => r.ok), outs };
   };
@@ -368,8 +386,11 @@
     const step = (n, title, state, body) => `<li class="${state}"><span class="no">${n}</span><div><b>${title}</b>${body}</div></li>`;
     const srcSel = !connected && info.sources.length > 1 ? `<div class="row" role="radiogroup" aria-label="連線來源">${info.sources.map(k => `<label class="check"><input type="radio" name="hwSrc" value="${k}" ${k === src ? 'checked' : ''}><span>${k === 'virtual' ? '虛擬設備（網址）' : 'USB 序列埠（實體板子）'}</span></label>`).join('')}</div>` : '';
     const bu = virt ? benchUrl(connected && this.hw.vdevConnUrl ? this.hw.vdevConnUrl : this.vdevUrl()) : null;
+    // 多人（第 5 階段）：誰連著、誰有控制權
+    const pr = virt && connected ? this.hw.presence : null;
+    const prHtml = pr ? `<span class="hint" id="vdevPresence">${this.presenceText(pr)}</span>` : '';
     const s1 = connected ? `<span>${esc(info.label)} · ${esc(c.info || '')}</span>${virt ? `<span class="hint"><span class="ev-virt">虛擬</span>另一個程序模擬的 Uno，不是實體板子 · <span id="vdevNet">網路來回 ${this.hw.driver && this.hw.driver.transport && this.hw.driver.transport.rtt !== null ? this.hw.driver.transport.rtt + ' ms' : '量測中'}</span>${bu ? ` · <a href="${esc(bu)}" target="_blank" rel="noopener">開啟工作台</a>` : ''}</span>` : ''}<div class="row"><button class="btn danger" id="hwDisc">中斷連線</button></div>`
-      : virt ? `${srcSel}<div class="row"><input class="inp mono" id="vdevUrl" value="${esc(this.vdevUrl())}" aria-label="虛擬設備網址" style="flex:1 1 200px"></div><span class="hint">虛擬設備是另一個程式（<span class="mono">node tools/vdev/server.js</span>）裡以 avr8js 模擬的 Uno，執行真的 DofLabFirmata 機器碼；資料經網路（WebSocket）交換，Firmata 位元組和 USB 完全相同。它<b>不是實體板子</b>：在這裡通過的只算「已在虛擬設備驗證」。不需要 Web Serial，手機也能連。</span>
+      : virt ? `${srcSel}<div class="row"><input class="inp mono" id="vdevUrl" value="${esc(this.vdevUrl())}" aria-label="虛擬設備網址" style="flex:1 1 200px"><input class="inp" id="vdevName" value="${esc(this.vdevName())}" aria-label="你的名稱（其他連線看得到）" title="你的名稱：同一台虛擬設備的其他連線會看到，例如「控制中：老師」" style="flex:0 1 120px"></div><span class="hint">虛擬設備是另一個程式（<span class="mono">node tools/vdev/server.js</span>）裡以 avr8js 模擬的 Uno，執行真的 DofLabFirmata 機器碼；資料經網路（WebSocket）交換，Firmata 位元組和 USB 完全相同。它<b>不是實體板子</b>：在這裡通過的只算「已在虛擬設備驗證」。不需要 Web Serial，手機也能連。</span>
          <div class="row"><button class="btn primary" id="hwConn" ${this.hw.busy ? 'disabled' : ''}>連接虛擬 Uno</button></div>
          <span class="hint">虛擬 Uno 上傳過自己的程式（「程式」頁）之後，要同步請先把 DofLabFirmata 上傳回去：</span>${this.firmataFlashHtml ? this.firmataFlashHtml() : ''}
          ${c.state === 'lost' ? `<span class="hint" style="color:var(--err)">上次連線中斷${this.twin.dropped.length ? `；${this.twin.dropped.length} 個未確認命令已作廢、不會重送` : ''}。重新連線後會從唯讀開始。</span>` : ''}`
@@ -388,7 +409,7 @@
       ? `<span>已授權：${R.outs.map(o => o.comp).join('、')}。按「▶ 執行」後，行為的輸出才會送往設備。</span><div class="row"><button class="btn" id="hwRevoke">停止寫入（回到唯讀）</button></div>`
       : `<ul class="issues">${R.req.map(r => `<li class="${r.ok ? 'info' : 'warn'}"><span class="lv ${r.ok ? 'ok' : 'warn'}">${r.ok ? '已符合' : '未符合'}</span><span>${esc(r.text)}</span></li>`).join('')}</ul><div class="row"><button class="btn primary" id="hwAuth" ${connected && R.ok ? '' : 'disabled'}>授權受控寫入</button></div>`;
     el.innerHTML = `<ol class="hwsteps">
-      ${step(1, '連線', connected ? 'done' : 'cur', s1)}
+      ${step(1, '連線', connected ? 'done' : 'cur', s1 + prHtml)}
       ${step(2, '辨識板卡與能力', this.hw.identity ? (this.hw.identity.ok ? 'done' : 'cur') : '', s2)}
       ${step(3, '唯讀觀測與核對接線', connected ? (bindings.every(b => this.hw.checks[b.comp]) ? 'done' : 'cur') : '', s3)}
       ${step(4, '受控寫入', mode === 'hw-control' ? 'done' : connected && R.ok ? 'cur' : '', s4)}
@@ -402,6 +423,29 @@
     el.querySelectorAll('[data-chk]').forEach(cb => cb.onchange = () => { this.hw.checks[cb.dataset.chk] = cb.checked; this.renderHw(); });
     el.querySelectorAll('input[name="hwSrc"]').forEach(r => r.onchange = () => { if (!r.checked) return; this.hw.src = r.value; try { localStorage.setItem('doflab.hwSrc', r.value); } catch (e) { } this.renderHw(); });
     const vu = $('vdevUrl'); if (vu) vu.onchange = () => { this.hw.vdevUrl = vu.value.trim(); try { localStorage.setItem('doflab.vdevUrl', this.hw.vdevUrl); } catch (e) { } };
+    const vn = $('vdevName'); if (vn) vn.onchange = () => { this.hw.vdevName = vn.value.trim().slice(0, 24); try { localStorage.setItem('doflab.vdevName', this.hw.vdevName); } catch (e) { } };
+  };
+  // 你的名稱：同一台虛擬設備的其他連線看得到（「控制中：老師」）。第一次用時給一個隨機的預設名稱
+  P.vdevName = function () {
+    if (this.hw.vdevName) return this.hw.vdevName;
+    let n = null; try { n = localStorage.getItem('doflab.vdevName'); } catch (e) { }
+    if (!n) { n = '使用者 ' + Math.floor(100 + Math.random() * 900); try { localStorage.setItem('doflab.vdevName', n); } catch (e) { } }
+    return (this.hw.vdevName = n);
+  };
+  P.presenceText = function (pr) {
+    const me = pr.you; const names = pr.links.map(l => esc(l.name) + (l.id === me ? '（你）' : '') + (l.mode === 'raw' ? '（上傳／序列埠）' : ''));
+    const ctl = !pr.holder ? '沒有人控制（大家都是唯讀觀看）' : pr.holder.id === me ? '<b>你</b>（只有你能寫入）' : `<b>${esc(pr.holder.name)}</b>（你只能唯讀觀看）`;
+    return `這台虛擬設備有 ${pr.links.length} 個連線：${names.join('、')} · 控制權：${ctl}`;
+  };
+  // 虛擬設備的連線名單或控制權改變：記進事件紀錄；自己的控制權被拿走（逾時）時回到唯讀
+  P.hwPresence = function (m) {
+    const prev = this.hw.presence; this.hw.presence = m;
+    const who = l => l ? (l.id === m.you ? '你' : `「${l.name}」`) : '';
+    const ph = prev && prev.holder ? prev.holder.id : null, nh = m.holder ? m.holder.id : null;
+    if (prev && ph !== nh) this.log('w', nh ? `虛擬設備的控制權：${who(m.holder)}取得控制權${m.holder.id === m.you ? '' : '，你只能唯讀觀看'}` : `虛擬設備的控制權已釋放（${{ release: '撤銷授權', 'holder-left': '控制者中斷連線', timeout: '控制者太久沒有回應，逾時' }[m.why] || m.why}）`);
+    else if (prev && m.links.length !== prev.links.length && m.by) this.log('', `虛擬設備：${m.by} ${m.links.length > prev.links.length ? '加入觀看' : '離開'}（共 ${m.links.length} 個連線）`);
+    if (this.twin.mode === 'hw-control' && this.twin.conn.virtual && nh !== m.you) this.hwRevoke(m.why === 'timeout' ? '控制權逾時被釋放' : '控制權已不在你手上');
+    const el = $('vdevPresence'); if (el && ph === nh && prev) el.innerHTML = this.presenceText(m); else this.renderHw();   // 控制權改變：授權條件也跟著變，整個面板重畫
   };
   P.renderHwLive = function () {
     const net = $('vdevNet'); const t = this.hw.driver && this.hw.driver.transport;
@@ -418,16 +462,18 @@
     const url = src === 'virtual' ? ($('vdevUrl') ? $('vdevUrl').value.trim() : this.vdevUrl()) : src === 'pibridge' && $('wsUrl') ? $('wsUrl').value.trim() : null;
     if (url) try { localStorage.setItem(src === 'virtual' ? 'doflab.vdevUrl' : 'doflab.wsUrl', url); } catch (e) { }
     if (src === 'virtual') this.hw.vdevUrl = url;
-    if (src === 'virtual' && this.up && this.up.vmon && this.up.vmon.open) await this.vmonClose('「觀測」頁要連線，已關閉（虛擬設備同時只接受一個連線）');
-    this.hw.busy = true; this.renderHw();
-    const drv = new info.cls(this.twin, { log: (m, k) => { this.log(k || '', m); }, onLost: why => this.hwLost(why), onReboot: why => this.hwRebooted(why) }, p.board.type);
+    this.hw.busy = true; this.renderHw();   // 先標示「連線中」：關閉序列埠監看也要一點時間，期間不能再按一次
+    if (src === 'virtual' && this.up && this.up.vmon && this.up.vmon.open) await this.vmonClose('「觀測」頁要連線，已關閉（上傳與序列埠監看需要獨占虛擬設備）');
+    const drv = new info.cls(this.twin, { log: (m, k) => { this.log(k || '', m); }, onLost: why => this.hwLost(why), onReboot: why => this.hwRebooted(why), onPresence: m => this.hwPresence(m) }, p.board.type);
+    if (src === 'virtual') { const vn = $('vdevName'); if (vn && vn.value.trim()) { this.hw.vdevName = vn.value.trim().slice(0, 24); try { localStorage.setItem('doflab.vdevName', this.hw.vdevName); } catch (e) { } } this.hw.presence = null; }
     try {
-      const r = await drv.connect(src === 'usb' ? { port: reuse ? this.hw.lastPort : null } : { url });
+      const r = await drv.connect(src === 'usb' ? { port: reuse ? this.hw.lastPort : null } : { url, name: src === 'virtual' ? this.vdevName() : undefined });
       if (drv.port) this.hw.lastPort = drv.port;   // 記住連接埠：之後可以不經選擇視窗直接重新連線（瀏覽器已授權過）
       if (this.sim.running) this.toggleRun();
       this.hw.driver = drv; this.hw.connSrc = src; this.hw.vdevConnUrl = src === 'virtual' ? url : null; this.hw.identity = r.identity; this.hw.checks = {}; this.hw.sawChange = {}; this.hw.lastSeen = {};
       this.hw.btnQ = []; this.hw.fed = {};
       this.twin.connected(r.deviceId, r.info, { virtual: !!r.virtual });
+      if (this.recStart) this.recStart(r);   // 每次連線開始一份新的連線紀錄
       this.defineSignals();
       const touch = Object.values(this.analysis.bindings).filter(b => b.role === 'touch').map(b => b.comp);
       this.hw.touchUnsupported = touch.length ? `${touch.join('、')}：觸控腳的真機同步本版未支援，量測會一直是「未知」。請改用「程式」頁產生程式並上傳到板子，直接在板子上測試。` : null;
@@ -446,8 +492,12 @@
   P.hwAuthorize = async function () {
     const R = this.hwRequirements(); if (!R.ok) { this.toast('還有條件未符合，不能授權寫入。', 'e'); return; }
     const outs = R.outs.map(b => ({ comp: b.comp, signal: b.comp + (b.role === 'servo' ? '.angle' : '.state'), num: b.num, kind: b.role === 'servo' ? 'servo' : 'digital' }));
+    if (this.hw.driver.acquire) {   // 虛擬設備：先向主機取得唯一的控制權（實體 USB 本來就獨占，直接通過）
+      const g = await this.hw.driver.acquire();
+      if (!g.ok) { this.log('e', '沒有取得控制權：' + g.message); this.toast(g.message, 'e'); this.renderHw(); return; }
+    }
     const r = this.twin.authorize(outs.map(o => o.signal), { ok: true });
-    if (!r.ok) { this.toast(r.msg, 'e'); return; }
+    if (!r.ok) { if (this.hw.driver.release) await this.hw.driver.release(); this.toast(r.msg, 'e'); return; }
     this._cmdWarned = false;
     await this.hw.driver.authorize(outs);
     this.renderAll();

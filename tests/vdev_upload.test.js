@@ -70,9 +70,11 @@ test('序列埠監看（不需要 arduino-cli）：開啟時 DTR 讓虛擬 Uno �
     const ok = await until(() => { const i = m.bytes.indexOf(0x79); return m.bytes.includes(0xF9) && i > 0 && m.bytes.indexOf(0xF7, i) > 0; }, 6000);
     assert.ok(ok, '收到開機輸出：' + m.bytes.slice(0, 20).map(b => b.toString(16)).join(' '));
     const i = m.bytes.indexOf(0x79); const name = []; for (let k = i + 3; k + 1 < m.bytes.length && m.bytes[k] !== 0xF7; k += 2) name.push(m.bytes[k] | (m.bytes[k + 1] << 7));
-    assert.match(String.fromCharCode(...name), /DofLabFirmata/);
-    const tr = await s.trace(); const fl = tr.resets.map(r => r.flags); assert.deepStrictEqual(fl.slice(-2), [2, 8], 'DTR 重置（EXTRF）→ Optiboot 等待逾時 → 看門狗重置（WDRF）執行程式');
-    assert.ok(tr.resets[tr.resets.length - 1].devMs - tr.resets[tr.resets.length - 2].devMs > 500, 'Optiboot 等了約 1 秒才執行程式（和實體 Uno 一樣）');
+    const hex = m.bytes.slice(0, 40).map(b => b.toString(16)).join(' ');
+    assert.match(String.fromCharCode(...name), /DofLabFirmata/, '收到的位元組：' + hex);
+    const tr = await s.trace(); const fl = tr.resets.map(r => r.flags); const why = '重置紀錄：' + JSON.stringify(tr.resets) + '；收到的位元組：' + hex;
+    assert.deepStrictEqual(fl.slice(-2), [2, 8], 'DTR 重置（EXTRF）→ Optiboot 等待逾時 → 看門狗重置（WDRF）執行程式。' + why);
+    assert.ok(tr.resets[tr.resets.length - 1].devMs - tr.resets[tr.resets.length - 2].devMs > 500, 'Optiboot 等了約 1 秒才執行程式（和實體 Uno 一樣）。' + why);
     await m.close();
   } finally { await s.close(); }
 });

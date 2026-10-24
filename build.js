@@ -3,9 +3,9 @@
 //   dist/index.html  下載版（完整 HTML，函式庫由 ./vendor/ 載入，可離線在教室使用）
 const fs = require('fs'); const path = require('path');
 const R = f => fs.readFileSync(path.join(__dirname, f), 'utf8');
-const core = ['boards', 'breadboard', 'components', 'project', 'netlist', 'behavior', 'engine', 'arm', 'codegen', 'experiments', 'twin', 'routing', 'autowire'].map(f => R(`src/core/${f}.js`));
+const core = ['boards', 'breadboard', 'components', 'project', 'netlist', 'behavior', 'engine', 'arm', 'codegen', 'experiments', 'twin', 'session', 'routing', 'autowire'].map(f => R(`src/core/${f}.js`));
 const fw = `(function(root){const DL=root.DL=root.DL||{};DL.firmware={unoHex:${JSON.stringify(R('tests/fixtures/DofLabFirmata-uno.hex'))},ino:${JSON.stringify(R('tools/firmware/DofLabFirmata/DofLabFirmata.ino'))}};})(typeof globalThis!=='undefined'?globalThis:this);`;   // 觀測頁用的韌體：Uno 可以直接從瀏覽器上傳
-const ui = [R('src/drivers/transport.js'), R('src/drivers/drivers.js'), R('src/drivers/stk500.js'), fw, R('src/ui/models.js'), R('src/ui/scene.js'), R('src/ui/blocks.js'), R('src/ui/app.js'), R('src/ui/observe.js'), R('src/ui/arm.js'), R('src/ui/upload.js'), R('src/ui/teacher.js'), R('src/ui/main.js')];
+const ui = [R('src/drivers/transport.js'), R('src/drivers/drivers.js'), R('src/drivers/stk500.js'), fw, R('src/ui/models.js'), R('src/ui/scene.js'), R('src/ui/blocks.js'), R('src/ui/app.js'), R('src/ui/observe.js'), R('src/ui/arm.js'), R('src/ui/upload.js'), R('src/ui/record.js'), R('src/ui/teacher.js'), R('src/ui/main.js')];
 const js = [...core, ...ui].join('\n;\n').replace(/<\/script/gi, '<\\/script');
 const LIBS = {
   cdn: ['https://cdn.jsdelivr.net/npm/three@0.148.0/build/three.min.js', 'https://cdn.jsdelivr.net/npm/blockly@10.4.3/blockly_compressed.js', 'https://cdn.jsdelivr.net/npm/blockly@10.4.3/msg/zh-hant.js'],

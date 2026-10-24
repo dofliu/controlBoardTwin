@@ -132,7 +132,7 @@
     const code = what === 'firmata' ? DL.firmware.ino : p.code.text;
     try {
       // 同一個序列埠不能同時給兩個程式用：觀測頁還連著的話，先中斷再上傳
-      if (method === 'virtual' && up.vmon && up.vmon.open) await this.vmonClose('上傳前關閉');   // 虛擬設備同時只接受一個連線
+      if (method === 'virtual' && up.vmon && up.vmon.open) await this.vmonClose('上傳前關閉');   // 上傳與序列埠監看都需要獨占虛擬設備
       // 只中斷會衝突的連線：上傳到虛擬 Uno 只需要放開虛擬設備的連線，上傳到實體板子只需要放開 USB
       if (method !== 'pi' && this.hw && this.hw.driver && this.hw.driver.kind === 'firmata' && (method === 'virtual') === !!this.hw.driver.virtual) {
         this.upLog('上傳前先中斷「觀測」頁的真機連線（同一個序列埠不能同時給兩個程式用）', 'w');
@@ -197,7 +197,7 @@
   // 和 Arduino IDE 的序列埠監控視窗一樣：開啟時 DTR 讓板子重新啟動，所以看得到 setup() 印出的文字。收到的位元組以 UTF-8 解碼、依換行分行。
   P.vmonOpen = async function () {
     const up = this.up; if (up.vmon && up.vmon.open) return;
-    if (this.hw && this.hw.driver && this.twin.conn.state === 'connected' && this.hw.driver.virtual) { this.toast('「觀測」頁正連著虛擬設備：先中斷連線再開序列埠監看（同時只能一個連線）。', 'e'); return; }
+    if (this.hw && this.hw.driver && this.twin.conn.state === 'connected' && this.hw.driver.virtual) { this.toast('「觀測」頁正連著虛擬設備：先中斷連線再開序列埠監看（序列埠監看需要獨占虛擬設備）。', 'e'); return; }
     const url = this.vdevUrl(); const vm = up.vmon = { open: false, lines: [], part: '', bytes: 0, state: '連線中…', port: null }; this.renderUpload();
     const dec = new TextDecoder('utf-8');
     const port = DL.transport.wsSerialPort(url, { log: (m, k) => this.upLog(m, k === 'e' ? 'e' : ''), onLost: why => { if (up.vmon === vm) { vm.open = false; vm.state = '連線中斷：' + why; this.renderUpload(); } } });

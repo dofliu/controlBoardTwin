@@ -563,13 +563,14 @@ async def bench_flow(p):
         n0 = len(await servo_cmds()); w0 = state()['traffic']['writeCount']
         await pg.click('#armRun')
         home = await ev(pg, "DL.arm.homeQ(doflab.p.arm.config).map(x=>Math.round(x*10)/10)")
-        way = [('預備姿態', home), ('A', [30, 70, 60]), ('B', [-40, 110, 90]), ('預備姿態', home), ('A', [30, 70, 60])]
+        # 序列從預備姿態開始、直接走向 A（開始時不在預備姿態停留），所以只比對有停留的姿態：A → B → 預備姿態（回來時停 1 秒）→ A
+        way = [('A', [30, 70, 60]), ('B', [-40, 110, 90]), ('預備姿態', home), ('A', [30, 70, 60])]
         seq = []
         for name, pose in way:
             ms = await meet(pose, timeout=8000); seq.append({'step': name, 'pose': pose, 'benchMs': ms})
             if name == 'B': await shots('w4_arm_sequence.png', pg, bp)
         await pg.click('#armRun')
-        check("自動序列（預備姿態 → A → B → 預備姿態 → A）：DofLab 每到一個姿態，工作台上的手臂都到達同一個姿態（≤ 1.5°）", all(x['benchMs'] is not None for x in seq), json.dumps(seq))
+        check("自動序列（A → B → 預備姿態 → A）：DofLab 每停在一個姿態，工作台上的手臂都到達同一個姿態（≤ 1.5°）", all(x['benchMs'] is not None for x in seq), json.dumps(seq))
         await quiet(w0, n0); st = state(); sent = (await servo_cmds())[n0:]; got = device_writes(st)
         check("自動序列的命令也一個不少、順序相同（設備端的寫入筆數與內容和 DofLab 送出的一致）", len(sent) > 10 and st['traffic']['writeCount'] - w0 == len(sent) and got == ((await servo_cmds())[-len(got):]), json.dumps([len(sent), st['traffic']['writeCount'] - w0]))
         print('ARMSYNC', json.dumps({'manual': res, 'sequence': seq}, ensure_ascii=False))
@@ -817,6 +818,113 @@ async def vupload_flow(p):
     finally:
         await b.close(); srv.kill()
 
+async def vmulti_flow(p):
+    """雲端虛擬硬體第 5 階段：兩個 DofLab（老師、學生，各自一個瀏覽器）同時連同一台虛擬設備，外加工作台頁。
+    兩個都能唯讀觀看；只有取得控制權的那一個能寫入；控制者關掉分頁後控制權釋放。之後學生匯出連線紀錄並重播。"""
+    import urllib.request
+    VPORT = 8770; api = f'http://127.0.0.1:{VPORT}/api/devices/uno-1'
+    def state(): return json.loads(urllib.request.urlopen(api, timeout=5).read())
+    def bench(part, action): urllib.request.urlopen(urllib.request.Request(api + '/bench', data=json.dumps({'part': part, 'action': action}).encode(), method='POST'), timeout=5).read()
+    def led(st): return next(x for x in st['bench']['parts'] if x['id'] == 'LED1')
+    srv = subprocess.Popen(['node', str(ROOT / 'tools' / 'vdev' / 'server.js'), '--port', str(VPORT)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(VPORT)
+    ba = await p.chromium.launch(args=ARGS); bb = await p.chromium.launch(args=ARGS)   # 兩個瀏覽器（兩台電腦）
+    errs = []
+    try:
+        async def open_doflab(br, name):
+            ctx = await br.new_context(viewport={'width': 1280, 'height': 900}); pg = await ctx.new_page(); pg.on('pageerror', lambda e: errs.append(name + '：' + str(e)))
+            await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p")
+            await ev(pg, "(()=>{const r=DL.experiments.solved('hold-blink','uno'); doflab.load(DL.project.clone(r.project,{name:'多人測試',origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}})); })()")
+            await pg.click('#t-behavior'); await pg.wait_for_timeout(300); await pg.click('#btnConfirm')
+            await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+            await pg.check('input[name="hwSrc"][value="virtual"]'); await pg.wait_for_timeout(100)
+            await pg.fill('#vdevName', name)
+            await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=20000)
+            return ctx, pg
+        ca, A = await open_doflab(ba, '老師')
+        cb, B = await open_doflab(bb, '學生')
+        try: await A.wait_for_function("document.querySelector('#vdevPresence') && document.querySelector('#vdevPresence').textContent.includes('2 個連線')", timeout=8000); ok = True
+        except Exception: ok = False
+        pa = await A.inner_text('#vdevPresence') if ok else ''; pb = await B.inner_text('#vdevPresence')
+        check("多人：兩個瀏覽器同時連同一台虛擬設備，都顯示 2 個連線、誰是你、沒有人控制", ok and '老師（你）' in pa and '學生' in pa and '學生（你）' in pb and '沒有人控制' in pb, pa + ' | ' + pb)
+        check("多人：兩邊都從唯讀開始", await ev(A, "doflab.twin.mode") == 'hw-read' and await ev(B, "doflab.twin.mode") == 'hw-read')
+        bench('BTN1', 'press')
+        okA = okB = True
+        try: await A.wait_for_function("doflab.twin.view('BTN1.pressed').measured && doflab.twin.view('BTN1.pressed').measured.v === true", timeout=5000)
+        except Exception: okA = False
+        try: await B.wait_for_function("doflab.twin.view('BTN1.pressed').measured && doflab.twin.view('BTN1.pressed').measured.v === true", timeout=5000)
+        except Exception: okB = False
+        bench('BTN1', 'release')
+        check("多人唯讀觀看：工作台按下 BTN1，兩個 DofLab 的量測層都顯示按下；設備沒有收到任何寫入", okA and okB and state()['traffic']['writeCount'] == 0)
+        await A.wait_for_function("doflab.twin.view('BTN1.pressed').measured.v === false", timeout=5000)
+        # 老師取得控制權
+        for cb_ in await A.locator('[data-chk]').all(): await cb_.check()
+        await A.click('#hwAuth')
+        await A.wait_for_function("doflab.twin.mode==='hw-control'", timeout=8000)
+        try: await B.wait_for_function("document.querySelector('#vdevPresence').textContent.includes('控制權：老師')", timeout=8000); ok = True
+        except Exception: ok = False
+        check("控制權：老師授權受控寫入時取得控制權，學生的畫面顯示「控制權：老師（你只能唯讀觀看）」", ok and '你只能唯讀觀看' in await B.inner_text('#vdevPresence') and '只有你能寫入' in await A.inner_text('#vdevPresence'))
+        for cb_ in await B.locator('[data-chk]').all(): await cb_.check()
+        await B.wait_for_timeout(200)
+        hb = await B.inner_text('#hwBody')
+        check("控制權：學生的授權條件列出「控制權在「老師」手上」，授權按鈕停用", '控制權在「老師」手上' in hb and await B.locator('#hwAuth').is_disabled(), hb[-300:])
+        # 老師執行行為：按住工作台按鈕，LED 依老師的命令閃爍；學生沒有命令、也收不到老師的回讀
+        await A.click('#simRun'); t0 = led(state())['toggles']
+        bench('BTN1', 'press')
+        for i in range(60):
+            if led(state())['toggles'] - t0 >= 2: break
+            await asyncio.sleep(0.1)
+        try: await A.wait_for_function("(v => v.ack && v.ack.matches)(doflab.twin.view('LED1.state'))", timeout=5000); ackA = True
+        except Exception: ackA = False
+        check("只有一個能寫入：老師的命令讓工作台 LED 閃爍並收到回讀；學生沒有命令、也沒有收到老師的回讀", ackA and led(state())['toggles'] - t0 >= 2 and await ev(B, "(v => !v.commanded && !v.ack)(doflab.twin.view('LED1.state'))"))
+        await shots_pair("m1_two_users.png", A, B)
+        # 學生硬送寫入（繞過介面）：主機擋下，事件紀錄說明
+        await ev(B, "doflab.hw.driver.send([0xF5, 13, 1]), doflab.hw.driver.send([0xF4, 13, 0])")
+        try: await B.wait_for_function("doflab.events.some(e=>/你沒有控制權/.test(e.text))", timeout=5000); ok = True
+        except Exception: ok = False
+        st = state(); stu = next(l for l in st['hub']['links'] if l['name'] == '學生')
+        check("只有一個能寫入：學生硬送的寫入被虛擬設備主機擋下（沒有到晶片），學生的事件紀錄說明「你沒有控制權」", ok and stu['blocked'] >= 2, json.dumps(st['hub'], ensure_ascii=False)[:300])
+        bench('BTN1', 'release')
+        # 老師直接關掉分頁（不先撤銷）：控制權釋放
+        await ca.close()
+        try: await B.wait_for_function("document.querySelector('#vdevPresence').textContent.includes('1 個連線') && document.querySelector('#vdevPresence').textContent.includes('沒有人控制')", timeout=10000); ok = True
+        except Exception: ok = False
+        check("中斷後控制權釋放：老師關掉分頁，學生看到控制權釋放（控制者中斷連線）、只剩 1 個連線", ok and await ev(B, "doflab.events.some(e=>/控制權已釋放（控制者中斷連線）/.test(e.text))"))
+        await B.wait_for_timeout(200)
+        check("中斷後控制權釋放：學生的授權按鈕可以按了", await B.locator('#hwAuth').is_enabled())
+        await B.click('#hwAuth'); await B.wait_for_function("doflab.twin.mode==='hw-control'", timeout=8000)
+        check("中斷後控制權釋放：學生取得控制權（只有你能寫入）", '只有你能寫入' in await B.inner_text('#vdevPresence') and state()['hub']['holder']['name'] == '學生')
+        # 連線紀錄：學生執行一段，然後中斷、匯出、重播
+        await B.click('#simRun')
+        bench('BTN1', 'press'); await asyncio.sleep(1.6); bench('BTN1', 'release'); await asyncio.sleep(0.4)
+        bench('BTN1', 'press'); await asyncio.sleep(0.25); bench('BTN1', 'release'); await asyncio.sleep(0.8)
+        await B.click('#hwDisc'); await B.wait_for_function("doflab.twin.mode==='sim'", timeout=8000)
+        n = await ev(B, "doflab.hw.rec.events.length"); types = await ev(B, "[...new Set(doflab.hw.rec.events.map(e=>e.type))].sort().join(',')")
+        check("連線紀錄：中斷後保留這次連線的紀錄（量測、模擬輸出、命令、回讀、模式、執行），標示虛擬設備", n > 10 and all(k in types for k in ['measure', 'sim', 'command', 'ack', 'mode', 'run']) and await ev(B, "doflab.hw.rec.device.virtual") and '上次連線的紀錄' in await B.inner_text('#recStatus'), f'{n} {types}')
+        async with B.expect_download() as dl: await B.click('#recExport')
+        d = await dl.value; path = SHOTS / 'session.json'; await d.save_as(str(path))
+        js = json.loads(path.read_text())
+        check("匯出紀錄：下載 JSON（doflab-session 第 1 版），內容和畫面上的紀錄相同", js['format'] == 'doflab-session' and js['version'] == 1 and len(js['events']) == n and js['device']['virtual'], d.suggested_filename)
+        await B.click('#recReplay')
+        try: await B.wait_for_function("!doflab.replay && doflab.replayResult", timeout=30000); ok = True
+        except Exception: ok = False
+        res = await ev(B, "JSON.stringify(doflab.replayResult)")
+        check("重播：在模擬中照紀錄的模擬時間重送輸入，重算的輸出和紀錄逐毫秒相同、紀錄中的命令都依序出現（不連設備）", ok and await ev(B, "doflab.replayResult.ok") and await ev(B, "doflab.twin.conn.state") != 'connected' and await ev(B, "doflab.events.some(e=>/重播完成：1 個輸出的變化和紀錄完全相同（LED1\\.state \\d+ 次；逐毫秒相同/.test(e.text))"), res[:400])
+        # 從檔案重播（開啟剛才匯出的檔案）
+        await B.set_input_files('#recFile', str(path))
+        try: await B.wait_for_function("!!doflab.replay", timeout=5000); await B.wait_for_function("!doflab.replay", timeout=30000); ok = True
+        except Exception: ok = False
+        check("重播：開啟匯出的紀錄檔再重播一次，結果一樣一致", ok and await ev(B, "doflab.replayResult.ok"))
+        await B.screenshot(path=str(SHOTS / "m2_replay.png"))
+        check("多人流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    finally:
+        await ba.close(); await bb.close(); srv.kill()
+
+async def shots_pair(name, a, b):
+    from PIL import Image
+    await asyncio.gather(a.screenshot(path=str(SHOTS / '_l.png')), b.screenshot(path=str(SHOTS / '_r.png')))
+    x, y = Image.open(SHOTS / '_l.png'), Image.open(SHOTS / '_r.png'); out = Image.new('RGB', (x.width + y.width + 12, max(x.height, y.height)), (120, 110, 170)); out.paste(x, (0, 0)); out.paste(y, (x.width + 12, 0)); out.save(SHOTS / name)
+    os.remove(SHOTS / '_l.png'); os.remove(SHOTS / '_r.png')
+
 async def breadboard_flow(p):
     b = await p.chromium.launch(args=ARGS)
     ctx = await b.new_context(viewport={'width': 1440, 'height': 940})
@@ -1034,7 +1142,9 @@ async def new_experiments(p):
         await pg.click('#t-observe'); await pg.wait_for_timeout(400); await pg.click('#simRun'); await pg.wait_for_timeout(150)
         return await ev(pg, "doflab.analysis.ok")
     async def tasks_done():
-        await pg.click('#simRun'); await pg.click('#t-config'); await pg.wait_for_timeout(250)
+        await pg.click('#simRun'); await pg.click('#t-config')
+        try: await pg.wait_for_function("(()=>{const l=document.querySelectorAll('#taskList li'); return l.length > 0 && document.querySelectorAll('#taskList li.done').length === l.length})()", timeout=3000)   # 等狀態，不用固定延遲（任務清單最多每 0.5 秒重畫，慢的畫面一幀可能超過 1 秒）
+        except Exception: pass
         return await ev(pg, "[document.querySelectorAll('#taskList li.done').length, document.querySelectorAll('#taskList li').length]")
     # 1 按一下切換
     ok = await open_and_wire('toggle-led')
@@ -1099,7 +1209,9 @@ async def ultrasonic_flow(p, pi_port):
         await pg.click('#btnConfirm'); await pg.wait_for_timeout(100)
         await pg.click('#t-observe'); await pg.wait_for_timeout(400); await pg.click('#simRun'); await pg.wait_for_timeout(100)
     async def tasks_done():
-        await pg.click('#simRun'); await pg.click('#t-config'); await pg.wait_for_timeout(250)
+        await pg.click('#simRun'); await pg.click('#t-config')
+        try: await pg.wait_for_function("(()=>{const l=document.querySelectorAll('#taskList li'); return l.length > 0 && document.querySelectorAll('#taskList li.done').length === l.length})()", timeout=3000)   # 等狀態，不用固定延遲（任務清單最多每 0.5 秒重畫，慢的畫面一幀可能超過 1 秒）
+        except Exception: pass
         return await ev(pg, "[document.querySelectorAll('#taskList li.done').length, document.querySelectorAll('#taskList li').length]")
 
     # 1. 距離指針（Uno）：積木、接線、模擬、真實編譯
@@ -1222,7 +1334,9 @@ async def onboard_flow(p):
     async def open_exp(exp):
         await pg.click('#btnStart'); await pg.click(f'[data-exp="{exp}"][data-board="esp32doit"]'); await pg.wait_for_timeout(500)
     async def tasks_done():
-        await pg.click('#simRun'); await pg.click('#t-config'); await pg.wait_for_timeout(250)
+        await pg.click('#simRun'); await pg.click('#t-config')
+        try: await pg.wait_for_function("(()=>{const l=document.querySelectorAll('#taskList li'); return l.length > 0 && document.querySelectorAll('#taskList li.done').length === l.length})()", timeout=3000)   # 等狀態，不用固定延遲（任務清單最多每 0.5 秒重畫，慢的畫面一幀可能超過 1 秒）
+        except Exception: pass
         return await ev(pg, "[document.querySelectorAll('#taskList li.done').length, document.querySelectorAll('#taskList li').length]")
     # 開始對話框：只用板子的實驗排在最前面，只有 ESP32 V1 可以開
     await pg.click('#btnStart'); await pg.wait_for_timeout(300)
@@ -1369,6 +1483,7 @@ async def main():
             if on('faults'): await faults_flow(p)
             if on('upload'): await upload_flow(p)
             if on('vupload'): await vupload_flow(p)
+            if on('vmulti'): await vmulti_flow(p)
             if on('pideploy'): await pi_deploy(p)
             if on('mobile'): await mobile(p)
             if on('dark'): await dark(p)

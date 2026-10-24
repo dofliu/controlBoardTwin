@@ -52,7 +52,8 @@
       if (virtual && !WebSocketTransport.available()) throw new Error('這個環境沒有 WebSocket，不能連虛擬設備。');
       if (!virtual && !FirmataDriver.available()) throw new Error('這個瀏覽器不支援 Web Serial：請用電腦版 Chrome 或 Edge，並從 https 或 http://localhost 開啟本頁。（沒有實體板子時，可以改連「虛擬設備」）');
       const log = (m, k) => this.log(m, k);
-      const t = this.transport = virtual ? new WebSocketTransport({ url: opts.url, log }) : new WebSerialTransport({ port: opts.port, log, evict: () => this.disconnect(true) });
+      const onPresence = m => { if (this.holding && (!m.holder || m.holder.id !== m.you)) this.holding = false; if (this.hooks.onPresence) this.hooks.onPresence(m); };
+      const t = this.transport = virtual ? new WebSocketTransport({ url: opts.url, log, name: opts.name, onPresence }) : new WebSerialTransport({ port: opts.port, log, evict: () => this.disconnect(true) });
       t.onBytes(bytes => { for (const b of bytes) this.parse(b); });
       t.onLost(why => this.lost(why));
       this.closing = false;
@@ -153,7 +154,15 @@
       }
       return res;
     }
+    // 控制權（虛擬設備，第 5 階段）：同一台設備可以有好幾個人連著，只有拿到控制權的人能寫入。實體 USB 本來就是獨占的，不需要
+    async acquire() {
+      const t = this.transport; if (!t || !t.lock) return { ok: true };
+      const r = await t.lock('control'); this.holding = !!(r && r.ok && r.you);
+      return r && r.ok ? r : { ok: false, holder: r && r.holder, message: (r && r.message) || '沒有取得控制權。' };
+    }
+    async release() { const t = this.transport; if (this.holding && t && t.lock) { this.holding = false; await t.lock('release'); } }
     async authorize(outputs) {
+      if (this.virtual && !this.holding) { const r = await this.acquire(); if (!r.ok) throw Object.assign(new Error(r.message), { code: 'not_holder', holder: r.holder }); }
       for (const o of outputs) { this.outPins[o.num] = o; await this.send([0xF4, o.num, o.kind === 'servo' ? 0x04 : 0x01]); }
     }
     async write(cmd, out) {
@@ -165,8 +174,9 @@
       await this.send([0xF0, 0x6D, pin, 0xF7]);   // 回讀暫存值作為 ACK（不證明 LED 真的亮或伺服到位）
     }
     async revoke() {
-      for (const o of Object.values(this.outPins)) { if (o.kind !== 'servo') await this.send([0xF5, o.num, 0]); await this.send([0xF4, o.num, 0x00]); }
+      if (!this.virtual || this.holding) for (const o of Object.values(this.outPins))   /* 控制權已經不在手上（例如逾時）：寫入會被主機擋下，不必送 */ { if (o.kind !== 'servo') await this.send([0xF5, o.num, 0]); await this.send([0xF4, o.num, 0x00]); }
       this.outPins = {};
+      await this.release();   // 虛擬設備：撤銷授權時交出控制權，別人才能取得
     }
     disconnect(silent) { if (!this._closingP) this._closingP = this._disconnect(silent); return this._closingP; }
     async _disconnect(silent) {

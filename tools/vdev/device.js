@@ -127,6 +127,7 @@ class VirtualDevice {
     if (q.op === 'time') return { devMs: Math.round(this.uno.timeMs) };
     if (q.op === 'bench') { const r = this.bench.act(q); const st = this.state(); if (r && r.scheduled !== undefined) st.scheduled = r.scheduled; return st; }
     if (q.op === 'link') { this.link(); return this.hello(); }
+    if (q.op === 'hello') return this.hello();   // 第二個以後的連線：只要識別資料，不重設紀錄
     if (q.op === 'unlink') { this.unlink(); return {}; }
     if (q.op === 'signals') { this.signals(q); return {}; }
     // 輸出軌跡（第 4 階段驗收用）：工作台記下的輸入操作與 LED／伺服變化（設備時間），以及晶片重置紀錄

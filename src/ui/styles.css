@@ -192,6 +192,7 @@ select.inp,input.inp{border:1px solid var(--line-strong);background:var(--bg);bo
 .upprog{position:relative;height:22px;border-radius:6px;background:var(--surface-2);border:1px solid var(--line);overflow:hidden;margin-top:8px}
 .upprog i{position:absolute;inset:0 auto 0 0;background:color-mix(in srgb,var(--accent) 45%,transparent)}
 .upprog span{position:relative;font-size:.76rem;padding:0 8px;line-height:20px}
+.rec-row{gap:6px;flex-wrap:wrap;margin-bottom:4px}
 .vmon{margin-top:10px;border-top:1px dashed var(--line);padding-top:8px}
 .vmon .row{align-items:center;gap:8px;flex-wrap:wrap}
 .vmon pre.raw{max-height:180px;overflow:auto;margin-top:6px}

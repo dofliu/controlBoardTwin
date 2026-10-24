@@ -204,7 +204,7 @@ function faultUpdate(el, p) {
 function render(s) {
   lastState = s; window.__bench = s;
   $('#title').textContent = `虛擬工作台 · ${s.id}`;
-  $('#meta').innerHTML = `<span>工作台 <b>${s.bench.id}</b>（${s.bench.name}）</span><span>韌體 <b id="fwName">${esc(s.firmware.name)}</b>${s.uploads ? `（已上傳 ${s.uploads} 次）` : ''}</span><span>晶片時間 <b>${(s.devMs / 1000).toFixed(1)} s</b></span><span>速度 <b>${s.realtime ?? '—'}×</b> 即時</span><span>DofLab <b id="linked">${s.linked ? '已連線' : '沒有連線'}</b></span>`;
+  $('#meta').innerHTML = `<span>工作台 <b>${s.bench.id}</b>（${s.bench.name}）</span><span>韌體 <b id="fwName">${esc(s.firmware.name)}</b>${s.uploads ? `（已上傳 ${s.uploads} 次）` : ''}</span><span>晶片時間 <b>${(s.devMs / 1000).toFixed(1)} s</b></span><span>速度 <b>${s.realtime ?? '—'}×</b> 即時</span><span>DofLab <b id="linked">${s.hub && s.hub.links.length ? `${s.hub.links.length} 個連線（${s.hub.links.map(l => esc(l.name)).join('、')}）` : '沒有連線'}</b></span><span>控制權 <b id="holder">${s.hub && s.hub.holder ? esc(s.hub.holder.name) : '沒有人'}</b></span>`;
   const n = $('#note'); n.hidden = !s.bench.note; n.textContent = s.bench.note || '';
   for (const p of s.bench.parts) { const k = KIND[p.type]; if (!k) continue; if (!built[p.id]) { built[p.id] = k.build(p); faultControls(built[p.id], p); } k.update(built[p.id], p); faultUpdate(built[p.id], p); }
   const f = s.faults || {}, nf = f.net, cut = s.bench.parts.filter(p => p.unplugged).map(p => p.id + ' 拔線'), stuck = s.bench.parts.filter(p => p.stuck).map(p => p.id + ' 卡住');
