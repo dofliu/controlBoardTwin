@@ -1022,7 +1022,12 @@ async def vmulti_flow(p):
         await ca.close()
         try: await B.wait_for_function("document.querySelector('#vdevPresence').textContent.includes('1 個連線') && document.querySelector('#vdevPresence').textContent.includes('沒有人控制')", timeout=10000); ok = True
         except Exception: ok = False
-        check("中斷後控制權釋放：老師關掉分頁，學生看到控制權釋放（控制者中斷連線）、只剩 1 個連線", ok and await ev(B, "doflab.events.some(e=>/控制權已釋放（控制者中斷連線）/.test(e.text))"))
+        pin_in = False   # 主機把關掉輸出的位元組交給虛擬晶片（另一個執行緒）處理：等腳位狀態，不要只讀一次
+        for i in range(50):
+            if state()['pins']['13'] == 'input': pin_in = True; break
+            await asyncio.sleep(0.1)
+        check("中斷後控制權釋放：老師關掉分頁，學生看到控制權釋放（控制者中斷連線，主機已關掉他的輸出）、只剩 1 個連線；設備的 D13 回到輸入（斷線保護）",
+              ok and await ev(B, "doflab.events.some(e=>/控制權已釋放（控制者中斷連線，主機已關掉他的輸出）/.test(e.text))") and pin_in, json.dumps([ok, state()['pins']['13'], await ev(B, "doflab.events.filter(e=>/控制/.test(e.text)).map(e=>e.text)")], ensure_ascii=False)[:400])
         await B.wait_for_timeout(200)
         check("中斷後控制權釋放：學生的授權按鈕可以按了", await B.locator('#hwAuth').is_enabled())
         await B.click('#hwAuth'); await B.wait_for_function("doflab.twin.mode==='hw-control'", timeout=8000)
