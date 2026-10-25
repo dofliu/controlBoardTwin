@@ -51,6 +51,9 @@ uint8_t pinMode_[TOTAL_PINS];
 uint8_t pinState_[TOTAL_PINS];   // 輸出值或伺服角度
 int servoOf[TOTAL_PINS];
 Servo servos[MAX_SERVOS];
+#if defined(ARDUINO_ARCH_ESP32)
+int servoCh[MAX_SERVOS];   // 每顆伺服的 LEDC 通道（attach 的回傳值）：停止前要把工作週期寫成 0
+#endif
 uint8_t reportPort[(TOTAL_PINS + 7) / 8];
 uint8_t lastPort[(TOTAL_PINS + 7) / 8];
 uint8_t reportAnalog = 0;
@@ -76,11 +79,14 @@ uint8_t readPort(uint8_t port) {
 }
 void sendPort(uint8_t port) { uint8_t v = readPort(port); Serial.write(0x90 | port); Serial.write(v & 0x7F); Serial.write(v >> 7); lastPort[port] = v; }
 
-// 停止伺服：Uno 先等這個伺服的脈衝送完（最多 3 ms）。停在脈衝中間會送出一個被截短、長度不定的脈衝，伺服可能抖一下（V2.13 在虛擬 Uno 上發現）。
-// 關中斷再看腳位，看到 LOW 就立刻停，下一個脈衝（約 20 ms 後）不會插進來。ESP32 是 LEDC 硬體 PWM，行為不同，未處理（未驗證）。
+// 停止伺服時不能停在脈衝中間：那樣會送出一個被截短、長度不定的脈衝，伺服可能抖一下（V2.13 在虛擬 Uno 上發現）。
+// Uno：先等這個伺服的脈衝送完（最多 3 ms）；關中斷再看腳位，看到 LOW 就立刻停，下一個脈衝（約 20 ms 後）不會插進來。
+// ESP32：LEDC 硬體 PWM，detach 會立刻把腳位從 LEDC 拆下來（變成 LOW）。新的工作週期從下一個週期才生效，所以先寫 0
+// （正在送的脈衝照常送完，下一個週期沒有脈衝），等一個週期（20 ms，多等 1 ms）再拆。未以實體 ESP32 驗證。
 void detachServo(uint8_t p) {
   if (servoOf[p] < 0) return;
 #if defined(ARDUINO_ARCH_ESP32)
+  if (servos[servoOf[p]].attached()) { ledcWrite(servoCh[servoOf[p]], 0); delay(21); }   // 沒附加成功（函式庫不接受的腳位）時 attach 回傳 0，不能去動通道 0
   servos[servoOf[p]].detach();
 #else
   for (unsigned long t = micros(); micros() - t < 3000; ) { noInterrupts(); if (digitalRead(p) == LOW) break; interrupts(); }
@@ -99,7 +105,11 @@ void setMode(uint8_t p, uint8_t m) {
   else if (m == M_SERVO) {
     if (servoOf[p] < 0) { for (uint8_t i = 0; i < MAX_SERVOS; i++) { bool used = false; for (uint8_t q = 0; q < TOTAL_PINS; q++) if (servoOf[q] == i) used = true; if (!used) { servoOf[p] = i; break; } } }
     if (servoOf[p] < 0) return;
+#if defined(ARDUINO_ARCH_ESP32)
+    servoCh[servoOf[p]] = servos[servoOf[p]].attach(p, 544, 2400);
+#else
     servos[servoOf[p]].attach(p, 544, 2400);
+#endif
   } else return;
   pinMode_[p] = m;
 }

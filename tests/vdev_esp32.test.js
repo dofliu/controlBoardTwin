@@ -135,3 +135,18 @@ test('伺服停止時不會送出被截短的脈衝（真韌體 1.2，Uno）：�
   assert.deepStrictEqual(w.filter(x => x < 1777 || x > 1790), [], '120° 的脈衝都是 1780 µs（544 + 120 × 1856 / 180；收序列埠的中斷會讓它晚幾 µs 結束），沒有被截短的');
   assert.strictEqual(u.pinState(9), 2, '最後 D9 是輸入');
 });
+
+test('伺服停止時不會送出被截短的脈衝（協定模型，ESP32 腳位表）：正在送的脈衝照常送完再停', () => {
+  // 韌體 1.2 的 ESP32 分支：先把 LEDC 工作週期寫 0（從下一個週期生效），等一個週期再拆下腳位。模型照做：脈衝送完、腳位才變
+  let rnd = 13; const rand = () => (rnd = (rnd * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const d = new VirtualEsp32(); const edges = []; let hi = false;
+  d.pinWatchers.push(() => { const h = d.isHigh(18); if (h !== hi) { edges.push([d.timeMs, h]); hi = h; } });
+  d.runMs(400);
+  const attach = [0xF4, 18, 4, 0xF0, 0x6F, 18, 120 & 0x7F, 120 >> 7, 0xF7];   // GPIO18 伺服 120°（擴充類比）
+  for (let i = 0; i < 60; i++) { d.sendBytes(attach); d.runMs(100 + rand() * 40); d.sendBytes([0xF4, 18, 0]); d.runMs(40); }   // 撤銷授權：F4 18 0
+  d.sendBytes(attach); d.runMs(3300 + rand() * 20);   // 斷線保護
+  const w = []; for (let i = 0; i < edges.length - 1; i++) if (edges[i][1] && !edges[i + 1][1]) w.push(Math.round((edges[i + 1][0] - edges[i][0]) * 1000));
+  assert.ok(w.length > 300, `脈衝數 ${w.length}`);
+  assert.deepStrictEqual(w.filter(x => x < 1777 || x > 1785), [], '120° 的脈衝都是約 1780 µs（模型 1781，進位到時間單位），沒有被截短的');
+  assert.strictEqual(d.pinState(18), 2, '最後 GPIO18 是輸入'); assert.ok(!d.isHigh(18));
+});

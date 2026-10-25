@@ -88,7 +88,7 @@ curl -X POST -d '{"fault":"reset"}' http://127.0.0.1:8770/api/devices/uno-1/faul
 curl -X POST -d '{"part":"BTN1","action":"unplug"}' http://127.0.0.1:8770/api/devices/uno-1/bench   # plug 接回；超音波另有 stuck／unstuck
 ```
 
-**斷線保護（V2.13）**：斷線時設備端自己把輸出關掉，不會停在最後的命令。DofLabFirmata 1.2 起，有輸出時 3 秒沒收到任何位元組（DofLab 每秒送一次心跳），就把數位輸出寫 LOW 並改成輸入、伺服停止送脈衝（停在原地，不會轉到 0°；Uno 會等目前的脈衝送完才停，不會送出被截短的脈衝），並通知 DofLab；樹莓派的 pi_bridge 做同樣的事。虛擬設備有好幾個人連著時，控制者斷線或逾時，由虛擬設備主機關掉他的輸出（別人的心跳會讓韌體一直收得到位元組）。連線其實還在、只是太久沒收到訊息時（例如網路延遲超過 3 秒），DofLab 收到通知就撤銷授權、回到唯讀。板子上是 DofLabFirmata 1.1 時，連線後會提醒更新（「觀測」頁的「上傳 DofLabFirmata」）。已在虛擬設備驗證，未以實體設備驗證。
+**斷線保護（V2.13）**：斷線時設備端自己把輸出關掉，不會停在最後的命令。DofLabFirmata 1.2 起，有輸出時 3 秒沒收到任何位元組（DofLab 每秒送一次心跳），就把數位輸出寫 LOW 並改成輸入、伺服停止送脈衝（停在原地，不會轉到 0°；Uno 與 ESP32 都會等目前的脈衝送完才停，不會送出被截短的脈衝），並通知 DofLab；樹莓派的 pi_bridge 做同樣的事。虛擬設備有好幾個人連著時，控制者斷線或逾時，由虛擬設備主機關掉他的輸出（別人的心跳會讓韌體一直收得到位元組）。連線其實還在、只是太久沒收到訊息時（例如網路延遲超過 3 秒），DofLab 收到通知就撤銷授權、回到唯讀。板子上是 DofLabFirmata 1.1 時，連線後會提醒更新（「觀測」頁的「上傳 DofLabFirmata」）。已在虛擬設備驗證，未以實體設備驗證。
 
 **上傳程式與序列埠監看（V2.11）**：虛擬 Uno 裡有 Arduino 官方的 Optiboot 開機程式，可以像實體 Uno 一樣上傳自己的程式：
 
@@ -290,7 +290,7 @@ e2e/           Playwright 端到端測試
 ## 測試
 
 ```bash
-node --test --test-concurrency=1 tests/*.test.js     # 204 項（需要 g++；虛擬硬體測試與第 4 階段驗收需要 arduino-cli 與 avr-nm；第 6 階段的虛擬樹莓派需要 Python 的 gpiozero 與 aiohttp）
+node --test --test-concurrency=1 tests/*.test.js     # 205 項（需要 g++；虛擬硬體測試與第 4 階段驗收需要 arduino-cli 與 avr-nm；第 6 階段的虛擬樹莓派需要 Python 的 gpiozero 與 aiohttp）
 python3 -m unittest discover -s tests -p "test_*.py" # 21 項（上傳端到端需要 avrdude 與 socat）
 python3 e2e/e2e.py                                   # 268 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults vupload vmulti vboards）
 ```

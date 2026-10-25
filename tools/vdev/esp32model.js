@@ -58,7 +58,7 @@ class VirtualEsp32 {
     this.gen = (this.gen || 0) + 1; this.running = false;
     this.mode = new Array(this.P.total).fill(M.UNSET); this.state = new Array(this.P.total).fill(0);
     this.hw = new Array(this.P.total).fill('input'); this.out = new Array(this.P.total).fill(false);
-    this.servoOf = new Array(this.P.total).fill(-1); this.servoUs = {}; this.servoTrain = {};
+    this.servoOf = new Array(this.P.total).fill(-1); this.servoUs = {}; this.servoTrain = {}; this.pulseEnd = {}; this.tail = {};
     this.sonar = Array.from({ length: MAX_SONARS }, () => ({ on: false }));
     const ports = Math.ceil(this.P.total / 8); this.reportPort = new Array(ports).fill(0); this.lastPort = new Array(ports).fill(0);
     this.reportAnalog = 0; this.lastAnalog = 0; this.analogTimer = false;
@@ -76,6 +76,7 @@ class VirtualEsp32 {
   release(pin) { delete this.inputs[pin]; this.notify(); this.react(); }
   setAnalog(key, volts) { this.analog[key] = volts; }   // ESP32 以 GPIO 編號指定；Uno 腳位表以類比通道編號（和 VirtualUno 相同）
   pinState(pin) {
+    if (this.tail[pin] > this.cycle) return PinState.High;   // 停止伺服時正在送的脈衝：照常送完（韌體 1.2，見 detachServo）
     if (this.hw[pin] === 'output') return this.out[pin] ? PinState.High : PinState.Low;
     return this.hw[pin] === 'pullup' ? PinState.InputPullUp : PinState.Input;
   }
@@ -124,12 +125,19 @@ class VirtualEsp32 {
   sendPort(port) { const v = this.readPort(port); this.write(0x90 | port, v & 0x7F, v >> 7); this.lastPort[port] = v; }
   scanPorts() { for (let port = 0; port < this.reportPort.length; port++) if (this.reportPort[port] && this.readPort(port) !== this.lastPort[port]) this.sendPort(port); }
   // ---------- 伺服：附加後每 20 ms 一個脈衝 ----------
-  detachServo(p) { if (this.servoOf[p] >= 0) { this.servoOf[p] = -1; delete this.servoUs[p]; this.drive(p, false); } }
+  // 停止伺服（韌體 1.2）：正在送的脈衝照常送完再停，不會送出被截短的脈衝。Firmata 的狀態（模式、哪顆伺服）立刻改，腳位的變化等脈衝結束才看得到
+  detachServo(p) {
+    if (this.servoOf[p] < 0) return;
+    this.servoOf[p] = -1; delete this.servoUs[p];
+    const end = this.pulseEnd[p];
+    if (end > this.cycle && this.out[p]) { this.tail[p] = end; this.at(end, () => { if (this.tail[p] === end) { delete this.tail[p]; this.notify(); } }); }
+    this.drive(p, false);
+  }
   servoPulse(p, train) {
     if (train === undefined) train = this.servoTrain[p] = (this.servoTrain[p] || 0) + 1;   // 重新附加時舊的脈衝序列作廢
     if (this.servoOf[p] < 0 || train !== this.servoTrain[p]) return;
     this.drive(p, true);
-    const w = this.servoUs[p];
+    const w = this.servoUs[p]; this.pulseEnd[p] = this.cycle + Math.max(1, Math.ceil(w * 16));   // 和 later() 的換算相同
     this.later(w, () => { if (this.servoOf[p] >= 0 && train === this.servoTrain[p]) this.drive(p, false); });
     this.later(SERVO_PERIOD_US, () => this.servoPulse(p, train));
   }
