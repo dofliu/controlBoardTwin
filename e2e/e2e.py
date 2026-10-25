@@ -580,7 +580,12 @@ async def bench_flow(p):
         t0 = part(state(), 'LED1')['toggles']
         for i in range(4):
             await hold(bp, 'BTN1', 100); await bp.wait_for_timeout(350)
-        await bp.wait_for_timeout(800)
+        # 等狀態，不用固定延遲：按鈕都已送進引擎、之後再過 100 ms 模擬時間（去彈跳），沒有在途命令、最新的命令已確認，工作台的 LED 和命令一致
+        try:
+            await pg.wait_for_function("doflab.twin.view('BTN1.pressed').measured && doflab.twin.view('BTN1.pressed').measured.v === false && !(doflab.hw.btnQ||[]).length", timeout=5000)
+            t_sim = await ev(pg, "doflab.sim.time")
+            await pg.wait_for_function("(v=>doflab.sim.time>=%d+100 && doflab.twin.pending.length===0 && v.commanded && v.ack && v.ack.id===v.commanded.id)(doflab.twin.view('LED1.state'))" % t_sim, timeout=8000)
+        except Exception: pass
         n = part(state(), 'LED1')['toggles'] - t0
         check("快速點 4 下（每下 100 ms，比畫面一幀還短）→ 工作台上的 LED 也正好切換 4 次，沒有漏掉", n == 4, str(n))
         await pg.click('#simRun'); await pg.click('#hwDisc'); await pg.wait_for_timeout(300); srv.kill(); srv.wait()
@@ -618,10 +623,10 @@ async def bench_flow(p):
             await pg.click('#armSavePose'); await pg.wait_for_timeout(150)
         check("手臂頁記下兩個姿態 A、B（模擬中）", await ev(pg, "doflab.p.arm.poses.map(x=>x.name).join()") == 'A,B')
         await connect(pg)
+        # 記錄 DofLab 經驅動送出的每一筆伺服命令（腳位、角度）：只是旁聽，不改變送出的內容；在授權之前裝好（V2.13 起授權時就會先送目前的角度）；Twin Core 的紀錄只留最近 500 筆，不夠用
+        await ev(pg, "(()=>{const d=doflab.hw.driver, w=d.write.bind(d); window.__sent=[]; d.write=(c,o,b)=>{ if(o.kind==='servo') window.__sent.push([o.num, Math.round(c.v)]); return w(c,o,b); };})()")
         for cb in await pg.locator('[data-chk]').all(): await cb.check()
         await pg.click('#hwAuth'); await pg.wait_for_timeout(200)
-        # 記錄 DofLab 經驅動送出的每一筆伺服命令（腳位、角度）：只是旁聽，不改變送出的內容；在開始送出之前裝好；Twin Core 的紀錄只留最近 500 筆，不夠用
-        await ev(pg, "(()=>{const d=doflab.hw.driver, w=d.write.bind(d); window.__sent=[]; d.write=(c,o)=>{ if(o.kind==='servo') window.__sent.push([o.num, Math.round(c.v)]); return w(c,o); };})()")
         await pg.click('#t-arm'); await pg.wait_for_timeout(500); await pg.check('#armStream'); await pg.wait_for_timeout(300)
         check("手臂頁：授權後勾選「把手臂命令送到設備」，模式為「虛擬設備 · 受控寫入」", await ev(pg, "doflab.arm.stream && doflab.twin.mode==='hw-control' && doflab.twin.conn.virtual"))
         BQ = "window.__bench.bench.parts.find(p=>p.type==='arm').joints.map(j=>j.q)"
@@ -668,7 +673,7 @@ async def bench_flow(p):
         await pg.click('#armRun')
         check("自動序列（A → B → 預備姿態 → A）：DofLab 每停在一個姿態，工作台上的手臂都到達同一個姿態（≤ 1.5°）", all(x['benchMs'] is not None for x in seq), json.dumps(seq))
         await quiet(w0, n0); st = state(); sent = (await servo_cmds())[n0:]; got = device_writes(st)
-        check("自動序列的命令也一個不少、順序相同（設備端的寫入筆數與內容和 DofLab 送出的一致）", len(sent) > 10 and st['traffic']['writeCount'] - w0 == len(sent) and got == ((await servo_cmds())[-len(got):]), json.dumps([len(sent), st['traffic']['writeCount'] - w0]))
+        check("自動序列的命令也一個不少、順序相同（設備端的寫入筆數與內容和 DofLab 送出的一致）", len(sent) > 10 and st['traffic']['writeCount'] - w0 == len(sent) and got == ((await servo_cmds())[-len(got):]), json.dumps([len(sent), st['traffic']['writeCount'] - w0, got[-6:], (await servo_cmds())[-6:]]))
         print('ARMSYNC', json.dumps({'manual': res, 'sequence': seq}, ensure_ascii=False))
         await pg.click('#t-observe'); await pg.click('#hwDisc'); await pg.wait_for_timeout(300); srv.kill(); srv.wait()
 
@@ -681,7 +686,17 @@ async def bench_flow(p):
         except Exception: ok = False
         check("唯讀：在工作台頁把物體拉到 30 cm → DofLab 的量測層顯示 30 cm（經 DofLabFirmata 量回波），設備端沒有收到寫入", ok and state()['traffic']['writeCount'] == 0)
         for cb in await pg.locator('[data-chk]').all(): await cb.check()
-        await pg.click('#hwAuth'); await pg.wait_for_timeout(200); await pg.click('#simRun'); await pg.wait_for_timeout(300)
+        # 授權時先送伺服目前的角度（V2.13）：設備的第一個脈衝就是畫面上的角度，不會先轉到 Servo 函式庫預設的 1500 µs（約 93°）
+        urllib.request.urlopen(api + '/trace?clear=1', timeout=5).read()
+        v0 = await ev(pg, "doflab.twin.view('SERVO1.angle').simulated.v")
+        await pg.click('#hwAuth')
+        try: await pg.wait_for_function("(v=>v.commanded && v.commanded.src==='authorize' && v.ack && v.ack.id===v.commanded.id)(doflab.twin.view('SERVO1.angle'))", timeout=5000); ok = True
+        except Exception: ok = False
+        await bp.wait_for_timeout(100)
+        us = [e['us'] for e in json.loads(urllib.request.urlopen(api + '/trace', timeout=5).read())['trace'] if e.get('part') == 'SERVO1' and 'us' in e]
+        check("授權受控寫入時先送伺服目前的角度：設備收到畫面上的角度並回讀確認，第一個脈衝就是這個角度（不是預設的 1500 µs）",
+              ok and us and abs(us[0] - (544 + round(v0) * 1856 / 180)) <= 3 and abs(us[0] - 1500) > 10, json.dumps([v0, us[:4]]))
+        await pg.click('#simRun'); await pg.wait_for_timeout(300)
         await bp.locator('#us-US1').fill('12'); await bp.locator('#us-US1').dispatch_event('input')
         try:
             await pg.wait_for_function("(v=>v.ack && v.ack.v===152)(doflab.twin.view('SERVO1.angle'))", timeout=6000)

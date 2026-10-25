@@ -73,17 +73,27 @@ async function syncRun(board, p) {
     assert.ok(await until(() => ins.every(i => twin.view(i.signal).measured), 5000), '每個輸入都有第一筆量測：' + ins.map(i => i.signal + '=' + JSON.stringify(twin.view(i.signal).measured)).join('、'));
     const outs = Object.values(B).filter(b => ['LED', 'OBLED', 'SERVO'].includes(DL.project.findComp(p, b.comp).type)).map(b => ({ comp: b.comp, signal: sigOf(DL.project.findComp(p, b.comp)), num: b.num, kind: DL.project.findComp(p, b.comp).type === 'SERVO' ? 'servo' : 'digital' }));
     if (drv.acquire) { const g = await drv.acquire(); assert.ok(g.ok, '取得控制權：' + JSON.stringify(g)); }
-    assert.ok(twin.authorize(outs.map(o => o.signal), { ok: true }).ok); await drv.authorize(outs);
-    await fetch(api + '/trace?clear=1');
+    const e = DL.createEngine(p); const cmds = []; const seen = {}; const fed = {};
+    const arm = p.arm && p.arm.poses && p.arm.poses.length ? { plan: DL.arm.seqPlan(p.arm), ids: p.arm.config.joints.map(j => j.servo), last: [], at: [] } : null;
+    if (arm) arm.st = DL.arm.seqStart(arm.plan, 0);
+    await fetch(api + '/trace?clear=1');   // 授權之前清空：授權時送出的角度也要比對
+    // 授權時先送伺服目前的角度（和 observe.js 的 hwAuthorize 相同，V2.13）：一般伺服是引擎的初始輸出，手臂是序列開始的姿勢
+    assert.ok(twin.authorize(outs.map(o => o.signal), { ok: true }).ok);
+    const now0 = arm ? DL.arm.toServo(p.arm.config, DL.arm.fromServo(p.arm.config, arm.st.cur)) : null;
+    for (const o of outs) {
+      if (o.kind !== 'servo') continue;
+      const v = arm && arm.ids.includes(o.comp) ? now0[arm.ids.indexOf(o.comp)] : e.snapshot().out[o.comp];
+      if (typeof v !== 'number') continue;
+      twin.target(o.signal, v, 'authorize'); const c = twin.command(o.signal, v, 'authorize');
+      if (c.cmd) { o.initial = c.cmd; cmds.push({ t: 0, wall: 0, comp: o.comp, v, initial: true }); if (arm && arm.ids.includes(o.comp)) { arm.last[arm.ids.indexOf(o.comp)] = v; arm.at[arm.ids.indexOf(o.comp)] = -1e9; } }
+    }
+    await drv.authorize(outs);
     // 輸入情境：依實際時間排定
     const scen = [];
     for (const [part, steps] of Object.entries(SCEN)) {
       if (!benchFor(p, fam(board)).parts.some(x => x.id === part)) continue;
       for (const [t, v] of steps) scen.push({ t, q: part.startsWith('BTN') || part.startsWith('BOOT') ? { part, action: v } : part.startsWith('LDR') ? { part, action: 'set', light: v } : { part, action: 'set', cm: v } });
     }
-    const e = DL.createEngine(p); const cmds = []; const seen = {}; const fed = {};
-    const arm = p.arm && p.arm.poses && p.arm.poses.length ? { plan: DL.arm.seqPlan(p.arm), ids: p.arm.config.joints.map(j => j.servo), last: [], at: [] } : null;
-    if (arm) arm.st = DL.arm.seqStart(arm.plan, 0);
     const w0 = performance.now(); let t = 0;
     for (const x of scen) timers.push(setTimeout(() => act(x.q).catch(() => { }), x.t));
     const send = (c, sg, v, num, kind, wall) => { twin.target(sg, v, 'behavior'); const res = twin.command(sg, v, 'behavior'); if (res.ok && res.cmd) { drv.write(res.cmd, { num, kind }); cmds.push({ t, wall, comp: c, v: typeof v === 'boolean' ? (v ? 1 : 0) : v }); return true; } assert.ok(res.ok, res.msg); return false; };
@@ -153,12 +163,13 @@ function check(board, p, R) {
       assert.ok(spread <= 250, `${c.id}：命令到設備的延遲變動 ${spread.toFixed(1)} ms`);
       out[c.id] = `${got.length} 次（延遲變動 ${spread.toFixed(1)} ms）`;
     } else if (c.type === 'SERVO') {
-      // Uno／ESP32 的 Servo 函式庫：授權（attach）後、第一個角度命令到達前輸出預設的 1500 µs（約 93°）。
-      // 虛擬 Uno 上的真韌體也是 1502 µs（已在虛擬 Uno 確認）；這是韌體的行為，不是同步錯誤，所以開頭的這一段不比
+      // 授權時先送了目前的角度（V2.13）：設備的第一個脈衝就是那個角度，不會先出現 Servo 函式庫預設的 1500 µs（約 93°）
       const us = R.trace.filter(x => x.part === c.id && 'us' in x).map(x => x.us);
-      if (board !== 'pi4b') while (us.length > 1 && Math.abs(us[0] - 1500) <= 4) us.shift();
       const got = us.map(x => usToDeg(board, x));
       assert.ok(cs.length && got.length, `${c.id}：有命令 ${cs.length} 個、設備脈寬 ${got.length} 次`);
+      // 第一個脈衝可能已經是授權後下一個命令（手臂的序列一開始就在動），但一定是送過的命令，不是預設的 1500 µs（下面的依序比對也會擋下）
+      assert.ok(cs[0].initial, `${c.id}：授權時沒有先送目前的角度`);
+      assert.ok(cs.some(x => Math.abs(x.v - got[0]) <= 1), `${c.id}：設備的第一個脈衝 ${us[0]} µs（${got[0].toFixed(1)}°）不是送過的命令（授權時送 ${cs[0].v}°）`);
       let k = 0;
       for (const d of got) { while (k < cs.length && Math.abs(cs[k].v - d) > 1) k++; assert.ok(k < cs.length, `${c.id}：設備的 ${d.toFixed(1)}° 不是依序送過的命令（命令 ${cs.map(x => x.v).join('、')}）`); }
       assert.ok(Math.abs(got[got.length - 1] - cs[cs.length - 1].v) <= 1, `${c.id}：設備最後 ${got[got.length - 1].toFixed(1)}°，最後的命令 ${cs[cs.length - 1].v}°`);

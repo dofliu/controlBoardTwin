@@ -6,7 +6,7 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 
 ## 下一個工作
 
-**雲端虛擬硬體第 7 階段（上雲端）要等使用者決定**（主機、帳號、費用、通行碼；規則 4 預設不公開部署）。規劃與分階段驗收在 `docs/VIRTUAL_DEVICE_PLAN.md`。已完成：第 1 階段（V2.8，虛擬 Uno 經 WebSocket：`tools/vdev/`、`src/drivers/transport.js`）、第 2 階段（V2.9，工作台：`bench.js`、`bench.html`、`benches/`）、第 3 階段（V2.10，故障與網路注入：`netfault.js`、`/fault`）、第 4 階段（V2.11，上傳與序列埠：虛擬 Optiboot、`DL.transport.wsSerialPort`、`/trace`、`atDevMs`）、第 5 階段（V2.12，多人與控制權：`tools/vdev/hub.js`、協定 2 的 `lock`／`presence`；連線紀錄：`src/core/session.js`、`src/ui/record.js`；E2E `vmulti`）、第 6 階段（V2.13，虛擬樹莓派：`pi_bridge.py --bench`＋`tools/vdev/pi_bench.py`＋`pihost.js`；虛擬 ESP32 協定模型：`tools/vdev/esp32model.js`；驗收 `tests/vdev_sync.test.js`；E2E `vboards`）。待使用者決定：斷線時設備端的輸出保護（ACCEPTANCE V2.10 第 5 點）；產生的 Uno 程式超音波少 1 cm 要不要改產生器（ACCEPTANCE V2.11 第 5 點）；授權時伺服先轉到約 93°（ACCEPTANCE V2.13 第 5 點）；老師強制收回控制權（第 7 階段）。
+**雲端虛擬硬體第 7 階段（上雲端）要等使用者決定**（主機、帳號、費用、通行碼；規則 4 預設不公開部署）。規劃與分階段驗收在 `docs/VIRTUAL_DEVICE_PLAN.md`。已完成：第 1 階段（V2.8，虛擬 Uno 經 WebSocket：`tools/vdev/`、`src/drivers/transport.js`）、第 2 階段（V2.9，工作台：`bench.js`、`bench.html`、`benches/`）、第 3 階段（V2.10，故障與網路注入：`netfault.js`、`/fault`）、第 4 階段（V2.11，上傳與序列埠：虛擬 Optiboot、`DL.transport.wsSerialPort`、`/trace`、`atDevMs`）、第 5 階段（V2.12，多人與控制權：`tools/vdev/hub.js`、協定 2 的 `lock`／`presence`；連線紀錄：`src/core/session.js`、`src/ui/record.js`；E2E `vmulti`）、第 6 階段（V2.13，虛擬樹莓派：`pi_bridge.py --bench`＋`tools/vdev/pi_bench.py`＋`pihost.js`；虛擬 ESP32 協定模型：`tools/vdev/esp32model.js`；驗收 `tests/vdev_sync.test.js`；E2E `vboards`）。待使用者決定：斷線時設備端的輸出保護（ACCEPTANCE V2.10 第 5 點）；產生的 Uno 程式超音波少 1 cm 要不要改產生器（ACCEPTANCE V2.11 第 5 點）；老師強制收回控制權（第 7 階段）。
 
 ---
 
@@ -57,7 +57,7 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 - **虛擬設備的多人連線**（`tools/vdev/hub.js`）：寫入只有控制者能送（主機擋下別人的寫入）；查詢的回覆只送給問的人（否則別人的交握會被誤判成重新開機）。DofLab 在「授權受控寫入」時才取得控制權（`FirmataDriver.acquire()`），撤銷時交出；新增會改變設備的 Firmata 訊息時，要在 `Hub.judge()` 歸類。
 - **連線紀錄的時間**：重播與比對用模擬時間（`st`），不用實際時間（headless 一幀超過 1 秒時模擬時間會截斷）。
 - **虛擬設備一律標示**：`twin.connected(id, info, {virtual: true})`、`DL.modeLabel(mode, virtual)`；介面各處（模式標籤、量測欄、3D 標籤、事件紀錄）都要分得出虛擬與實體。工作台（`tools/vdev/bench.js`、`pi_bench.py`）**不可以** require `src/core/engine.js`。三種虛擬設備也要分得出來：虛擬 Uno＝avr8js 跑真韌體；虛擬 ESP32＝**協定模型，不是實際韌體**（hello 的 `model: 'protocol'`）；虛擬樹莓派＝真的 pi_bridge＋gpiozero 模擬腳位（hello 的 `virtual: true`）。改 DofLabFirmata 的行為時要同步改 `esp32model.js`，並跑 `tests/vdev_esp32.test.js`（模型換成 Uno 腳位表和真韌體逐位元組比對）。
-- **伺服脈寬**：三種板子都是 544–2400 µs（Uno／ESP32 是 Servo 函式庫預設；樹莓派的 `pi_bridge.py` 與產生的 Python 程式在 V2.13 統一）。要改就三邊一起改，並跑等價測試。
+- **伺服脈寬**：三種板子都是 544–2400 µs（Uno／ESP32 是 Servo 函式庫預設；樹莓派的 `pi_bridge.py` 與產生的 Python 程式在 V2.13 統一）。要改就三邊一起改，並跑等價測試。授權受控寫入時先送伺服目前的角度（`FirmataDriver.authorize` 的 `initial`：設成伺服模式和寫入角度同一次傳送），否則韌體會先輸出 1500 µs。E2E 若要旁聽 `driver.write`，參數有三個（`cmd, out, before`），要一起傳下去，並在授權之前裝好。
 - **3D 場景只在有變化時重畫**（`scene.dirty`，最多 1 秒補畫一次）：改了 3D 物件要設 `this.dirty = true`。
 - **手臂**：三顆伺服裝在手臂模型的關節上（配置頁與手臂頁共用 `DL.models.arm`，手臂頁借用配置頁場景的 `root`）。兩種模式：自動（行為頁的動作序列，按「▶ 執行」）與手動（拖曳、滑桿、輸入）。
 
@@ -69,9 +69,9 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 npm ci                 # 安裝 three、blockly、avr8js、esbuild
 npm run check          # 所有 src/*.js 語法檢查（改完一定要跑）
 npm run build          # 產生 dist/
-npm run test:node      # Node 測試（目前 196 項，含第 4 階段驗收的 15 個子測試、第 6 階段驗收的 27 個子測試；沒有 arduino-cli 時會略過 11 項；沒有 Python 的 gpiozero／aiohttp 時略過虛擬樹莓派）
+npm run test:node      # Node 測試（目前 197 項，含第 4 階段驗收的 15 個子測試、第 6 階段驗收的 27 個子測試；沒有 arduino-cli 時會略過 11 項；沒有 Python 的 gpiozero／aiohttp 時略過虛擬樹莓派）
 npm run test:py        # Python 測試（20 項；沒有 arduino-cli、avrdude、socat 時會略過）
-npm run test:e2e       # 建置＋打包＋瀏覽器測試（265 項，約 25 分鐘）
+npm run test:e2e       # 建置＋打包＋瀏覽器測試（266 項，約 25 分鐘）
 python3 e2e/e2e.py onboard v27   # 只跑部分段落：desktop breadboard teacher experiments pi ultrasonic onboard arm v27 uno vdev bench faults upload vupload vmulti vboards pideploy mobile dark
 DOFLAB_SYNC_ONLY=dist-alarm node --test tests/vdev_sync.test.js   # 第 6 階段驗收只跑某些實驗
 npm run vdev                     # 虛擬設備主機（node tools/vdev/server.js），ws://127.0.0.1:8770/dev/uno-1，工作台 http://127.0.0.1:8770/

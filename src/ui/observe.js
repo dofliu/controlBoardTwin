@@ -516,6 +516,13 @@
     const r = this.twin.authorize(outs.map(o => o.signal), { ok: true });
     if (!r.ok) { if (this.hw.driver.release) await this.hw.driver.release(); this.toast(r.msg, 'e'); return; }
     this._cmdWarned = false;
+    // 伺服：授權時先送畫面上目前的角度（模擬層），經 Twin Core 成為一般命令（有回讀確認）。否則韌體在第一個命令到達前會輸出預設的 1500 µs，伺服先轉到約 93°（V2.13）
+    for (const o of outs) {
+      if (o.kind !== 'servo') continue;
+      const sv = this.twin.view(o.signal).simulated; if (!sv || typeof sv.v !== 'number') continue;
+      this.twin.target(o.signal, sv.v, 'authorize');
+      const c = this.twin.command(o.signal, sv.v, 'authorize'); if (c.ok && c.cmd) o.initial = c.cmd;
+    }
     await this.hw.driver.authorize(outs);
     this.renderAll();
   };

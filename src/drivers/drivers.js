@@ -164,15 +164,25 @@
       return r && r.ok ? r : { ok: false, holder: r && r.holder, message: (r && r.message) || '沒有取得控制權。' };
     }
     async release() { const t = this.transport; if (this.holding && t && t.lock) { this.holding = false; await t.lock('release'); } }
+    // o.initial：授權時先送的命令（伺服的目前角度，V2.13）。韌體的 Servo 函式庫在 attach 後、第一個角度到達前會輸出預設的 1500 µs（約 93°），
+    // 所以「設成伺服模式」和「寫入角度」放在同一次傳送，韌體同一輪 loop 就處理完，伺服不會先往中間轉
     async authorize(outputs) {
       if (this.virtual && !this.holding) { const r = await this.acquire(); if (!r.ok) throw Object.assign(new Error(r.message), { code: 'not_holder', holder: r.holder }); }
-      for (const o of outputs) { this.outPins[o.num] = o; await this.send([0xF4, o.num, o.kind === 'servo' ? 0x04 : 0x01]); }
+      for (const o of outputs) {
+        this.outPins[o.num] = o;
+        const mode = [0xF4, o.num, o.kind === 'servo' ? 0x04 : 0x01];
+        if (o.initial) await this.write(o.initial, o, mode); else await this.send(mode);
+      }
     }
-    async write(cmd, out) {
+    valueBytes(pin, kind, v) {
+      if (kind !== 'servo') return [0xF5, pin, v ? 1 : 0];
+      const a = Math.round(v); return pin < 16 ? [0xE0 | pin, a & 0x7F, (a >> 7) & 0x7F] : [0xF0, 0x6F, pin, a & 0x7F, (a >> 7) & 0x7F, 0xF7];
+    }
+    // before：要和這個命令一起送的位元組（授權時的「設成伺服模式」）
+    async write(cmd, out, before) {
       const pin = out.num;
       if (!this.outPins[pin]) { this.log(`${cmd.name} 的腳位沒有授權，命令未送出。`, 'e'); return; }
-      if (out.kind === 'servo') { const a = Math.round(cmd.v); await this.send(pin < 16 ? [0xE0 | pin, a & 0x7F, (a >> 7) & 0x7F] : [0xF0, 0x6F, pin, a & 0x7F, (a >> 7) & 0x7F, 0xF7]); }
-      else await this.send([0xF5, pin, cmd.v ? 1 : 0]);
+      await this.send((before || []).concat(this.valueBytes(pin, out.kind, cmd.v)));
       (this.lastCmdByPin[pin] = this.lastCmdByPin[pin] || []).push({ id: cmd.id, v: out.kind === 'servo' ? Math.round(cmd.v) : cmd.v ? 1 : 0 });
       await this.send([0xF0, 0x6D, pin, 0xF7]);   // 回讀暫存值作為 ACK（不證明 LED 真的亮或伺服到位）
     }
@@ -239,7 +249,8 @@
       const so = inputs.filter(i => i.kind === 'sonar'); if (so.length) this.send({ op: 'sonar', sensors: so.map(i => ({ trig: i.num, echo: i.echo })) });
       return {};
     }
-    async authorize(outputs) { for (const o of outputs) this.outPins[o.num] = o; this.send({ op: 'authorize', outputs: outputs.map(o => ({ pin: o.num, kind: o.kind })) }); }
+    // o.initial：授權時先送的命令（伺服的目前角度）。pi_bridge 的伺服沒有預設脈寬（initial_angle=None），送了只是讓伺服馬上到目前的角度，和 Firmata 一致
+    async authorize(outputs) { for (const o of outputs) this.outPins[o.num] = o; this.send({ op: 'authorize', outputs: outputs.map(o => ({ pin: o.num, kind: o.kind })) }); for (const o of outputs) if (o.initial) await this.write(o.initial, o); }
     async write(cmd, out) {
       if (!this.outPins[out.num]) { this.log(`${cmd.name} 的腳位沒有授權，命令未送出。`, 'e'); return; }
       this.send(out.kind === 'servo' ? { op: 'servo', id: cmd.id, pin: out.num, angle: cmd.v } : { op: 'write', id: cmd.id, pin: out.num, value: cmd.v ? 1 : 0 });

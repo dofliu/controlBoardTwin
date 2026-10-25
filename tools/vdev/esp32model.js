@@ -9,6 +9,7 @@
 //   - 開機到送出版本約 BOOT_MS（實物依開機程式與 Flash 設定而定）；開機中收到的位元組丟掉。
 //   - 序列埠收到的位元組立刻處理（不模擬 57600 bps 的傳輸時間；ESP32 的 loop 很快，通常在 1 ms 內處理）。
 //   - 伺服脈寬 = Arduino map() 的整數微秒（ESP32Servo 實際以 LEDC 計時器量化，誤差小於 1 µs）；附加後、還沒寫角度前輸出 1500 µs。
+//     附加後在下一個 20 ms 週期才開始輸出脈衝（和虛擬 Uno 上真韌體的 Servo 函式庫相同）；實體 ESP32 的 LEDC 會不會在附加當下先送一個 1500 µs 的脈衝，未驗證。
 //   - ADC 線性：0–3.3 V → 0–4095（實際 ESP32 的 ADC 在兩端非線性）；沒有接東西的類比腳讀 0。
 //   - 沒有上拉、沒有接東西的輸入腳讀 LOW（實物會浮動）。
 //   - DTR／RTS 不會重新啟動（DevKit 的自動重置電路依時序而定；這裡不模擬）。只有故障注入的 RESET 會重新啟動。
@@ -126,7 +127,10 @@ class VirtualEsp32 {
     else if (m === M.SERVO) {
       if (this.servoOf[p] < 0) { for (let i = 0; i < this.P.maxServos; i++) if (!this.servoOf.includes(i)) { this.servoOf[p] = i; break; } }
       if (this.servoOf[p] < 0) return;
-      if (this.servoUs[p] === undefined) { this.servoUs[p] = SERVO_DEFAULT_US; this.mode[p] = m; this.servoPulse(p); return; }
+      if (this.servoUs[p] === undefined) {   // 剛附加：下一個 20 ms 週期才開始輸出（模型假設，見檔案開頭），同一批訊息裡的角度先生效
+        this.servoUs[p] = SERVO_DEFAULT_US; this.mode[p] = m;
+        const train = this.servoTrain[p] = (this.servoTrain[p] || 0) + 1; this.later(SERVO_PERIOD_US, () => this.servoPulse(p, train)); return;
+      }
     } else return;
     this.mode[p] = m;
     this.react();

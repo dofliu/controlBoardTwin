@@ -150,3 +150,22 @@ test('接錯線（按鈕接 D3、LED 接 D12）：按按鈕 DofLab 的 D2 沒有
     assert.strictEqual(R.part('LED1').on, false, '但工作台的 LED 接在 D12，沒有亮');
   } finally { await R.close(); }
 });
+
+test('授權時先送伺服目前的角度（V2.13）：真韌體在虛擬 Uno 上的第一個脈衝就是那個角度；只設成伺服模式時會先輸出 Servo 函式庫預設的 1500 µs', { timeout: 30000 }, async () => {
+  for (const [initial, angle] of [[true, 20], [true, 160], [false, 20]]) {   /* 20° = 750 µs、160° = 2193 µs */
+    const R = await rig('dist-gauge');
+    try {
+      R.twin.define('SERVO1.angle', { feedback: false }); R.twin.authorize(['SERVO1.angle']);
+      const c = R.twin.command('SERVO1.angle', angle).cmd;
+      R.dev.bench.trace.length = 0;
+      const out = { signal: 'SERVO1.angle', num: 9, kind: 'servo' };
+      if (initial) await R.drv.authorize([Object.assign({ initial: c }, out)]);
+      else { await R.drv.authorize([out]); await wait(120); await R.drv.write(c, out); }
+      assert.ok(await until(() => R.twin.view('SERVO1.angle').ack && R.twin.view('SERVO1.angle').ack.id === c.id, 3000), '收到回讀確認');
+      await wait(100);
+      const us = R.dev.bench.trace.filter(e => e.part === 'SERVO1').map(e => e.us); const want = Math.trunc(angle * 1856 / 180) + 544;
+      if (initial) assert.ok(us.length >= 1 && Math.abs(us[0] - want) <= 2, `授權時送 ${angle}°：第一個脈衝應該是 ${want} µs，工作台記到 ${JSON.stringify(us)}`);
+      else assert.ok(Math.abs(us[0] - 1500) <= 4 && Math.abs(us[us.length - 1] - want) <= 2, `只設成伺服模式：先 1500 µs、命令到了才 ${want} µs，工作台記到 ${JSON.stringify(us)}`);
+    } finally { await R.close(); }
+  }
+});
