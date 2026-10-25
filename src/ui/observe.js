@@ -459,7 +459,7 @@
     const prev = this.hw.presence; this.hw.presence = m;
     const who = l => l ? (l.id === m.you ? '你' : `「${l.name}」`) : '';
     const ph = prev && prev.holder ? prev.holder.id : null, nh = m.holder ? m.holder.id : null;
-    if (prev && ph !== nh) this.log('w', nh ? `虛擬設備的控制權：${who(m.holder)}取得控制權${m.holder.id === m.you ? '' : '，你只能唯讀觀看'}` : `虛擬設備的控制權已釋放（${{ release: '撤銷授權', 'holder-left': '控制者中斷連線', timeout: '控制者太久沒有回應，逾時' }[m.why] || m.why}）`);
+    if (prev && ph !== nh) this.log('w', nh ? `虛擬設備的控制權：${who(m.holder)}取得控制權${m.holder.id === m.you ? '' : '，你只能唯讀觀看'}` : `虛擬設備的控制權已釋放（${{ release: '撤銷授權', 'holder-left': '控制者中斷連線，主機已關掉他的輸出', timeout: '控制者太久沒有回應，逾時；主機已關掉他的輸出' }[m.why] || m.why}）`);
     else if (prev && m.links.length !== prev.links.length && m.by) this.log('', `虛擬設備：${m.by} ${m.links.length > prev.links.length ? '加入觀看' : '離開'}（共 ${m.links.length} 個連線）`);
     if (this.twin.mode === 'hw-control' && this.twin.conn.virtual && nh !== m.you) this.hwRevoke(m.why === 'timeout' ? '控制權逾時被釋放' : '控制權已不在你手上');
     const el = $('vdevPresence'); if (el && ph === nh && prev) el.innerHTML = this.presenceText(m); else this.renderHw();   // 控制權改變：授權條件也跟著變，整個面板重畫
@@ -481,7 +481,7 @@
     if (url && src === 'virtual') this.setVdevUrl(url); else if (url) try { localStorage.setItem('doflab.wsUrl', url); } catch (e) { }
     this.hw.busy = true; this.renderHw();   // 先標示「連線中」：關閉序列埠監看也要一點時間，期間不能再按一次
     if (src === 'virtual' && this.up && this.up.vmon && this.up.vmon.open) await this.vmonClose('「觀測」頁要連線，已關閉（上傳與序列埠監看需要獨占虛擬設備）');
-    const drv = new info.cls(this.twin, { log: (m, k) => { this.log(k || '', m); }, onLost: why => this.hwLost(why), onReboot: why => this.hwRebooted(why), onPresence: m => this.hwPresence(m) }, p.board.type);
+    const drv = new info.cls(this.twin, { log: (m, k) => { this.log(k || '', m); }, onLost: why => this.hwLost(why), onReboot: why => this.hwRebooted(why), onGuard: why => this.hwGuard(why), onPresence: m => this.hwPresence(m) }, p.board.type);
     if (src === 'virtual') { const vn = $('vdevName'); if (vn && vn.value.trim()) { this.hw.vdevName = vn.value.trim().slice(0, 24); try { localStorage.setItem('doflab.vdevName', this.hw.vdevName); } catch (e) { } } this.hw.presence = null; }
     try {
       const r = await drv.connect(src === 'usb' ? { port: reuse ? this.hw.lastPort : null } : { url, name: src === 'virtual' ? this.vdevName() : undefined });
@@ -541,6 +541,11 @@
     this.hw.driver.rewatch().catch(() => { });
     this.toast(`${this.twin.conn.virtual ? '虛擬設備' : '設備'}重新開機：已撤銷寫入授權、回到唯讀，未確認的命令不會重送。要再控制請重新授權。`, 'e');
     this.renderAll();
+  };
+  // 斷線保護（DofLabFirmata 1.2、pi_bridge）：設備太久沒收到 DofLab 的訊息，自己把輸出關掉了。連線其實還在時才收得到這個通知：撤銷授權、回到唯讀
+  P.hwGuard = function (why) {
+    if (this.twin.mode === 'hw-control') this.hwRevoke(why);
+    this.toast(`${why}。已回到唯讀；要再控制請重新授權。`, 'e'); this.renderAll();
   };
   P.hwLost = function (why) {
     if (!this.hw.driver) return; this.hw.driver = null; if (this.sim.running) this.toggleRun();

@@ -70,11 +70,17 @@ def board_model(mock):
         return "未知（讀不到 /proc/device-tree/model）"
 
 
+OUTPUT_GUARD_S = 3.0   # 斷線保護：有輸出時這麼久沒收到這個連線的任何訊息就關掉輸出（DofLab 每 1 秒送一次 ping；和 DofLabFirmata 1.2 相同）
+GUARD_MSG = "樹莓派 3 秒沒有收到 DofLab 的訊息，已自己關掉輸出（斷線保護）"
+
+
 class Session:
     """一個網頁連線＝一個 session；session 結束時釋放它建立的所有裝置。"""
 
     def __init__(self, hub, ws):
         self.hub, self.ws = hub, ws
+        self.last_rx = time.monotonic()   # 最後一次收到這個連線的訊息（斷線保護）
+        self.guard_task = asyncio.ensure_future(self.guard())
         self.inputs = {}       # pin -> DigitalInputDevice
         self.outputs = {}      # pin -> (kind, device)
         self.acks = OrderedDict()
@@ -210,7 +216,21 @@ class Session:
                 self.hub.release(pin, self)
         self.outputs.clear()
 
+    # 斷線保護：網路斷了但連線沒有關閉（例如電腦睡眠、Wi-Fi 掉了）時，輸出不會停在最後的命令
+    async def guard(self):
+        try:
+            while True:
+                await asyncio.sleep(0.25)
+                if self.outputs and time.monotonic() - self.last_rx >= OUTPUT_GUARD_S:
+                    self.revoke()
+                    print(f"[斷線保護] {GUARD_MSG}", flush=True)
+                    await self.send({"op": "guard", "message": GUARD_MSG})
+        except asyncio.CancelledError:
+            pass
+
     def close(self):
+        if self.guard_task:
+            self.guard_task.cancel(); self.guard_task = None
         self.revoke()
         if self.sonar_task:
             self.sonar_task.cancel(); self.sonar_task = None
@@ -354,6 +374,7 @@ async def ws_handler(request):
         async for msg in ws:
             if msg.type != WSMsgType.TEXT:
                 continue
+            s.last_rx = time.monotonic()
             m = {}
             try:
                 m = json.loads(msg.data)

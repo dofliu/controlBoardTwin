@@ -503,8 +503,17 @@ async def vboards_flow(p):
         except Exception: ok = False
         check("虛擬 ESP32：按住按鈕 → 行為在介面執行、命令送到協定模型 → 工作台 GPIO23 的 LED 閃爍，並收到回讀 ACK", ok)
         await pg.screenshot(path=str(SHOTS / "v6_esp32_control.png"))
+        # 斷線保護（韌體 1.2，協定模型照做）：按住按鈕、LED 閃爍時網路中斷 → DofLab 回到模擬；設備端約 3 秒沒收到位元組，自己關掉 GPIO23
+        urllib.request.urlopen(urllib.request.Request(base + 'esp32-1/fault', data=json.dumps({'fault': 'disconnect'}).encode(), method='POST'), timeout=5).read()
+        try: await pg.wait_for_function("doflab.twin.conn.state==='lost' && doflab.twin.mode==='sim'", timeout=6000); lost = True
+        except Exception: lost = False
+        t0 = time.monotonic(); off = False
+        while time.monotonic() - t0 < 6:
+            st = state('esp32-1')
+            if st['pins']['23'] == 'input' and not part('esp32-1', 'LED1')['on']: off = True; break
+            await asyncio.sleep(0.1)
+        check("斷線保護：LED 閃爍時網路中斷 → DofLab 回到模擬；設備端約 3 秒沒收到任何位元組，自己關掉 GPIO23（LED 熄滅、腳位回到輸入）", lost and off, json.dumps([lost, round(time.monotonic() - t0, 2), state('esp32-1')['pins']['23']]))
         bench('esp32-1', {'part': 'BTN1', 'action': 'release'})
-        await pg.click('#hwDisc'); await pg.wait_for_timeout(300)
         # ---------- 工作台頁：設備選單、腳位名稱、故障按鈕依板型 ----------
         bp = await ctx.new_page(); await bp.goto(f'http://127.0.0.1:{VPORT}/?d=pi-1'); await bp.wait_for_function("window.__bench && window.__bench.board === 'pi4b' && document.querySelector('[data-part=SERVO1]')")
         txt = await bp.inner_text('body')

@@ -169,3 +169,54 @@ test('授權時先送伺服目前的角度（V2.13）：真韌體在虛擬 Uno �
     } finally { await R.close(); }
   }
 });
+
+test('斷線保護（DofLabFirmata 1.2，真韌體）：有心跳時輸出一直維持；心跳停了 3 秒 → LED 熄滅、D13 回到輸入、DofLab 收到通知；伺服停止送脈衝但不會轉到 0°', { timeout: 60000 }, async () => {
+  let R = await rig('hold-blink');
+  try {
+    const guards = []; R.drv.hooks.onGuard = w => guards.push(w);
+    assert.deepStrictEqual(R.drv.fwVersion, [1, 2]);
+    R.twin.define('LED1.state', { feedback: false }); R.twin.authorize(['LED1.state']);
+    const out = { signal: 'LED1.state', num: 13, kind: 'digital' };
+    await R.drv.authorize([out]); const c = R.twin.command('LED1.state', 1).cmd; await R.drv.write(c, out);
+    assert.ok(await until(() => R.part('LED1').on, 2000), 'LED 亮');
+    await wait(4500);
+    assert.ok(R.part('LED1').on && guards.length === 0, '有心跳（每秒一次）時不會觸發：4.5 秒後 LED 仍亮');
+    clearInterval(R.drv.hb);   // 像分頁當掉、電腦睡眠：DofLab 不再送任何位元組
+    const t0 = Date.now();
+    assert.ok(await until(() => !R.part('LED1').on, 5000), '心跳停了：LED 熄滅');
+    const dt = Date.now() - t0; assert.ok(dt >= 1800 && dt <= 4500, `約 3 秒後關掉（實測 ${dt} ms；心跳停的時候上一次心跳可能已經過了 0–1 秒）`);
+    assert.strictEqual(R.dev.uno.pinState(13), 2, 'D13 回到輸入（avr8js PinState.Input）');
+    assert.ok(await until(() => guards.length === 1, 2000), 'DofLab 收到斷線保護的通知（F0 64 F7）：' + JSON.stringify(guards));
+    assert.deepStrictEqual(R.drv.outPins, {}, '驅動忘記已授權的輸出');
+  } finally { await R.close(); }
+  R = await rig('dist-gauge');
+  try {
+    R.twin.define('SERVO1.angle', { feedback: false }); R.twin.authorize(['SERVO1.angle']);
+    const out = { signal: 'SERVO1.angle', num: 9, kind: 'servo' };
+    await R.drv.authorize([Object.assign({ initial: R.twin.command('SERVO1.angle', 120).cmd }, out)]);
+    assert.ok(await until(() => R.part('SERVO1').powered && Math.abs(R.part('SERVO1').angle - 120) <= 1.5, 3000), '伺服在 120°');
+    clearInterval(R.drv.hb);
+    assert.ok(await until(() => !R.part('SERVO1').powered, 5000), '心跳停了：伺服不再收到脈衝');
+    const sv = R.part('SERVO1'); assert.ok(Math.abs(sv.angle - 120) <= 1.5 && Math.abs(sv.cmd - 120) <= 1.5, '停在原地，沒有轉到 0°：' + JSON.stringify(sv));
+  } finally { await R.close(); }
+});
+
+test('連到舊版 DofLabFirmata 1.1（沒有斷線保護）：DofLab 提醒更新到 1.2；1.1 的輸出在心跳停了之後仍停在最後的命令', { timeout: 30000 }, async () => {
+  const path = require('path');
+  const dev = new VirtualDevice({ bench: 'hold-blink', hex: path.join(__dirname, 'fixtures', 'DofLabFirmata-1.1-uno.hex') });
+  const port = dev.uno.webSerialPort();
+  Object.defineProperty(globalThis.navigator, 'serial', { configurable: true, value: { requestPort: async () => port } });
+  const twin = DL.createTwin(); const logs = [];
+  const drv = new DL.drivers.FirmataDriver(twin, { log: (m, k) => logs.push([k, m]) }, 'uno');
+  try {
+    const r = await drv.connect(); twin.connected(r.deviceId, r.info, { virtual: true });
+    assert.deepStrictEqual(drv.fwVersion, [1, 1]);
+    assert.ok(logs.some(([k, m]) => k === 'w' && /1\.1 沒有斷線保護/.test(m) && /更新到 1\.2/.test(m)), JSON.stringify(logs));
+    twin.define('LED1.state', { feedback: false }); twin.authorize(['LED1.state']);
+    const out = { signal: 'LED1.state', num: 13, kind: 'digital' };
+    await drv.authorize([out]); await drv.write(twin.command('LED1.state', 1).cmd, out);
+    assert.ok(await until(() => dev.bench.partState(dev.bench.parts.LED1).on, 2000));
+    clearInterval(drv.hb); await wait(4000);
+    assert.ok(dev.bench.partState(dev.bench.parts.LED1).on, '1.1 沒有斷線保護：LED 仍亮（這就是要更新的原因）');
+  } finally { await drv.disconnect(true); port.stop(); }
+});

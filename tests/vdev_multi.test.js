@@ -160,3 +160,33 @@ test('設備重新開機（按 RESET）：控制者的授權撤銷時也交出�
     await A.drv.disconnect(); await B.drv.disconnect();
   } finally { await s.close(); }
 });
+
+test('斷線保護（主機）：控制者沒有撤銷就斷線，別人還連著 → 主機立刻關掉他的輸出（LED 熄滅、D13 回到輸入）；伺服只改成輸入、不寫角度', { timeout: 30000 }, async () => {
+  const s = await server();
+  try {
+    const A = user('老師'), B = user('學生'); await A.connect(s.url); await B.connect(s.url);
+    await authorize(B);
+    const c = B.twin.command('LED1.state', 1).cmd; await B.drv.write(c, LED[0]);
+    assert.ok(await until(async () => (await s.state()).bench.parts.find(p => p.id === 'LED1').on), 'LED 亮');
+    const w0 = (await s.state()).trafficTotal.writeCount;
+    await B.drv.disconnect(true);   // 像關掉分頁：沒有撤銷
+    assert.ok(await until(async () => { const st = await s.state(); return !st.bench.parts.find(p => p.id === 'LED1').on && st.pins['13'] === 'input'; }, 2000), '主機關掉輸出：LED 熄滅、D13 回到輸入（老師的心跳還在，韌體自己的斷線保護不會觸發）');
+    const st = await s.state(); const ws = st.trafficTotal.writes.slice(-2);
+    assert.ok(st.trafficTotal.writeCount - w0 >= 1 && ws.some(w => w.kind === 'digital' && w.pin === 13 && w.v === 0), '主機送出 D13 = 0：' + JSON.stringify(ws));
+    assert.strictEqual(A.last().why, 'holder-left');
+    assert.deepStrictEqual(st.hub.outputs, [], '主機不再記得學生的輸出腳位');
+    await A.drv.disconnect(true);
+  } finally { await s.close(); }
+});
+
+test('斷線保護（主機）：控制者斷線或逾時時送給晶片的位元組——數位輸出 F5 腳位 0 再 F4 腳位 0；伺服只有 F4 腳位 0（寫 0 會轉到 0°）', () => {
+  const { Hub } = require('../tools/vdev/hub.js');
+  const dev = []; const h = new Hub({ send: () => { }, notify: () => { }, toDevice: b => dev.push([...b]) });
+  try {
+    const { link: A } = h.join({ readyState: 1 }, { name: '控制者' }); h.join({ readyState: 1 }, { name: '觀看者' });
+    assert.ok(h.lock(A, 'control').ok);
+    h.fromLink(A, Uint8Array.from([0xF4, 13, 1, 0xF4, 9, 4, 0xF4, 2, 0x0B])); dev.length = 0;
+    h.leave(A);
+    assert.deepStrictEqual(dev, [[0xF5, 13, 0, 0xF4, 13, 0, 0xF4, 9, 0]], '只關掉控制者設成輸出的 D13、D9；D2 是輸入，不動');
+  } finally { h.stop(); }
+});

@@ -88,7 +88,7 @@ curl -X POST -d '{"fault":"reset"}' http://127.0.0.1:8770/api/devices/uno-1/faul
 curl -X POST -d '{"part":"BTN1","action":"unplug"}' http://127.0.0.1:8770/api/devices/uno-1/bench   # plug 接回；超音波另有 stuck／unstuck
 ```
 
-注意：網路中斷時，設備上的輸出會停在最後的命令（Firmata 本身沒有「斷線就關掉輸出」的保護）；DofLab 回到模擬，但不會也不能去關掉設備上已經亮著的 LED。
+**斷線保護（V2.13）**：斷線時設備端自己把輸出關掉，不會停在最後的命令。DofLabFirmata 1.2 起，有輸出時 3 秒沒收到任何位元組（DofLab 每秒送一次心跳），就把數位輸出寫 LOW 並改成輸入、伺服停止送脈衝（停在原地，不會轉到 0°），並通知 DofLab；樹莓派的 pi_bridge 做同樣的事。虛擬設備有好幾個人連著時，控制者斷線或逾時，由虛擬設備主機關掉他的輸出（別人的心跳會讓韌體一直收得到位元組）。連線其實還在、只是太久沒收到訊息時（例如網路延遲超過 3 秒），DofLab 收到通知就撤銷授權、回到唯讀。板子上是 DofLabFirmata 1.1 時，連線後會提醒更新（「觀測」頁的「上傳 DofLabFirmata」）。已在虛擬設備驗證，未以實體設備驗證。
 
 **上傳程式與序列埠監看（V2.11）**：虛擬 Uno 裡有 Arduino 官方的 Optiboot 開機程式，可以像實體 Uno 一樣上傳自己的程式：
 
@@ -208,7 +208,7 @@ Arduino IDE 設定：開發板管理員安裝「esp32 by Espressif Systems」，
 - 產生的 Arduino 程式不用 `pulseIn`（它會讓整個程式停住最多數十毫秒），所以閃爍、按鈕與伺服照常運作。V2.13 起 ECHO 的變化由腳位變化中斷記下時間（Uno：PCINT；ESP32：`attachInterrupt`），量到的回波寬度不受迴圈裡其他工作影響：在虛擬 Uno 上，隨機距離、三種迴圈工作量，每一次都量對（回波寬度誤差 ≤ 3 µs，1 cm ≈ 58 µs）。之前每一輪迴圈看一次 ECHO，有伺服的程式約 42 % 少 1 cm。ESP32 版只確認能編譯，沒有執行過。樹莓派版使用 gpiozero 的 `DistanceSensor`。
 - 新積木：條件「量到的距離小於／大於 … cm」，動作「伺服角度跟著距離」（線性換算，與 Arduino 的 `map()` 相同）。
 - 觀測頁用拉桿移動前方的物體（3D 畫面的橘色板，距離經過壓縮，只是示意），也可以按「移走物體」模擬沒有回波。
-- 真機同步：Uno／ESP32 需要 **DofLabFirmata 1.1** 以上（觀測頁按「上傳 DofLabFirmata」即可）；StandardFirmata 沒有超音波功能，距離會顯示「不支援」。唯讀時韌體會每 60 ms 送一次 10 µs 的 TRIG 觸發脈衝，這是量距離必須的輸出。樹莓派經 `pi_bridge.py` 回報。
+- 真機同步：Uno／ESP32 需要 **DofLabFirmata 1.1** 以上（斷線保護要 1.2）（觀測頁按「上傳 DofLabFirmata」即可）；StandardFirmata 沒有超音波功能，距離會顯示「不支援」。唯讀時韌體會每 60 ms 送一次 10 µs 的 TRIG 觸發脈衝，這是量距離必須的輸出。樹莓派經 `pi_bridge.py` 回報。
 
 ## 教師模式
 
@@ -290,9 +290,9 @@ e2e/           Playwright 端到端測試
 ## 測試
 
 ```bash
-node --test --test-concurrency=1 tests/*.test.js     # 198 項（需要 g++；虛擬硬體測試與第 4 階段驗收需要 arduino-cli 與 avr-nm；第 6 階段的虛擬樹莓派需要 Python 的 gpiozero 與 aiohttp）
-python3 -m unittest discover -s tests -p "test_*.py" # 20 項（上傳端到端需要 avrdude 與 socat）
-python3 e2e/e2e.py                                   # 266 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults vupload vmulti vboards）
+node --test --test-concurrency=1 tests/*.test.js     # 202 項（需要 g++；虛擬硬體測試與第 4 階段驗收需要 arduino-cli 與 avr-nm；第 6 階段的虛擬樹莓派需要 Python 的 gpiozero 與 aiohttp）
+python3 -m unittest discover -s tests -p "test_*.py" # 21 項（上傳端到端需要 avrdude 與 socat）
+python3 e2e/e2e.py                                   # 267 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults vupload vmulti vboards）
 ```
 
 ### 示範影片

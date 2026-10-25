@@ -10,7 +10,11 @@
  *       設定 F0 62 <trig> <echo> F7（trig = 7F 表示全部停止）
  *       回報 F0 63 <trig> <cm 低 7 位元> <cm 高 7 位元> F7（每 60 ms 量一次，量完就回報；沒有回波 = 400）
  *       不用 pulseIn：每一輪 loop 看一次 ECHO，所以量測時序列埠與其他回報照常運作
- * 序列埠 57600 bps。協定版本回報為 2.6；韌體名稱 DofLabFirmata、版本 1.1。
+ *   - 斷線保護（韌體版本 1.2 起）：有輸出（數位輸出或伺服）時，OUTPUT_GUARD_MS 內沒有收到任何位元組，就把輸出關掉——
+ *       數位輸出寫 LOW 再改成輸入、伺服停止送脈衝並改成輸入（不寫角度，否則會轉到 0°），然後送出 F0 64 F7。
+ *       DofLab 每秒送一次查詢（心跳），所以正常連線時不會觸發；分頁關掉、電腦睡眠、網路斷了時，輸出不會停在最後的命令。
+ *       超音波的觸發與輸入回報不受影響。
+ * 序列埠 57600 bps。協定版本回報為 2.6；韌體名稱 DofLabFirmata、版本 1.2。
  * 授權：MIT（DofLab 原型）
  */
 #if defined(ARDUINO_ARCH_ESP32)
@@ -39,6 +43,8 @@ enum { M_INPUT = 0, M_OUTPUT = 1, M_ANALOG = 2, M_SERVO = 4, M_PULLUP = 0x0B, M_
 #define SONAR_PERIOD_MS 60
 #define SONAR_TIMEOUT_US 30000UL
 #define SONAR_MAX_CM 400
+#define OUTPUT_GUARD_MS 3000   // 斷線保護：有輸出時這麼久沒收到位元組就關掉輸出（DofLab 每 1 秒送一次心跳）
+unsigned long lastRx = 0;
 struct Sonar { bool on; uint8_t trig, echo, state; unsigned long due, t0; };
 Sonar sonar[MAX_SONARS];
 uint8_t pinMode_[TOTAL_PINS];
@@ -54,7 +60,7 @@ uint8_t buf[32]; uint8_t blen = 0; bool sysex = false; uint8_t cmd = 0; uint8_t 
 void sendVersion() { Serial.write(0xF9); Serial.write(2); Serial.write(6); }
 void sendFirmware() {
   const char *name = "DofLabFirmata";
-  Serial.write(0xF0); Serial.write(0x79); Serial.write(1); Serial.write(1);   // 韌體版本 1.1（1.1 起支援超音波）
+  Serial.write(0xF0); Serial.write(0x79); Serial.write(1); Serial.write(2);   // 韌體版本 1.2（1.1 起支援超音波、1.2 起有斷線保護）
   for (const char *c = name; *c; c++) { Serial.write(*c & 0x7F); Serial.write(0); }
   Serial.write(0xF7);
 }
@@ -132,6 +138,19 @@ void sonarUpdate() {
   }
 }
 
+// 斷線保護：關掉所有輸出（和 DofLab 撤銷授權時做的事相同），有關掉東西才通知
+void outputGuard() {
+  if (millis() - lastRx < OUTPUT_GUARD_MS) return;
+  bool any = false;
+  for (uint8_t p = 0; p < TOTAL_PINS; p++) {
+    if (pinMode_[p] != M_OUTPUT && pinMode_[p] != M_SERVO) continue;
+    any = true;
+    if (pinMode_[p] == M_OUTPUT) digitalWrite(p, LOW);
+    detachServo(p); pinMode(p, INPUT); pinMode_[p] = M_INPUT; pinState_[p] = 0;
+  }
+  if (any) { Serial.write(0xF0); Serial.write(0x64); Serial.write(0xF7); }
+}
+
 void resetAll() {
   sonarStop();
   for (uint8_t p = 0; p < TOTAL_PINS; p++) { if (pinMode_[p] == M_SERVO) detachServo(p); if (pinValid(p) && pinMode_[p] != M_UNSET && p > 1) pinMode(p, INPUT); pinMode_[p] = pinValid(p) ? M_INPUT : M_UNSET; pinState_[p] = 0; servoOf[p] = -1; }
@@ -204,7 +223,8 @@ void setup() {
 }
 
 void loop() {
-  while (Serial.available()) parse(Serial.read());
+  while (Serial.available()) { parse(Serial.read()); lastRx = millis(); }
+  outputGuard();
   sonarUpdate();
   for (uint8_t port = 0; port < sizeof(reportPort); port++) if (reportPort[port]) { uint8_t v = readPort(port); if (v != lastPort[port]) sendPort(port); }
   unsigned long now = millis();

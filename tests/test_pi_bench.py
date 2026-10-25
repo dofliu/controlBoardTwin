@@ -129,6 +129,36 @@ class VirtualPi(unittest.TestCase):
                     st = await get(port, "/api/bench"); self.assertGreaterEqual(st["traffic"]["writeCount"], 3)
         asyncio.run(go())
 
+    def test_guard(self):
+        """斷線保護：有輸出時，每秒 ping 一次就一直維持；3 秒沒有任何訊息 → pi_bridge 關掉輸出並送出 guard（連線本身還在）"""
+        port = self.port
+        async def go():
+            async with aiohttp.ClientSession() as s:
+                async with s.ws_connect(f"http://127.0.0.1:{port}/ws") as ws:
+                    async def rx(op, n=400, t=6):
+                        for _ in range(n):
+                            m = await asyncio.wait_for(ws.receive_json(), t)
+                            if m["op"] == op: return m
+                    await ws.send_json({"op": "hello", "client": "test", "proto": 2}); await rx("hello")
+                    await ws.send_json({"op": "authorize", "outputs": [{"pin": 18, "kind": "servo"}]}); await rx("authorized")
+                    await ws.send_json({"op": "servo", "id": "g1", "pin": 18, "angle": 120}); await rx("ack")
+                    for _ in range(5):   # 有 ping：不會觸發
+                        await asyncio.sleep(0.9); await ws.send_json({"op": "ping", "t": 0})
+                    sv = next(p for p in (await get(port, "/api/bench"))["bench"]["parts"] if p["id"] == "SERVO1")
+                    self.assertTrue(sv["powered"], sv)
+                    t0 = time.monotonic()
+                    g = await rx("guard", t=6)   # 不再送任何訊息
+                    dt = time.monotonic() - t0
+                    self.assertIn("斷線保護", g["message"]); self.assertTrue(2.5 <= dt <= 4.5, dt)
+                    await asyncio.sleep(0.2)
+                    sv = next(p for p in (await get(port, "/api/bench"))["bench"]["parts"] if p["id"] == "SERVO1")
+                    self.assertFalse(sv["powered"], f"伺服不再收到脈衝：{sv}")
+                    self.assertLessEqual(abs(sv["angle"] - 120), 1.5, f"停在原地，沒有轉到 0°：{sv}")
+                    await ws.send_json({"op": "servo", "id": "g2", "pin": 18, "angle": 30})
+                    e = await rx("error")
+                    self.assertIn("沒有授權", e["message"], f"授權已經撤銷，命令不會執行：{e}")
+        asyncio.run(go())
+
     def test_bad_bench_action(self):
         """工作台操作錯誤回 400（不是讓 pi_bridge 當掉）"""
         code, r = asyncio.run(post(self.port, "/api/bench", {"part": "NOPE", "action": "press"}))

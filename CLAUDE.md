@@ -6,7 +6,7 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 
 ## 下一個工作
 
-**雲端虛擬硬體第 7 階段（上雲端）要等使用者決定**（主機、帳號、費用、通行碼；規則 4 預設不公開部署）。規劃與分階段驗收在 `docs/VIRTUAL_DEVICE_PLAN.md`。已完成：第 1 階段（V2.8，虛擬 Uno 經 WebSocket：`tools/vdev/`、`src/drivers/transport.js`）、第 2 階段（V2.9，工作台：`bench.js`、`bench.html`、`benches/`）、第 3 階段（V2.10，故障與網路注入：`netfault.js`、`/fault`）、第 4 階段（V2.11，上傳與序列埠：虛擬 Optiboot、`DL.transport.wsSerialPort`、`/trace`、`atDevMs`）、第 5 階段（V2.12，多人與控制權：`tools/vdev/hub.js`、協定 2 的 `lock`／`presence`；連線紀錄：`src/core/session.js`、`src/ui/record.js`；E2E `vmulti`）、第 6 階段（V2.13，虛擬樹莓派：`pi_bridge.py --bench`＋`tools/vdev/pi_bench.py`＋`pihost.js`；虛擬 ESP32 協定模型：`tools/vdev/esp32model.js`；驗收 `tests/vdev_sync.test.js`；E2E `vboards`）。待使用者決定：斷線時設備端的輸出保護（ACCEPTANCE V2.10 第 5 點）；老師強制收回控制權（第 7 階段）。
+**雲端虛擬硬體第 7 階段（上雲端）要等使用者決定**（主機、帳號、費用、通行碼；規則 4 預設不公開部署）。規劃與分階段驗收在 `docs/VIRTUAL_DEVICE_PLAN.md`。已完成：第 1 階段（V2.8，虛擬 Uno 經 WebSocket：`tools/vdev/`、`src/drivers/transport.js`）、第 2 階段（V2.9，工作台：`bench.js`、`bench.html`、`benches/`）、第 3 階段（V2.10，故障與網路注入：`netfault.js`、`/fault`）、第 4 階段（V2.11，上傳與序列埠：虛擬 Optiboot、`DL.transport.wsSerialPort`、`/trace`、`atDevMs`）、第 5 階段（V2.12，多人與控制權：`tools/vdev/hub.js`、協定 2 的 `lock`／`presence`；連線紀錄：`src/core/session.js`、`src/ui/record.js`；E2E `vmulti`）、第 6 階段（V2.13，虛擬樹莓派：`pi_bridge.py --bench`＋`tools/vdev/pi_bench.py`＋`pihost.js`；虛擬 ESP32 協定模型：`tools/vdev/esp32model.js`；驗收 `tests/vdev_sync.test.js`；E2E `vboards`）。待使用者決定：老師強制收回控制權（第 7 階段）。
 
 ---
 
@@ -40,7 +40,7 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 | `src/core/` | 與畫面無關的核心，**瀏覽器與 Node 共用**：`boards`（板型、腳位能力）、`components`（元件型錄）、`breadboard`、`project`（專案格式、`inputsHash`）、`netlist`（電路檢查、綁定）、`behavior`（行為 IR、驗證、摘要）、`engine`（模擬引擎）、`codegen`（C++／Python 產生器，`GENERATOR_VERSION`）、`autowire`（接線助手）、`routing`（整齊走線）、`experiments`（引導實驗）、`arm`（三軸手臂 IK、動作序列 `seqPlan／seqStep`）、`twin`（Twin Core 五層狀態）、`session`（連線紀錄的格式與重播比對） |
 | `src/ui/` | 只在瀏覽器：`app`（主程式、配置、行為、程式頁、可收合卡片、HUD）、`scene`（Three.js 3D 場景）、`models`（程序化 3D 模型）、`observe`（模擬、觀測、真機連線）、`arm`（手臂頁）、`blocks`（Blockly）、`upload`、`record`（連線紀錄的錄製、匯出、重播）、`teacher`、`main`（啟動與版本狀態表）、`body.html`、`styles.css` |
 | `src/drivers/` | `transport.js`：傳輸層 `WebSerialTransport`（含 `DL.serial` 連接埠占用處理）、`WebSocketTransport`（虛擬設備）；`drivers.js`：`FirmataDriver`（Firmata，只透過傳輸物件收送位元組）、`PiBridgeDriver`（WebSocket）、`driverFor(board, source)`；`stk500.js`：瀏覽器上傳 Uno |
-| `tools/` | `doflab_server.py`（本機編譯／上傳服務，aiohttp，port 8766）、`pi_bridge.py`（樹莓派閘道，`--mock` 用模擬腳位，port 8765）、`firmware/DofLabFirmata/`（DofLabFirmata 1.1，含超音波擴充 `F0 62`／`F0 63`）、`vdev/`（虛擬設備主機，Node，port 8770：`server.js` WebSocket＋HTTP、`hub.js` 多人連線與控制權（Firmata 轉接）、`netfault.js` 網路故障注入、`device.js` 每台一個 worker、`bench.js` 工作台的元件模型、`bench.html` 工作台頁、`benches/*.json` 工作台預設（`--bench`）、`avrsim.js` avr8js 虛擬 Uno，跑真的 .hex、含 Optiboot；測試也用它。虛擬設備載入 Optiboot，可以經 WebSocket 用 STK500 上傳；`esp32model.js` 虛擬 ESP32 的**協定模型**（照 DofLabFirmata 的 ESP32 分支寫的 JS，不是實際韌體；介面和 VirtualUno 相同）；`pihost.js`＋`pi_bench.py` 虛擬樹莓派：主機啟動 `pi_bridge.py --bench` 子程序並轉接） |
+| `tools/` | `doflab_server.py`（本機編譯／上傳服務，aiohttp，port 8766）、`pi_bridge.py`（樹莓派閘道，`--mock` 用模擬腳位，port 8765）、`firmware/DofLabFirmata/`（DofLabFirmata 1.2，含超音波擴充 `F0 62`／`F0 63`、斷線保護 `F0 64`）、`vdev/`（虛擬設備主機，Node，port 8770：`server.js` WebSocket＋HTTP、`hub.js` 多人連線與控制權（Firmata 轉接）、`netfault.js` 網路故障注入、`device.js` 每台一個 worker、`bench.js` 工作台的元件模型、`bench.html` 工作台頁、`benches/*.json` 工作台預設（`--bench`）、`avrsim.js` avr8js 虛擬 Uno，跑真的 .hex、含 Optiboot；測試也用它。虛擬設備載入 Optiboot，可以經 WebSocket 用 STK500 上傳；`esp32model.js` 虛擬 ESP32 的**協定模型**（照 DofLabFirmata 的 ESP32 分支寫的 JS，不是實際韌體；介面和 VirtualUno 相同）；`pihost.js`＋`pi_bench.py` 虛擬樹莓派：主機啟動 `pi_bridge.py --bench` 子程序並轉接） |
 | `tests/` | Node 測試 `*.test.js`、Python 測試 `test_*.py`、`host/`（g++ 主機替身：Arduino.h、Servo.h、harness.cpp）、`avr/pty_uno.js`（avrdude 經 pty 上傳到虛擬 Uno）、`fixtures/`（韌體 .hex） |
 | `e2e/` | `e2e.py`（Playwright 瀏覽器測試，可只跑某些段落）、`virtual_entry.js`（瀏覽器內的虛擬 Uno，用 esbuild 打包成 `virtual_uno.bundle.js`，不進 git） |
 | `docs/` | 規劃文件 |
@@ -59,6 +59,7 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 - **虛擬設備一律標示**：`twin.connected(id, info, {virtual: true})`、`DL.modeLabel(mode, virtual)`；介面各處（模式標籤、量測欄、3D 標籤、事件紀錄）都要分得出虛擬與實體。工作台（`tools/vdev/bench.js`、`pi_bench.py`）**不可以** require `src/core/engine.js`。三種虛擬設備也要分得出來：虛擬 Uno＝avr8js 跑真韌體；虛擬 ESP32＝**協定模型，不是實際韌體**（hello 的 `model: 'protocol'`）；虛擬樹莓派＝真的 pi_bridge＋gpiozero 模擬腳位（hello 的 `virtual: true`）。改 DofLabFirmata 的行為時要同步改 `esp32model.js`，並跑 `tests/vdev_esp32.test.js`（模型換成 Uno 腳位表和真韌體逐位元組比對）。
 - **伺服脈寬**：三種板子都是 544–2400 µs（Uno／ESP32 是 Servo 函式庫預設；樹莓派的 `pi_bridge.py` 與產生的 Python 程式在 V2.13 統一）。要改就三邊一起改，並跑等價測試。授權受控寫入時先送伺服目前的角度（`FirmataDriver.authorize` 的 `initial`：設成伺服模式和寫入角度同一次傳送），否則韌體會先輸出 1500 µs。E2E 若要旁聽 `driver.write`，參數有三個（`cmd, out, before`），要一起傳下去，並在授權之前裝好。
 - **超音波（Uno／ESP32 的 C++）**：ECHO 用腳位變化中斷記下時間（Uno：PCINT，`ISR(PCINTx_vect)` 依腳位分組；ESP32：`attachInterrupt`），迴圈只看量完了沒有；不用 `pulseIn`。主機替身（`tests/host/`）在 ECHO 變化的那一刻呼叫中斷處理。量測的時序規則（每 60 ms、用上一次的結果、400 cm）和引擎、Python 相同。
+- **斷線保護**：DofLabFirmata 1.2（`OUTPUT_GUARD_MS` 3 秒）、`esp32model.js`、`pi_bridge.py`（`OUTPUT_GUARD_S`）在有輸出、太久沒收到訊息時自己關掉輸出並通知（`F0 64 F7`／`guard`）；虛擬設備主機在控制者斷線或逾時時關掉他的輸出（`Hub.guardOff`）。DofLab 的心跳（每秒）就是讓設備知道連線還在；改心跳間隔要一起看。改韌體要重新編譯 `tests/fixtures/DofLabFirmata-uno.hex`（觀測頁內建的就是它）。
 - **3D 場景只在有變化時重畫**（`scene.dirty`，最多 1 秒補畫一次）：改了 3D 物件要設 `this.dirty = true`。
 - **手臂**：三顆伺服裝在手臂模型的關節上（配置頁與手臂頁共用 `DL.models.arm`，手臂頁借用配置頁場景的 `root`）。兩種模式：自動（行為頁的動作序列，按「▶ 執行」）與手動（拖曳、滑桿、輸入）。
 
@@ -70,9 +71,9 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 npm ci                 # 安裝 three、blockly、avr8js、esbuild
 npm run check          # 所有 src/*.js 語法檢查（改完一定要跑）
 npm run build          # 產生 dist/
-npm run test:node      # Node 測試（目前 198 項，含第 4 階段驗收的 15 個子測試、第 6 階段驗收的 27 個子測試；沒有 arduino-cli 時會略過 11 項；沒有 Python 的 gpiozero／aiohttp 時略過虛擬樹莓派）
-npm run test:py        # Python 測試（20 項；沒有 arduino-cli、avrdude、socat 時會略過）
-npm run test:e2e       # 建置＋打包＋瀏覽器測試（266 項，約 25 分鐘）
+npm run test:node      # Node 測試（目前 202 項，含第 4 階段驗收的 15 個子測試、第 6 階段驗收的 27 個子測試；沒有 arduino-cli 時會略過 11 項；沒有 Python 的 gpiozero／aiohttp 時略過虛擬樹莓派）
+npm run test:py        # Python 測試（21 項；沒有 arduino-cli、avrdude、socat 時會略過）
+npm run test:e2e       # 建置＋打包＋瀏覽器測試（267 項，約 25 分鐘）
 python3 e2e/e2e.py onboard v27   # 只跑部分段落：desktop breadboard teacher experiments pi ultrasonic onboard arm v27 uno vdev bench faults upload vupload vmulti vboards pideploy mobile dark
 DOFLAB_SYNC_ONLY=dist-alarm node --test tests/vdev_sync.test.js   # 第 6 階段驗收只跑某些實驗
 npm run vdev                     # 虛擬設備主機（node tools/vdev/server.js），ws://127.0.0.1:8770/dev/uno-1，工作台 http://127.0.0.1:8770/

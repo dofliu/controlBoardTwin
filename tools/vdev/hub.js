@@ -41,7 +41,7 @@ class Hub {
     this.send = opts.send; this.toDevice = opts.toDevice; this.notify = opts.notify; this.log = opts.log || (() => { });
     this.links = new Map(); this.seq = 0; this.holder = null; this.rawLink = null;
     this.down = new Framer(); this.asks = { ver: [], fw: [], cap: [], amap: [], pin: [] };
-    this.outputs = new Map();   // 腳位 → 設成輸出的連線 id（控制者）
+    this.outputs = new Map();   // 腳位 → { id：設成輸出的連線（控制者）, mode：輸出或伺服 }
     this.reports = new Map();   // 'd3'／'a0' → Set(連線 id)：誰開了回報
     this.sonars = new Map();    // trig 腳位 → Set(連線 id)
     this.stats = { blocked: 0, passed: 0 };
@@ -69,13 +69,24 @@ class Hub {
     for (const s of this.sonars.values()) s.delete(link.id);
     for (const k of Object.keys(this.asks)) this.asks[k] = this.asks[k].filter(a => a.link !== link);
     const wasHolder = this.holder === link;
-    if (wasHolder) this.holder = null;
+    if (wasHolder) { this.holder = null; this.guardOff(link, '控制者中斷連線'); }
     this.presence(wasHolder ? 'holder-left' : 'leave', link);
   }
   seen(link) { link.seen = Date.now(); }
   checkIdle() {
     const h = this.holder; if (!h || Date.now() - h.seen < LOCK_IDLE_MS) return;
-    this.holder = null; this.log(`控制權逾時釋放（${h.name}）`); this.presence('timeout', h);
+    this.holder = null; this.log(`控制權逾時釋放（${h.name}）`); this.guardOff(h, '控制者太久沒有回應'); this.presence('timeout', h);
+  }
+  // 斷線保護（V2.13）：控制者斷線或逾時時，主機把他設成輸出的腳位關掉（和撤銷授權時一樣：數位輸出寫 LOW 再改成輸入；伺服直接改成輸入、不寫角度）。
+  // 有別人連著時，別人的心跳會讓韌體一直收得到位元組，韌體自己的斷線保護不會觸發，所以由主機做
+  guardOff(link, why) {
+    const bytes = [];
+    for (const [pin, o] of [...this.outputs]) {
+      if (o.id !== link.id) continue;
+      if (o.mode !== 4) bytes.push(0xF5, pin, 0);
+      bytes.push(0xF4, pin, 0); this.outputs.delete(pin);
+    }
+    if (bytes.length) { this.toDevice(Uint8Array.from(bytes)); this.log(`${why}：已關掉他的輸出（斷線保護）`); }
   }
   // 控制權：want 'control' 取得、'release' 釋放
   lock(link, want) {
@@ -115,7 +126,7 @@ class Hub {
       if (QUERY_SYSEX[s]) return ask(QUERY_SYSEX[s], s === 0x6D ? { pin: m[2] } : null);
       if (s === 0x62) {   // DofLab 擴充：超音波（TRIG 會變成輸出）；7F＝停止
         if (m[2] === 0x7F) { const mine = [...this.sonars.entries()].filter(([, set]) => set.has(link.id)); for (const [, set] of mine) set.delete(link.id); return [...this.sonars.values()].some(set => set.size) ? '其他連線還在用超音波，沒有停止量測。' : true; }
-        const trig = m[2], o = this.outputs.get(trig); if (o && o !== link.id && !holder) return `D${trig} 是別人的輸出腳位，不能改成超音波。`;
+        const trig = m[2], o = this.outputs.get(trig); if (o && o.id !== link.id && !holder) return `D${trig} 是別人的輸出腳位，不能改成超音波。`;
         if (!this.sonars.has(trig)) this.sonars.set(trig, new Set()); this.sonars.get(trig).add(link.id); return true;
       }
       return holder ? true : notMine;   // 伺服設定、類比寫入、取樣間隔、其他：都會改變設備
@@ -124,11 +135,11 @@ class Hub {
     if (c === 0xF4) {   // 腳位模式
       const pin = m[1], mode = m[2], o = this.outputs.get(pin);
       if (INPUT_MODES.includes(mode)) {
-        if (o && o !== link.id && !holder) return `D${pin} 是控制者的輸出腳位，不能改成輸入。`;   // 控制者可以改任何腳位（例如前一個控制者關掉分頁、沒有撤銷就離開）
+        if (o && o.id !== link.id && !holder) return `D${pin} 是控制者的輸出腳位，不能改成輸入。`;   // 控制者可以改任何腳位（例如前一個控制者關掉分頁、沒有撤銷就離開）
         this.outputs.delete(pin); return true;
       }
       if (!holder) return notMine;
-      this.outputs.set(pin, link.id); return true;
+      this.outputs.set(pin, { id: link.id, mode }); return true;
     }
     if (hi === 0xC0 || hi === 0xD0) {   // 開啟／關閉回報：開啟一律可以；關閉時如果別人還要就不關
       const k = (hi === 0xC0 ? 'a' : 'd') + (c & 0x0F);

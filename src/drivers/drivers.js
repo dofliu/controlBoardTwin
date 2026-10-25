@@ -78,7 +78,9 @@
       const identity = pinCount === want && boardOk ? { ok: true, msg: `${who}${fw}，回報 ${pinCount} 個腳位，與 ${this.board.name} 相符。` } : { ok: false, msg: `${who}${fw}，回報 ${pinCount ?? '未知'} 個腳位，與 ${this.board.name}（${want} 個）不符。` };
       if (virtual) { identity.virtual = true; if (vi.model === 'protocol') identity.protocol = true; }
       if (this.firmware === 'StandardFirmata') this.log('注意：StandardFirmata 開機時會自行把數位腳設為 OUTPUT LOW（韌體預設，不是 DofLab 送出）。建議改用 DofLabFirmata，開機時腳位維持輸入。', 'w');
-      this.hb = setInterval(() => this.send([0xF9]), 1000);
+      // 斷線保護（DofLabFirmata 1.2 起）：有輸出時 3 秒沒收到任何位元組，板子自己關掉輸出。舊版沒有，提醒更新
+      if (this.firmware === 'DofLabFirmata' && this.fwVersion && (this.fwVersion[0] < 1 || (this.fwVersion[0] === 1 && this.fwVersion[1] < 2))) this.log(`DofLabFirmata ${this.fwVersion.join('.')} 沒有斷線保護（斷線時輸出會停在最後的命令）：請用「上傳 DofLabFirmata」更新到 1.2。`, 'w');
+      this.hb = setInterval(() => this.send([0xF9]), 1000);   // 心跳：也讓板子知道連線還在（斷線保護）
       this.readyAt = Date.now() + 1500;   // 之後才開始判斷「設備重新開機」：交握時重問的查詢可能晚一點才回來
       if (virtual) return { deviceId: `vdev:${vi.device}@${vi.host}`, info: `虛擬設備 ${vi.device} · ${fw}${vi.model === 'protocol' ? '（協定模型）' : ''}`, identity, virtual: true, protocol: vi.model === 'protocol' };
       return { deviceId: 'firmata:' + (this.port.getInfo ? JSON.stringify(this.port.getInfo()) : 'serial'), info: fw, identity };
@@ -130,6 +132,10 @@
         else if (this.readyAt && Date.now() > this.readyAt && !this.closing) this.rebooted('收到韌體的開機訊息');
       } else if (cmd === 0x63) { // DofLab 擴充：超音波距離（trig、cm 兩個 7 位元）
         const s = this.sonarSignals[d[1]]; if (s) { this.twin.measure(s, d[2] | (d[3] << 7), { seq: ++this.seq }); this.twin.heard(); }
+      } else if (cmd === 0x64) { // DofLab 擴充（1.2）：板子太久沒收到訊息，自己把輸出關掉了（斷線保護）
+        this.outPins = {}; this.lastCmdByPin = {};
+        const why = '設備端 3 秒沒有收到 DofLab 的訊息，已自己關掉輸出（斷線保護）';
+        this.log(why + '。', 'w'); if (this.hooks.onGuard) this.hooks.onGuard(why);
       } else if (cmd === 0x6A) { // ANALOG_MAPPING_RESPONSE：每個腳位對應的類比通道（0x7F = 無）
         this.analogMap = {}; for (let i = 1; i < d.length; i++) if (d[i] !== 0x7F) this.analogMap[i - 1] = d[i];
       }
@@ -238,6 +244,7 @@
           else if (m.op === 'ack') this.twin.ack(m.id, m.kind === 'servo' ? m.value : m.value ? 1 : 0);
           else if (m.op === 'authorized') this.log(`樹莓派已允許寫入：${m.outputs.map(o => 'GPIO' + o.pin).join('、')}`, 's');
           else if (m.op === 'error') this.log('樹莓派：' + m.message, 'e');
+          else if (m.op === 'guard') { this.outPins = {}; this.log('樹莓派：' + m.message, 'w'); if (this.hooks.onGuard) this.hooks.onGuard(m.message); }   // 斷線保護：閘道自己關掉了輸出
         };
       });
     }

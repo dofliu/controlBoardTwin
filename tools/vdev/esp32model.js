@@ -1,7 +1,8 @@
 // 虛擬 ESP32（雲端虛擬硬體第 6 階段）：**協定模型，不是實際韌體**。
 // 這是一段 JS 程式，照 tools/firmware/DofLabFirmata/DofLabFirmata.ino（ESP32 分支）逐段寫出相同的行為：
 // 腳位表（pinValid、只能輸入的 GPIO34–39、類比通道 32/33/34/35/36/39）、訊息解析、能力／類比對應／腳位狀態回覆、
-// 數位回報（有變化才送）、類比回報（每 50 ms、12 位元）、伺服（544–2400 µs）、超音波（F0 62／F0 63，每 60 ms、逾時 30 ms、最多 400 cm）。
+// 數位回報（有變化才送）、類比回報（每 50 ms、12 位元）、伺服（544–2400 µs）、超音波（F0 62／F0 63，每 60 ms、逾時 30 ms、最多 400 cm）、
+// 斷線保護（1.2 起：有輸出時 3 秒沒收到位元組就關掉輸出，送出 F0 64 F7）。
 // 和虛擬 Uno 不同：虛擬 Uno 跑的是編譯好的 .hex（真的機器碼）；這裡沒有 Xtensa 模擬，韌體的錯誤**不會**在這裡出現。
 // 在這裡通過只能寫「已在虛擬設備（協定模型）驗證，未以實體設備驗證」。
 // 介面與虛擬 Uno 的 VirtualUno 相容（工作台 bench.js 用的那幾個方法）：時間單位也一樣是 1/16 µs（cycle），工作台不用改時序。
@@ -20,6 +21,7 @@ const BOOT_MS = 300;
 const ANALOG_CHANNELS = 6;
 const M = { INPUT: 0, OUTPUT: 1, ANALOG: 2, SERVO: 4, PULLUP: 0x0B, SONAR: 0x0C, UNSET: 0x7F };
 const MAX_SONARS = 2, SONAR_PERIOD_MS = 60, SONAR_TIMEOUT_US = 30000, SONAR_MAX_CM = 400;
+const OUTPUT_GUARD_MS = 3000;   // 斷線保護（和韌體相同）
 const SERVO_MIN_US = 544, SERVO_MAX_US = 2400, SERVO_PERIOD_US = 20000, SERVO_DEFAULT_US = 1500;
 const ADC_PINS = [32, 33, 34, 35, 36, 39];
 const RESET = { PORF: 1, EXTRF: 2, BORF: 4, WDRF: 8 };
@@ -60,7 +62,7 @@ class VirtualEsp32 {
     this.sonar = Array.from({ length: MAX_SONARS }, () => ({ on: false }));
     const ports = Math.ceil(this.P.total / 8); this.reportPort = new Array(ports).fill(0); this.lastPort = new Array(ports).fill(0);
     this.reportAnalog = 0; this.lastAnalog = 0; this.analogTimer = false;
-    this.buf = []; this.sysex = false; this.cmd = 0; this.need = 0;
+    this.buf = []; this.sysex = false; this.cmd = 0; this.need = 0; this.lastRx = 0;
     this.resets.push({ flags, at: this.cycle });
     this.notify();
     this.later(BOOT_MS * 1000, () => {   // setup()
@@ -91,9 +93,25 @@ class VirtualEsp32 {
   react() { if (!this.running) return; this.sonarPoll(); this.scanPorts(); }
   // ---------- 序列埠 ----------
   write(...bytes) { for (const b of bytes) this.onSerial && this.onSerial(b & 0xFF); }
-  sendBytes(bytes) { for (const b of bytes) if (this.running) this.parse(b); }
+  sendBytes(bytes) {
+    if (!this.running || !bytes.length) return;   // 開機中收到的位元組丟掉；沒有位元組就不算收到（斷線保護看的是最後收到位元組的時間）
+    for (const b of bytes) this.parse(b);
+    const at = this.lastRx = this.timeMs; this.later(OUTPUT_GUARD_MS * 1000, () => { if (this.lastRx === at) this.outputGuard(); });
+  }
+  // 斷線保護（韌體 1.2）：有輸出時 OUTPUT_GUARD_MS 內沒收到位元組 → 數位輸出寫 LOW 再改成輸入、伺服停止並改成輸入；有關掉東西才送 F0 64 F7
+  outputGuard() {
+    if (this.timeMs - this.lastRx < OUTPUT_GUARD_MS) return;
+    let any = false;
+    for (let p = 0; p < this.P.total; p++) {
+      if (this.mode[p] !== M.OUTPUT && this.mode[p] !== M.SERVO) continue;
+      any = true;
+      if (this.mode[p] === M.OUTPUT) this.drive(p, false);
+      this.detachServo(p); this.setHw(p, 'input'); this.mode[p] = M.INPUT; this.state[p] = 0;
+    }
+    if (any) { this.write(0xF0, 0x64, 0xF7); this.react(); }
+  }
   sendVersion() { this.write(0xF9, 2, 6); }
-  sendFirmware() { this.write(0xF0, 0x79, 1, 1); for (const c of 'DofLabFirmata') this.write(c.charCodeAt(0) & 0x7F, 0); this.write(0xF7); }
+  sendFirmware() { this.write(0xF0, 0x79, 1, 2); for (const c of 'DofLabFirmata') this.write(c.charCodeAt(0) & 0x7F, 0); this.write(0xF7); }
   readPort(port) {
     let v = 0;
     for (let i = 0; i < 8; i++) {

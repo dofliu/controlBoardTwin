@@ -1,5 +1,5 @@
 // 雲端虛擬硬體第 6 階段：虛擬 ESP32 的協定模型（tools/vdev/esp32model.js）。它是 JS 程式，不是實際韌體，所以要先驗證「模型的協定行為和韌體相同」：
-//   1. 同一段 Firmata 訊息，送給「Uno 腳位表的模型」和「虛擬 Uno 上的真 DofLabFirmata 機器碼」，回覆逐位元組相同（超音波的距離容許 ±1 cm）
+//   1. 同一段 Firmata 訊息，送給「Uno 腳位表的模型」和「虛擬 Uno 上的真 DofLabFirmata 機器碼」，回覆逐位元組相同（超音波的距離容許 ±1 cm；含 1.2 的斷線保護）
 //   2. ESP32 腳位表：能力回報、類比對應、只能輸入的腳位、類比 12 位元，和韌體原始碼的 ESP32 分支相同
 // 這驗證的是模型，不是 ESP32 晶片：ESP32 的韌體機器碼沒有在任何地方執行過（「協定模型，不是實際韌體」）。
 const test = require('node:test'); const assert = require('node:assert'); const path = require('path');
@@ -43,7 +43,9 @@ test('協定模型（Uno 腳位表）和虛擬 Uno 上的真 DofLabFirmata：同
     ['不存在的腳位', [0xF4, 25, 1, 0xF0, 0x6D, 30, 0xF7, 0xF5, 40, 1]],
     ['A0 類比＋回報', [0xF4, 14, 2, 0xC0, 1], 45], ['關掉類比回報', [0xC0, 0]],
     ['超音波 D7／D8', [0xF0, 0x62, 7, 8, 0xF7], 130], ['回讀 D7（超音波）', [0xF0, 0x6D, 7, 0xF7]], ['停止超音波', [0xF0, 0x62, 0x7F, 0xF7], 80], ['回讀 D7', [0xF0, 0x6D, 7, 0xF7]],
-    ['系統重設', [0xFF]], ['重設後回讀 D13、D9', [0xF0, 0x6D, 13, 0xF7, 0xF0, 0x6D, 9, 0xF7]], ['重設後不再回報', b => b.act({ part: 'BTN1', action: 'press' })]
+    ['斷線保護：3.2 秒沒有收到位元組（D13 輸出、D9 伺服 → 關掉並送 F0 64 F7）', [], 3200], ['斷線保護之後回讀 D13、D9', [0xF0, 0x6D, 13, 0xF7, 0xF0, 0x6D, 9, 0xF7]],
+    ['沒有輸出時不再通知', [], 3200],
+        ['系統重設', [0xFF]], ['重設後回讀 D13、D9', [0xF0, 0x6D, 13, 0xF7, 0xF0, 0x6D, 9, 0xF7]], ['重設後不再回報', b => b.act({ part: 'BTN1', action: 'press' })]
   ];
   let n = 0, ns = 0;
   for (const [name, what, ms] of steps) {
@@ -58,6 +60,8 @@ test('協定模型（Uno 腳位表）和虛擬 Uno 上的真 DofLabFirmata：同
       for (let i = 0; i < Math.min(sa.length, sb.length); i++) assert.ok(sa[i][2] === sb[i][2] && Math.abs(cm(sa[i]) - cm(sb[i])) <= 1, `${name}：${hex(sa[i])} vs ${hex(sb[i])}`);
       ns += sa.length; a = a.filter(f => !sonar(f)); b = b.filter(f => !sonar(f));
     }
+    if (name.startsWith('斷線保護：')) assert.ok(a.map(hex).includes('f0 64 f7'), `${name}：真韌體應該送出 F0 64 F7，收到 ${a.map(hex).join('｜')}`);
+    if (name === '沒有輸出時不再通知') assert.ok(!a.map(hex).includes('f0 64 f7'), name);
     assert.deepStrictEqual(b.map(hex), a.map(hex), `${name}：模型的回覆和真韌體不同`); n += a.length;
   }
   assert.ok(n >= 20 && ns >= 2, `比對了 ${n} 則訊息、${ns} 則超音波回報`);
