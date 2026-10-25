@@ -468,8 +468,9 @@ async def vboards_flow(p):
         try: await pg.wait_for_function("(v => v.ack && v.commanded && v.ack.id === v.commanded.id)(doflab.twin.view('SERVO1.angle'))", timeout=8000); ok = True
         except Exception: ok = False
         cmd = await ev(pg, "doflab.twin.view('SERVO1.angle').commanded.v"); s1 = part('pi-1', 'SERVO1')
-        check("虛擬樹莓派：受控寫入 → 伺服命令經網路到 pi_bridge，收到 ACK；工作台量到的脈寬 = 500 + 角度 × 1900 / 180 µs（pi_bridge 的設定）",
-              ok and (await pg.inner_text('#modePill')).endswith('虛擬設備 · 受控寫入') and s1['pulseUs'] is not None and abs(s1['pulseUs'] - (500 + cmd * 1900 / 180)) <= 3, json.dumps([cmd, s1]))
+        check("虛擬樹莓派：受控寫入 → 伺服命令經網路到 pi_bridge，收到 ACK；工作台量到的脈寬 = 544 + 角度 × 1856 / 180 µs（和 Uno／ESP32 相同）",
+              ok and (await pg.inner_text('#modePill')).endswith('虛擬設備 · 受控寫入') and s1['pulseUs'] is not None and abs(s1['pulseUs'] - (544 + cmd * 1856 / 180)) <= 3, json.dumps([cmd, s1]))
+        check("虛擬樹莓派：工作台由脈寬換算的角度和 DofLab 送出的命令相差 ≤ 1°（脈寬範圍和 Uno／ESP32 統一後）", s1['cmd'] is not None and abs(s1['cmd'] - cmd) <= 1, json.dumps([cmd, s1['cmd']]))
         bench('pi-1', {'part': 'US1', 'action': 'set', 'cm': 12})
         try: await pg.wait_for_function("(v => v.ack && v.commanded && v.ack.id === v.commanded.id && v.commanded.v !== %s)(doflab.twin.view('SERVO1.angle'))" % json.dumps(cmd), timeout=8000); ok = True
         except Exception: ok = False

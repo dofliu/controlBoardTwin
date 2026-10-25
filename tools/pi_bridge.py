@@ -162,7 +162,7 @@ class Session:
                 continue
             self.hub.claim(pin, self)
             if kind == "servo":
-                dev = self.hub.Servo(pin, min_angle=0, max_angle=180, min_pulse_width=0.0005, max_pulse_width=0.0024, initial_angle=None)
+                dev = self.hub.Servo(pin, min_angle=0, max_angle=180, min_pulse_width=0.000544, max_pulse_width=0.0024, initial_angle=None)   # 544–2400 µs：和 Uno／ESP32 的 Servo 函式庫相同（V2.13 統一）
             else:
                 dev = self.hub.Out(pin, initial_value=False)
             self.outputs[pin] = (kind, dev)

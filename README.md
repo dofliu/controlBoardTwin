@@ -292,7 +292,7 @@ e2e/           Playwright 端到端測試
 ```bash
 node --test --test-concurrency=1 tests/*.test.js     # 196 項（需要 g++；虛擬硬體測試與第 4 階段驗收需要 arduino-cli 與 avr-nm；第 6 階段的虛擬樹莓派需要 Python 的 gpiozero 與 aiohttp）
 python3 -m unittest discover -s tests -p "test_*.py" # 20 項（上傳端到端需要 avrdude 與 socat）
-python3 e2e/e2e.py                                   # 264 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults vupload vmulti vboards）
+python3 e2e/e2e.py                                   # 265 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults vupload vmulti vboards）
 ```
 
 ### 示範影片

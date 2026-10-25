@@ -16,8 +16,8 @@ const SIG = { BTN: '.pressed', BOOT: '.pressed', LDR: '.level', LED: '.state', O
 const INPUTS = ['BTN', 'BOOT', 'LDR', 'US'];
 const sigOf = c => SIG[c.type] ? c.id + SIG[c.type] : null;
 const fam = b => DL.boardFamily(b) === 'esp32' ? 'esp32' : b;
-// 伺服脈寬 → 角度：Uno／ESP32 是 Servo 函式庫的 544–2400 µs；樹莓派是 pi_bridge 設定的 gpiozero AngularServo 500–2400 µs
-const usToDeg = (board, us) => board === 'pi4b' ? (us - 500) * 180 / 1900 : (us - 544) * 180 / 1856;
+// 伺服脈寬 → 角度：三種板子都是 544–2400 µs（Uno／ESP32 是 Servo 函式庫的預設；樹莓派的 pi_bridge 在 V2.13 統一成相同範圍）
+const usToDeg = (board, us) => (us - 544) * 180 / 1856;
 
 // 工作台照專案的接線擺（按鈕不彈跳、光敏沒有雜訊、超音波不掉回波：這裡比的是同步，彈跳與雜訊另有測試）
 function benchFor(p, board) {

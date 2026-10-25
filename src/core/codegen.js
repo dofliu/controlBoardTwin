@@ -4,7 +4,7 @@
  */
 (function (root) {
   const DL = (root.DL = root.DL || {});
-  const GENERATOR_VERSION = 'doflab-gen 2.3.0';
+  const GENERATOR_VERSION = 'doflab-gen 2.4.0';   // 2.4.0（V2.13）：樹莓派的伺服脈寬改成 544–2400 µs，和 Uno／ESP32 相同
 
   const isArm = p => !!(p.arm && !(p.behavior.ir.rules || []).length);
   function prepare(p) {
@@ -117,7 +117,7 @@
     L.push('');
     L.push('');
     L.push('def main():');
-    L.push(`    joints = [AngularServo(p, min_angle=0, max_angle=180, min_pulse_width=0.0005, max_pulse_width=0.0024) for p in (${cfg.joints.map(j => j.id + '_PIN').join(', ')})]`);
+    L.push(`    joints = [AngularServo(p, min_angle=0, max_angle=180, min_pulse_width=0.000544, max_pulse_width=0.0024) for p in (${cfg.joints.map(j => j.id + '_PIN').join(', ')})]`);
     L.push('    current = list(HOME)');
     L.push('    for s, a in zip(joints, current):');
     L.push('        s.angle = a');
@@ -452,7 +452,7 @@
     for (const c of leds) L.push(`    ${v(c.id)} = LED(${c.id}_PIN)`);
     for (const c of uss) L.push(`    ${v(c.id)} = DistanceSensor(echo=${c.id}_ECHO_PIN, trigger=${c.id}_TRIG_PIN, max_distance=US_MAX_CM / 100, queue_len=3)`);
     for (const c of uss) L.push(`    ${v(c.id)}_cm = US_MAX_CM; ${v(c.id)}_next = US_MAX_CM; ${v(c.id)}_due = 0   # 規則使用上一次量到的距離`);
-    for (const c of servos) L.push(`    ${v(c.id)} = AngularServo(${c.id}_PIN, min_angle=0, max_angle=180, min_pulse_width=0.0005, max_pulse_width=0.0024)  # 脈寬為教學假設，請依實物調整`);
+    for (const c of servos) L.push(`    ${v(c.id)} = AngularServo(${c.id}_PIN, min_angle=0, max_angle=180, min_pulse_width=0.000544, max_pulse_width=0.0024)  # 脈寬 544–2400 µs，和 Uno／ESP32 的 Servo 函式庫相同（教學假設，請依實物調整）`);
     for (const c of leds) L.push(`    ${v(c.id)}_latched = False`);
     for (const c of servos) { L.push(`    ${v(c.id)}_latched = ${c.params.initAngle}`); L.push(`    ${v(c.id)}_written = None`); }
     for (const c of leds) L.push(`    ${v(c.id)}_written = None`);

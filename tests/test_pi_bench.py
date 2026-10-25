@@ -77,7 +77,7 @@ class VirtualPi(unittest.TestCase):
     def tearDownClass(cls): stop(cls.proc)
 
     def test_session(self):
-        """識別標示虛擬、不能部署（說明原因）；按鈕彈跳傳到介面；超音波讀工作台的距離；伺服的脈寬（pi_bridge 設定 500–2400 µs）"""
+        """識別標示虛擬、不能部署（說明原因）；按鈕彈跳傳到介面；超音波讀工作台的距離；伺服的脈寬（544–2400 µs，和 Uno／ESP32 相同）"""
         port = self.port
         async def go():
             async with aiohttp.ClientSession() as s:
@@ -114,9 +114,9 @@ class VirtualPi(unittest.TestCase):
                     await rx("distance", lambda m: m["cm"] == 30)
                     await post(port, "/api/bench", {"part": "US1", "action": "set", "cm": None})
                     await rx("distance", lambda m: m["cm"] == 400)
-                    # 伺服：授權後寫 90° → ACK；工作台量到的脈寬是 1450 µs（500 + 90 × 1900 / 180）
+                    # 伺服：授權後寫 90° → ACK；工作台量到的脈寬是 1472 µs（544 + 90 × 1856 / 180，和 Uno／ESP32 相同）
                     await ws.send_json({"op": "authorize", "outputs": [{"pin": 18, "kind": "servo"}]}); await rx("authorized")
-                    for a, us in ((90, 1450), (0, 500), (180, 2400)):
+                    for a, us in ((90, 1472), (0, 544), (180, 2400)):
                         await ws.send_json({"op": "servo", "id": f"s{a}", "pin": 18, "angle": a})
                         await rx("ack", lambda m: m["id"] == f"s{a}")
                         for _ in range(50):
