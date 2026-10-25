@@ -76,7 +76,18 @@ uint8_t readPort(uint8_t port) {
 }
 void sendPort(uint8_t port) { uint8_t v = readPort(port); Serial.write(0x90 | port); Serial.write(v & 0x7F); Serial.write(v >> 7); lastPort[port] = v; }
 
-void detachServo(uint8_t p) { if (servoOf[p] >= 0) { servos[servoOf[p]].detach(); servoOf[p] = -1; } }
+// 停止伺服：Uno 先等這個伺服的脈衝送完（最多 3 ms）。停在脈衝中間會送出一個被截短、長度不定的脈衝，伺服可能抖一下（V2.13 在虛擬 Uno 上發現）。
+// 關中斷再看腳位，看到 LOW 就立刻停，下一個脈衝（約 20 ms 後）不會插進來。ESP32 是 LEDC 硬體 PWM，行為不同，未處理（未驗證）。
+void detachServo(uint8_t p) {
+  if (servoOf[p] < 0) return;
+#if defined(ARDUINO_ARCH_ESP32)
+  servos[servoOf[p]].detach();
+#else
+  for (unsigned long t = micros(); micros() - t < 3000; ) { noInterrupts(); if (digitalRead(p) == LOW) break; interrupts(); }
+  servos[servoOf[p]].detach(); interrupts();
+#endif
+  servoOf[p] = -1;
+}
 void setMode(uint8_t p, uint8_t m) {
   if (p >= TOTAL_PINS || !pinValid(p)) return;
   if (pinInputOnly(p) && (m == M_OUTPUT || m == M_SERVO || m == M_PULLUP)) return;   // 只能輸入的腳位：拒絕

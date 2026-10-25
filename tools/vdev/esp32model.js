@@ -62,7 +62,7 @@ class VirtualEsp32 {
     this.sonar = Array.from({ length: MAX_SONARS }, () => ({ on: false }));
     const ports = Math.ceil(this.P.total / 8); this.reportPort = new Array(ports).fill(0); this.lastPort = new Array(ports).fill(0);
     this.reportAnalog = 0; this.lastAnalog = 0; this.analogTimer = false;
-    this.buf = []; this.sysex = false; this.cmd = 0; this.need = 0; this.lastRx = 0;
+    this.buf = []; this.sysex = false; this.cmd = 0; this.need = 0; this.lastRx = 0;   // lastRx 是時間單位（cycle），用整數比較
     this.resets.push({ flags, at: this.cycle });
     this.notify();
     this.later(BOOT_MS * 1000, () => {   // setup()
@@ -96,11 +96,11 @@ class VirtualEsp32 {
   sendBytes(bytes) {
     if (!this.running || !bytes.length) return;   // 開機中收到的位元組丟掉；沒有位元組就不算收到（斷線保護看的是最後收到位元組的時間）
     for (const b of bytes) this.parse(b);
-    const at = this.lastRx = this.timeMs; this.later(OUTPUT_GUARD_MS * 1000, () => { if (this.lastRx === at) this.outputGuard(); });
+    const at = this.lastRx = this.cycle; this.later(OUTPUT_GUARD_MS * 1000, () => { if (this.lastRx === at) this.outputGuard(); });
   }
   // 斷線保護（韌體 1.2）：有輸出時 OUTPUT_GUARD_MS 內沒收到位元組 → 數位輸出寫 LOW 再改成輸入、伺服停止並改成輸入；有關掉東西才送 F0 64 F7
   outputGuard() {
-    if (this.timeMs - this.lastRx < OUTPUT_GUARD_MS) return;
+    if (this.cycle - this.lastRx < OUTPUT_GUARD_MS * TICKS_PER_MS - 0.5) return;   // 用時間單位比較（留半個單位）：用毫秒（浮點數）相減，剛好 3000 ms 會算成 2999.9999…，保護就不會觸發（V2.13 發現）
     let any = false;
     for (let p = 0; p < this.P.total; p++) {
       if (this.mode[p] !== M.OUTPUT && this.mode[p] !== M.SERVO) continue;

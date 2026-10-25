@@ -107,3 +107,31 @@ test('ESP32 協定模型：伺服脈寬（544–2400 µs）、超音波每 60 ms
   m.sendBytes([0xF9]); m.runMs(10); assert.deepStrictEqual(rx.splice(0), [], '開機中收到的位元組丟掉');
   m.runMs(400); assert.deepStrictEqual(frames(rx.splice(0)).map(hex)[0], 'f9 02 06', '開機完成後主動送出版本（驅動據此判斷重新開機）');
 });
+
+test('斷線保護的時間判斷（協定模型）：最後一個位元組之後剛好 3 秒，每一次都會觸發（300 次，隨機時刻）', () => {
+  // V2.13 發現：用毫秒（浮點數）相減，剛好 3000 ms 有時算成 2999.9999…，判斷成還沒到、保護就不觸發（約五分之一）。改成用時間單位比較
+  let rnd = 5; const rand = () => (rnd = (rnd * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const miss = [];
+  for (let i = 0; i < 300; i++) {
+    const d = new VirtualEsp32(); let prev = -1, n = null; d.onSerial = b => { if (prev === 0xF0 && b === 0x64 && n === null) n = d.timeMs; prev = b; };
+    d.runMs(400 + rand() * 100); d.sendBytes([0xF4, 23, 1, 0x92, 0, 1]); let t = d.timeMs;
+    for (let k = 0, K = 1 + Math.floor(rand() * 4); k < K; k++) { d.runMs(900 + rand() * 200); d.sendBytes([0xF9]); t = d.timeMs; }
+    d.runMs(4000);
+    if (n === null || d.pinState(23) !== 2 || Math.abs(n - t - 3000) > 0.01) miss.push({ i, t, n, pin: d.pinState(23) });
+  }
+  assert.deepStrictEqual(miss, [], '每一次都應該在最後一個位元組之後 3000 ms 關掉 GPIO23 並送出 F0 64 F7');
+});
+
+test('伺服停止時不會送出被截短的脈衝（真韌體 1.2，Uno）：撤銷授權與斷線保護都等這個脈衝送完', () => {
+  // V2.13 發現：停在脈衝中間，伺服會收到一個長度不定（實測 43–1763 µs）的脈衝，可能抖一下。韌體改成先等腳位變 LOW
+  let rnd = 9; const rand = () => (rnd = (rnd * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const u = new VirtualUno(HEX); const edges = []; let hi = false;
+  u.pinWatchers.push(() => { const h = u.isHigh(9); if (h !== hi) { edges.push([u.timeMs, h]); hi = h; } });
+  u.runMs(600);
+  for (let i = 0; i < 60; i++) { u.sendBytes([0xF4, 9, 4, 0xE9, 120 & 0x7F, 120 >> 7]); u.runMs(100 + rand() * 40); u.sendBytes([0xF4, 9, 0]); u.runMs(40); }   // 撤銷授權：F4 9 0
+  u.sendBytes([0xF4, 9, 4, 0xE9, 120 & 0x7F, 120 >> 7]); u.runMs(3300 + rand() * 20);   // 斷線保護：3 秒沒有位元組
+  const w = []; for (let i = 0; i < edges.length - 1; i++) if (edges[i][1] && !edges[i + 1][1]) w.push(Math.round((edges[i + 1][0] - edges[i][0]) * 1000));
+  assert.ok(w.length > 300, `脈衝數 ${w.length}`);
+  assert.deepStrictEqual(w.filter(x => x < 1777 || x > 1790), [], '120° 的脈衝都是 1780 µs（544 + 120 × 1856 / 180；收序列埠的中斷會讓它晚幾 µs 結束），沒有被截短的');
+  assert.strictEqual(u.pinState(9), 2, '最後 D9 是輸入');
+});
