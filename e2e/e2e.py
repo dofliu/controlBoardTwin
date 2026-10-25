@@ -488,6 +488,7 @@ async def vboards_flow(p):
               '協定模型' in body and '不是實際韌體' in body and '40 個腳位' in body and '已在虛擬設備（協定模型）驗證' in body and (await pg.inner_text('#modePill')).endswith('虛擬設備 · 唯讀'), body[:500])
         cp = await pg.inner_text('#connPill'); cpt = await pg.get_attribute('#connPill', 'title')
         check("虛擬 ESP32：上方的連線標籤太長時以「…」結尾（不會切在字中間），完整文字（含「協定模型」）在滑鼠提示", len(cp.strip()) <= 42 and (cp.strip().endswith('…') or '協定模型' in cp) and '協定模型' in (cpt or '') + cp, json.dumps([cp, cpt], ensure_ascii=False))
+        check("連線標籤顯示韌體版本（DofLabFirmata 1.2，截斷時也看得到），協定版本（Firmata 協定 2.6）在後面", 'DofLabFirmata 1.2' in cp and 'Firmata 協定 2.6' in (cpt or '') + cp, json.dumps([cp, cpt], ensure_ascii=False))
         bench('esp32-1', {'part': 'BTN1', 'action': 'press'})
         try: await pg.wait_for_function("doflab.twin.view('BTN1.pressed').measured && doflab.twin.view('BTN1.pressed').measured.v === true", timeout=5000); ok = True
         except Exception: ok = False

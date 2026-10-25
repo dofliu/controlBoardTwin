@@ -308,7 +308,7 @@
       const c = this.twin.conn; const cp = $('connPill');
       cp.className = 'pill ' + (c.state === 'connected' ? 'on' : c.state === 'lost' ? 'lost' : '') + (c.state === 'connected' && c.virtual ? ' virt' : '');
       const full = c.state === 'connected' ? `已連線 · ${c.info || ''}` : c.state === 'lost' ? '連線中斷' : '未連線';
-      cp.querySelector('span').textContent = full.length > 40 ? full.slice(0, 39) + '…' : full; cp.title = full.length > 40 ? full : '設備連線狀態';   /* 太長時以「…」結尾，完整文字在滑鼠提示 */
+      cp.querySelector('span').textContent = full.length > 40 ? full.slice(0, 39).replace(/[\s·]+$/, '') + '…' : full; cp.title = full.length > 40 ? full : '設備連線狀態';   /* 太長時以「…」結尾，完整文字在滑鼠提示 */
       document.title = `DofLab`;
     }
     renderTabs() {

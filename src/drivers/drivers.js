@@ -72,7 +72,8 @@
       if (!this.version && otherFw) { await this.disconnect(true); throw new Error(`虛擬 Uno 現在跑的是上傳的程式（${otherFw}），不是 Firmata，所以不能同步。要同步請先按「上傳 DofLabFirmata」（和實體板子一樣）；想看程式的輸出，請用「程式」頁上傳後的序列埠監看。`); }
       if (!this.version) { await this.disconnect(true); throw new Error(virtual ? `虛擬設備 ${vi.device} 沒有回應 Firmata（已重新啟動再等一次）。請確認虛擬設備主機執行的是 DofLabFirmata 或 StandardFirmata。` : `沒有收到 Firmata 回應（已重新啟動板子再等一次）。請確認板子已上傳 ${(this.board.family || this.board.id) === 'esp32' ? 'DofLabFirmata' : 'DofLabFirmata 或 StandardFirmata'}（57600 bps），而且沒有其他程式占用序列埠。`); }
       const pinCount = this.caps ? this.caps.length : null; const want = this.board.firmataPins;
-      const fw = `${this.firmware || 'Firmata'} ${this.version}`;
+      // 韌體名稱與版本（F0 79，例如 DofLabFirmata 1.2）在前，Firmata 協定版本（F9，例如 2.6）在後：連線標籤太長被截斷時仍看得到韌體版本
+      const fw = this.firmware ? `${this.firmware}${this.fwVersion ? ' ' + this.fwVersion.join('.') : ''} · Firmata 協定 ${this.version}` : `Firmata 協定 ${this.version}`;
       const boardOk = !virtual || DL.boardFamily(vi.board) === DL.boardFamily(this.board.id);   // ESP32 DevKitC／DevKit V1 是同一顆晶片、同一份韌體（USB 也分不出來）
       const who = virtual ? `虛擬設備 ${vi.device}（${vi.board}，${vi.model === 'protocol' ? '另一個程序裡的協定模型，不是實際韌體，也不是實體板子' : '另一個程序以 avr8js 模擬，不是實體板子'}）：` : '';
       const identity = pinCount === want && boardOk ? { ok: true, msg: `${who}${fw}，回報 ${pinCount} 個腳位，與 ${this.board.name} 相符。` } : { ok: false, msg: `${who}${fw}，回報 ${pinCount ?? '未知'} 個腳位，與 ${this.board.name}（${want} 個）不符。` };

@@ -211,6 +211,7 @@ test('連到舊版 DofLabFirmata 1.1（沒有斷線保護）：DofLab 提醒更�
   try {
     const r = await drv.connect(); twin.connected(r.deviceId, r.info, { virtual: true });
     assert.deepStrictEqual(drv.fwVersion, [1, 1]);
+    assert.match(r.info, /DofLabFirmata 1\.1 · Firmata 協定 2\.6/, '連線資訊寫出韌體版本 1.1（不是協定版本 2.6）：' + r.info);
     assert.ok(logs.some(([k, m]) => k === 'w' && /1\.1 沒有斷線保護/.test(m) && /更新到 1\.2/.test(m)), JSON.stringify(logs));
     twin.define('LED1.state', { feedback: false }); twin.authorize(['LED1.state']);
     const out = { signal: 'LED1.state', num: 13, kind: 'digital' };
