@@ -205,7 +205,7 @@ Arduino IDE 設定：開發板管理員安裝「esp32 by Espressif Systems」，
 - 3D 畫面中，HC-SR04 是藍色電路板，3.3 V 版（HC-SR04P 類）是綠色電路板。
 - 接線：VCC、GND、TRIG（要能輸出）、ECHO（只能輸入的腳位也可以，例如 ESP32 的 GPIO34–39）。教師模式可以分別指定 TRIG 與 ECHO 腳位。
 - 時序：每 60 ms 量一次，規則使用「上一次量到」的距離，所以反應會慢 60–120 ms；沒有回波或超過 4 m 一律當成 400 cm。
-- 產生的 Arduino 程式不用 `pulseIn`（它會讓整個程式停住最多數十毫秒），而是每一輪迴圈看一次 ECHO，所以閃爍、按鈕與伺服照常運作；精度取決於迴圈速度（Uno 上約 1 cm）。樹莓派版使用 gpiozero 的 `DistanceSensor`。
+- 產生的 Arduino 程式不用 `pulseIn`（它會讓整個程式停住最多數十毫秒），所以閃爍、按鈕與伺服照常運作。V2.13 起 ECHO 的變化由腳位變化中斷記下時間（Uno：PCINT；ESP32：`attachInterrupt`），量到的回波寬度不受迴圈裡其他工作影響：在虛擬 Uno 上，隨機距離、三種迴圈工作量，每一次都量對（回波寬度誤差 ≤ 3 µs，1 cm ≈ 58 µs）。之前每一輪迴圈看一次 ECHO，有伺服的程式約 42 % 少 1 cm。ESP32 版只確認能編譯，沒有執行過。樹莓派版使用 gpiozero 的 `DistanceSensor`。
 - 新積木：條件「量到的距離小於／大於 … cm」，動作「伺服角度跟著距離」（線性換算，與 Arduino 的 `map()` 相同）。
 - 觀測頁用拉桿移動前方的物體（3D 畫面的橘色板，距離經過壓縮，只是示意），也可以按「移走物體」模擬沒有回波。
 - 真機同步：Uno／ESP32 需要 **DofLabFirmata 1.1** 以上（觀測頁按「上傳 DofLabFirmata」即可）；StandardFirmata 沒有超音波功能，距離會顯示「不支援」。唯讀時韌體會每 60 ms 送一次 10 µs 的 TRIG 觸發脈衝，這是量距離必須的輸出。樹莓派經 `pi_bridge.py` 回報。
@@ -290,7 +290,7 @@ e2e/           Playwright 端到端測試
 ## 測試
 
 ```bash
-node --test --test-concurrency=1 tests/*.test.js     # 197 項（需要 g++；虛擬硬體測試與第 4 階段驗收需要 arduino-cli 與 avr-nm；第 6 階段的虛擬樹莓派需要 Python 的 gpiozero 與 aiohttp）
+node --test --test-concurrency=1 tests/*.test.js     # 198 項（需要 g++；虛擬硬體測試與第 4 階段驗收需要 arduino-cli 與 avr-nm；第 6 階段的虛擬樹莓派需要 Python 的 gpiozero 與 aiohttp）
 python3 -m unittest discover -s tests -p "test_*.py" # 20 項（上傳端到端需要 avrdude 與 socat）
 python3 e2e/e2e.py                                   # 266 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults vupload vmulti vboards）
 ```

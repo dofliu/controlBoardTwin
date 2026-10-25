@@ -4,7 +4,7 @@
  */
 (function (root) {
   const DL = (root.DL = root.DL || {});
-  const GENERATOR_VERSION = 'doflab-gen 2.4.0';   // 2.4.0（V2.13）：樹莓派的伺服脈寬改成 544–2400 µs，和 Uno／ESP32 相同
+  const GENERATOR_VERSION = 'doflab-gen 2.5.0';   // 2.4.0（V2.13）：樹莓派的伺服脈寬改成 544–2400 µs，和 Uno／ESP32 相同；2.5.0（V2.13）：Uno／ESP32 的超音波改用 ECHO 腳位變化中斷量回波寬度
 
   const isArm = p => !!(p.arm && !(p.behavior.ir.rules || []).length);
   function prepare(p) {
@@ -244,9 +244,13 @@
       const n = v(c.id);
       L.push(`int ${n}Cm = US_MAX_CM;                 // 規則使用的距離（cm）：上一次量到的結果`);
       L.push(`int ${n}Next = US_MAX_CM;               // 這一次觸發正在量的結果`);
-      L.push(`byte ${n}State = 0;                     // 0 等待下一次觸發、1 等待回波開始、2 量測回波寬度`);
+      L.push(`byte ${n}State = 0;                     // 0 等待下一次觸發、1 已觸發，等中斷量完回波`);
       L.push(`unsigned long ${n}Due = 0;              // 下一次觸發的時間（ms）`);
-      L.push(`unsigned long ${n}T0 = 0;               // 觸發或回波開始的時間（µs）`);
+      L.push(`unsigned long ${n}T0 = 0;               // 觸發的時間（µs）`);
+      L.push(`volatile unsigned long ${n}Rise = 0;    // 中斷記下的：ECHO 變高的時間（µs）`);
+      L.push(`volatile unsigned long ${n}Width = 0;   // 中斷記下的：ECHO 高電位的寬度（µs）`);
+      L.push(`volatile bool ${n}Done = false;         // 這一次觸發的回波已經量完`);
+      L.push(`volatile byte ${n}Level = LOW;          // 中斷看到的 ECHO 電位（用來分辨是不是自己這個腳位變了）`);
     }
     for (const c of leds) L.push(`bool ${v(c.id)}Latched = false;         // 沒有持續規則作用時 ${c.id} 的狀態`);
     for (const c of servos) { L.push(`int ${v(c.id)}Latched = ${c.params.initAngle};`); L.push(`int ${v(c.id)}Written = -1;`); L.push(`Servo ${v(c.id)}Servo;`); }
@@ -269,24 +273,43 @@
       L.push(`}`);
       L.push('');
     }
+    const esp = DL.boardFamily(board.id) === 'esp32';
     for (const c of uss) {
       const n = v(c.id);
-      L.push(`// 量 ${c.id} 的距離：不用 pulseIn（它會讓整個程式停住最多數十毫秒），而是每一輪迴圈看一次 ECHO。`);
-      L.push(`// 精度取決於迴圈多快跑完一輪；規則用的是上一次量到的值，所以反應會慢 60–120 ms。`);
+      L.push(`// ${c.id} 的 ECHO 一變化就由中斷呼叫：記下變高的時間與高電位的寬度（中斷裡不做費時的事）。`);
+      L.push(`// 用中斷而不是每一輪迴圈看一次 ECHO：量到的寬度不受迴圈裡其他工作（伺服、閃爍）影響，誤差只有幾微秒（1 cm ≈ 58 µs）。`);
+      L.push(`void ${esp ? 'IRAM_ATTR ' : ''}${n}Echo() {`);
+      L.push(`  byte lv = digitalRead(${c.id}_ECHO_PIN);`);
+      L.push(`  if (lv == ${n}Level) return;                         // 不是這個腳位變了（同一組的其他腳位）`);
+      L.push(`  ${n}Level = lv;`);
+      L.push(`  unsigned long t = micros();`);
+      L.push(`  if (lv == HIGH) ${n}Rise = t;`);
+      L.push(`  else { ${n}Width = t - ${n}Rise; ${n}Done = true; }`);
+      L.push(`}`);
+      L.push('');
+    }
+    if (!esp && uss.length) {   // Uno：每 8 個腳位共用一個腳位變化中斷（D0–D7、D8–D13、A0–A5）
+      const groups = {};
+      for (const c of uss) { const num = board.pinById[B[c.id].echo].num; const g = num <= 7 ? 'PCINT2_vect' : num <= 13 ? 'PCINT0_vect' : 'PCINT1_vect'; (groups[g] = groups[g] || []).push(c); }
+      for (const [g, cs] of Object.entries(groups)) L.push(`ISR(${g}) { ${cs.map(c => v(c.id) + 'Echo();').join(' ')} }   // ${cs.map(c => c.id + ' 的 ECHO').join('、')} 所在的那一組腳位有變化`);
+      L.push('');
+    }
+    for (const c of uss) {
+      const n = v(c.id);
+      L.push(`// 量 ${c.id} 的距離：不用 pulseIn（它會讓整個程式停住最多數十毫秒）；觸發後由中斷量回波，這裡只看量完了沒有。`);
+      L.push(`// 規則用的是上一次量到的值，所以反應會慢 60–120 ms。`);
       L.push(`void update${c.id}(unsigned long now) {`);
-      L.push(`  if (${n}State == 1) {                                   // 等待回波開始`);
-      L.push(`    if (digitalRead(${c.id}_ECHO_PIN) == HIGH) { ${n}T0 = micros(); ${n}State = 2; }`);
-      L.push(`    else if (micros() - ${n}T0 > US_TIMEOUT_US) { ${n}Next = US_MAX_CM; ${n}State = 0; }   // 沒有回波`);
-      L.push(`  } else if (${n}State == 2) {                            // 量測回波寬度`);
-      L.push(`    unsigned long w = micros() - ${n}T0;`);
-      L.push(`    if (digitalRead(${c.id}_ECHO_PIN) == LOW) { ${n}Next = (w / 58 > (unsigned long)US_MAX_CM) ? US_MAX_CM : (int)(w / 58); ${n}State = 0; }`);
-      L.push(`    else if (w > US_TIMEOUT_US) { ${n}Next = US_MAX_CM; ${n}State = 0; }   // 回波太長：超出量程`);
+      L.push(`  if (${n}State == 1) {                                   // 已觸發：等中斷量完回波`);
+      L.push(`    noInterrupts(); bool done = ${n}Done; unsigned long w = ${n}Width; interrupts();`);
+      L.push(`    if (done) { ${n}Next = (w > US_TIMEOUT_US || w / 58 > (unsigned long)US_MAX_CM) ? US_MAX_CM : (int)(w / 58); ${n}State = 0; }`);
+      L.push(`    else if (micros() - ${n}T0 > US_TIMEOUT_US + 1000) { ${n}Next = US_MAX_CM; ${n}State = 0; }   // 沒有回波或回波太長：超出量程`);
       L.push(`  }`);
       L.push(`  if (now >= ${n}Due) {                                   // 每 60 ms：改用上一次的結果，再觸發一次`);
       L.push(`    ${n}Due += US_PERIOD_MS;`);
       L.push(`    ${n}Cm = ${n}Next;`);
       L.push(`    ${n}Next = US_MAX_CM;`);
       L.push(`    if (${n}State == 0 && digitalRead(${c.id}_ECHO_PIN) == LOW) {`);
+      L.push(`      noInterrupts(); ${n}Done = false; ${n}Level = LOW; interrupts();`);
       L.push(`      digitalWrite(${c.id}_TRIG_PIN, HIGH); delayMicroseconds(10); digitalWrite(${c.id}_TRIG_PIN, LOW);`);
       L.push(`      ${n}T0 = micros(); ${n}State = 1;`);
       L.push(`    }`);
@@ -319,7 +342,15 @@
     }
     for (const c of leds) { L.push(`  pinMode(${c.id}_PIN, OUTPUT);`); L.push(`  digitalWrite(${c.id}_PIN, LOW);`); }
     for (const c of servos) L.push(`  ${v(c.id)}Servo.attach(${c.id}_PIN);`);
-    for (const c of uss) { L.push(`  pinMode(${c.id}_TRIG_PIN, OUTPUT);`); L.push(`  digitalWrite(${c.id}_TRIG_PIN, LOW);`); L.push(`  pinMode(${c.id}_ECHO_PIN, INPUT);`); }
+    for (const c of uss) {
+      L.push(`  pinMode(${c.id}_TRIG_PIN, OUTPUT);`); L.push(`  digitalWrite(${c.id}_TRIG_PIN, LOW);`); L.push(`  pinMode(${c.id}_ECHO_PIN, INPUT);`);
+      if (DL.boardFamily(board.id) === 'esp32') L.push(`  attachInterrupt(digitalPinToInterrupt(${c.id}_ECHO_PIN), ${v(c.id)}Echo, CHANGE);   // ECHO 一變化就呼叫 ${v(c.id)}Echo()`);
+      else {
+        L.push(`  *digitalPinToPCMSK(${c.id}_ECHO_PIN) |= bit(digitalPinToPCMSKbit(${c.id}_ECHO_PIN));   // 開啟 ECHO 腳位的腳位變化中斷`);
+        L.push(`  PCIFR |= bit(digitalPinToPCICRbit(${c.id}_ECHO_PIN));`);
+        L.push(`  PCICR |= bit(digitalPinToPCICRbit(${c.id}_ECHO_PIN));`);
+      }
+    }
     const starts = rules.map((r, i) => [r, i]).filter(([r]) => r.type === 'start');
     for (const [r, i] of starts) { L.push(`  // 規則 ${i + 1}：開始時`); for (const a of r.actions) L.push(instant(a, '  ')); }
     L.push('}');

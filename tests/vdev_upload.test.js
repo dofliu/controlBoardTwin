@@ -188,14 +188,9 @@ function compareServo(id, dev, sim, tol) {
   }
   return { n: dev.length, tol };
 }
-// 已知差異（設計提案，未修改產生器）：產生的 Uno 程式每一輪迴圈才看一次 ECHO（不用 pulseIn，避免整個程式停住），
-// 在真實時序的晶片上回波寬度會量短或量長一輪迴圈，距離約有一半的機率少 1 cm；模擬是理想值。
-// 門檻規則用的距離都離門檻 ≥ 2 cm，不受影響；「距離 → 角度」的連續對應（servoMap）容許 1 cm 對應的角度。
-function servoTol(p, id) {
-  let tol = 1;
-  for (const r of p.behavior.ir.rules || []) for (const a of r.actions || []) if (a.type === 'servoMap' && a.comp === id && DL.project.findComp(p, a.src).type === 'US') tol = Math.max(tol, Math.ceil(Math.abs(a.outMax - a.outMin) / Math.abs(a.inMax - a.inMin)) + 1);
-  return tol;
-}
+// V2.13 之前：產生的 Uno 程式每一輪迴圈才看一次 ECHO，距離約有一半的機率少 1 cm，這裡曾為「距離 → 角度」容許 1 cm。
+// 改用 ECHO 腳位變化中斷後量測和模擬相同，所有伺服都用同一個容許（1°）。
+function servoTol() { return 1; }
 async function runOnDevice(p, hex, opts) {
   opts = opts || {};
   const s = await server(benchFor(p));

@@ -218,7 +218,7 @@
 
 - 做了：虛擬 Uno 載入 Optiboot（`tests/fixtures/optiboot_atmega328.hex`）；`DL.transport.wsSerialPort(url)`（WebSocket 包成 Web Serial 的連接埠介面，`stk500.js` 不用改）；「程式」頁的上傳方式「上傳到虛擬 Uno（網路）」與上傳後的序列埠監看；觀測頁「上傳 DofLabFirmata（虛擬 Uno）」；主機依快閃記憶體辨識程式、上傳完成事件；工作台輸出軌跡（`GET /api/devices/:id/trace`）與排定在設備時間的工作台操作（`atDevMs`）；`tests/vdev_upload.test.js`（5 項，驗收含 15 個子測試）、E2E 段落 `vupload`。
 - 驗收結果：15 個支援 Uno 的引導實驗全部一致（LED 時刻相差 ≤ 2 ms；伺服角度一致；序列埠文字相同）。比較方式見 `ACCEPTANCE.md` V2.11。
-- 發現（設計提案）：產生的 Uno 程式量超音波時每一輪迴圈才看一次 ECHO，在真實時序的晶片上約一半機率少 1 cm；模擬是理想值。「超音波距離指針」的驗收容許 1 cm。要不要改產生器待使用者決定。
+- 發現（設計提案）：產生的 Uno 程式量超音波時每一輪迴圈才看一次 ECHO，在真實時序的晶片上約一半機率少 1 cm；模擬是理想值。「超音波距離指針」的驗收容許 1 cm。→ V2.13（2026-10-25）使用者決定修改產生器：改用 ECHO 腳位變化中斷，**已實作**，驗收不再容許 1 cm（見 ACCEPTANCE V2.13 第 10 點）。
 - 和原本設計不同的地方：
   - 序列埠監看和觀測頁共用同一條連線（同時只能一個）；多人唯讀觀看仍在第 5 階段。
   - 序列埠監看只收不送。
