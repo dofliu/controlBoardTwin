@@ -307,7 +307,8 @@
       mp.className = 'pill ' + (mode === 'sim' ? 'sim' : mode === 'hw-read' ? 'read' : 'ctl') + (virt ? ' virt' : ''); mp.querySelector('span').textContent = DL.modeLabel(mode, virt);
       const c = this.twin.conn; const cp = $('connPill');
       cp.className = 'pill ' + (c.state === 'connected' ? 'on' : c.state === 'lost' ? 'lost' : '') + (c.state === 'connected' && c.virtual ? ' virt' : '');
-      cp.querySelector('span').textContent = c.state === 'connected' ? `已連線 · ${c.info || ''}`.slice(0, 40) : c.state === 'lost' ? '連線中斷' : '未連線';
+      const full = c.state === 'connected' ? `已連線 · ${c.info || ''}` : c.state === 'lost' ? '連線中斷' : '未連線';
+      cp.querySelector('span').textContent = full.length > 40 ? full.slice(0, 39) + '…' : full; cp.title = full.length > 40 ? full : '設備連線狀態';   /* 太長時以「…」結尾，完整文字在滑鼠提示 */
       document.title = `DofLab`;
     }
     renderTabs() {
