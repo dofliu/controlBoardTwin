@@ -32,3 +32,19 @@ inline int touchRead(int p){ return __touch[p]; }
 inline void delay(unsigned long ms){ __us += (unsigned long long)ms * 1000; }
 struct __SerialStub { void begin(long){} void println(const char *s){ fprintf(stderr, "SERIAL %lu %s\n", (unsigned long)(__us / 1000), s); } };
 extern __SerialStub Serial;
+// 中斷（V2.13：超音波的 ECHO 用腳位變化中斷量回波寬度）。harness.cpp 在 ECHO 變化的那一刻呼叫：
+//   ESP32 → attachInterrupt 登記的函式；Uno → 那個腳位所屬的 ISR(PCINTx_vect)（D0–D7：PCINT2、D8–D13：PCINT0、A0–A5：PCINT1）
+#define CHANGE 1
+#define IRAM_ATTR
+inline int digitalPinToInterrupt(int p){ return p; }
+extern void (*__isr[64])();
+inline void attachInterrupt(int p, void (*f)(), int){ __isr[p] = f; }
+inline void noInterrupts(){} inline void interrupts(){}
+#define ISR(vec) void vec()
+void PCINT0_vect() __attribute__((weak)); void PCINT1_vect() __attribute__((weak)); void PCINT2_vect() __attribute__((weak));
+#define bit(n) (1 << (n))
+extern uint8_t PCICR, PCIFR, __pcmsk[3];
+inline int __pcgrp(int p){ return p <= 7 ? 2 : p <= 13 ? 0 : 1; }
+#define digitalPinToPCICRbit(p) (__pcgrp(p))
+#define digitalPinToPCMSK(p) (&__pcmsk[__pcgrp(p)])
+#define digitalPinToPCMSKbit(p) ((p) <= 7 ? (p) : (p) <= 13 ? (p) - 8 : (p) - 14)

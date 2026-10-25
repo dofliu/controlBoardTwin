@@ -10,8 +10,9 @@ async function until(fn, ms = 5000) { const t0 = Date.now(); while (Date.now() -
 
 async function rig(bench, opts) {
   opts = opts || {};
-  const srv = await startServer({ port: 0, bench });
-  const api = `http://127.0.0.1:${srv.port}/api/devices/uno-1`;
+  const dev = opts.board === 'esp32' ? { id: 'esp32-1', board: 'esp32' } : { id: 'uno-1' };   // 第 6 階段：ESP32 協定模型也跑同一套故障
+  const srv = await startServer({ port: 0, devices: [Object.assign({ bench }, dev)] });
+  const api = `http://127.0.0.1:${srv.port}/api/devices/${dev.id}`;
   const post = (path, body) => fetch(api + path, { method: 'POST', body: JSON.stringify(body) }).then(r => r.json());
   const R = {
     srv, state: () => fetch(api).then(r => r.json()),
@@ -24,9 +25,9 @@ async function rig(bench, opts) {
     const drv = R.drv = new DL.drivers.FirmataDriver(twin, {
       onLost: w => { R.lost.push(w); twin.disconnected(w); },
       onReboot: w => { R.reboots.push(w); twin.rebooted(w); drv.rewatch(); }
-    }, 'uno');
+    }, dev.board || 'uno');
     const w0 = drv.write.bind(drv); drv.write = (c, o) => { R.writes.push([c.id, o.num, c.v]); return w0(c, o); };   // 驅動實際送出的每一筆命令
-    const r = await drv.connect({ url: `ws://127.0.0.1:${srv.port}/dev/uno-1` });
+    const r = await drv.connect({ url: `ws://127.0.0.1:${srv.port}/dev/${dev.id}` });
     twin.connected(r.deviceId, r.info, { virtual: true });
     return r;
   };
@@ -143,16 +144,17 @@ test('§4.4 連線中斷：回到模擬、未確認命令作廢不重送、量�
   } finally { await R.close(); }
 });
 
-for (const fault of ['reset', 'brownout'])
-test(`§4.4 設備${fault === 'reset' ? '重置（按 RESET）' : '瞬間斷電（brown-out）'}：偵測到重新開機 → 撤銷寫入授權回到唯讀、未確認命令不重送、恢復唯讀觀測`, { timeout: 60000 }, async () => {
-  const R = await rig('hold-blink');
+for (const [board, fault] of [['uno', 'reset'], ['uno', 'brownout'], ['esp32', 'reset']])
+test(`§4.4 ${board === 'esp32' ? '（虛擬 ESP32，協定模型）' : ''}設備${fault === 'reset' ? '重置（按 RESET）' : '瞬間斷電（brown-out）'}：偵測到重新開機 → 撤銷寫入授權回到唯讀、未確認命令不重送、恢復唯讀觀測`, { timeout: 60000 }, async () => {
+  const esp = board === 'esp32', BTN = esp ? 4 : 2, LED = esp ? 23 : 13;
+  const R = await rig(esp ? 'esp32-hold-blink' : 'hold-blink', { board });
   try {
     await R.connect(); R.twin.define('BTN1.pressed', {}); R.twin.define('LED1.state', { feedback: false });
-    await R.drv.watch([{ signal: 'BTN1.pressed', num: 2, kind: 'button' }]); assert.ok(await until(() => R.twin.view('BTN1.pressed').measured));
-    R.twin.authorize(['LED1.state']); await R.drv.authorize([{ signal: 'LED1.state', num: 13, kind: 'digital' }]);
-    const c1 = await R.cmd('LED1.state', 1, 13); assert.ok(await until(() => R.twin.view('LED1.state').ack && R.twin.view('LED1.state').ack.id === c1.id));
+    await R.drv.watch([{ signal: 'BTN1.pressed', num: BTN, kind: 'button' }]); assert.ok(await until(() => R.twin.view('BTN1.pressed').measured));
+    R.twin.authorize(['LED1.state']); await R.drv.authorize([{ signal: 'LED1.state', num: LED, kind: 'digital' }]);
+    const c1 = await R.cmd('LED1.state', 1, LED); assert.ok(await until(() => R.twin.view('LED1.state').ack && R.twin.view('LED1.state').ack.id === c1.id));
     await wait(2500); assert.strictEqual(R.reboots.length, 0, '正常運作時不會誤判成重新開機');
-    await R.fault({ net: { loss: 1, dir: 'down' } }); const c2 = await R.cmd('LED1.state', 0, 13); await wait(200); await R.fault({ net: null });   // c2 的回讀遺失：還沒確認
+    await R.fault({ net: { loss: 1, dir: 'down' } }); const c2 = await R.cmd('LED1.state', 0, LED); await wait(200); await R.fault({ net: null });   // c2 的回讀遺失：還沒確認
     assert.ok(R.twin.pending.some(c => c.id === c2.id));
     const w0 = (await R.state()).traffic.writeCount;
     await R.fault({ fault });
@@ -160,7 +162,7 @@ test(`§4.4 設備${fault === 'reset' ? '重置（按 RESET）' : '瞬間斷電�
     assert.strictEqual(R.twin.mode, 'hw-read'); assert.strictEqual(R.twin.auth, null);
     assert.ok(R.twin.dropped.some(c => c.id === c2.id), '未確認的命令作廢'); assert.strictEqual(R.twin.pending.length, 0);
     assert.strictEqual(R.twin.command('LED1.state', 1).ok, false, '要重新授權才能寫');
-    const st = await R.state(); assert.strictEqual(st.pins['13'], 'input', '晶片重新開機，D13 回到輸入'); assert.strictEqual(st.bench.parts.find(p => p.id === 'LED1').on, false);
+    const st = await R.state(); assert.strictEqual(st.pins[String(LED)], 'input', '晶片重新開機，LED 腳位回到輸入'); assert.strictEqual(st.bench.parts.find(p => p.id === 'LED1').on, false);
     assert.strictEqual(st.traffic.writeCount, w0, '重新開機後沒有任何寫入（不重送）');
     // 恢復唯讀觀測：重新設定上拉輸入後，按鈕又能量到
     await R.bench('BTN1', 'press');

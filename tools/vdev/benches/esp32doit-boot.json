@@ -1,0 +1,11 @@
+{
+ "id": "esp32doit-boot",
+ "name": "ESP32 DevKit V1：板上的 BOOT 鍵與藍燈（與「BOOT 鍵切換藍燈」相同）",
+ "board": "esp32",
+ "seed": 20261024,
+ "note": "協定模型，不是實際韌體。BOOT 鍵是 GPIO0（按下 = LOW，板上有上拉），藍燈是 GPIO2（DOIT 版）",
+ "parts": [
+  { "id": "BOOT1", "type": "button", "pin": 0, "bounceMs": 8 },
+  { "id": "OBLED1", "type": "led", "pin": 2, "ohm": 1000 }
+ ]
+}

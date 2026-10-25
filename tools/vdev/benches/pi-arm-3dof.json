@@ -1,0 +1,56 @@
+{
+ "id": "pi-arm-3dof",
+ "board": "pi4b",
+ "name": "樹莓派：三顆 SG90 接 GPIO12、GPIO13、GPIO18（與「三軸機械手臂」相同接線與安裝）",
+ "seed": 20261024,
+ "parts": [
+  {
+   "id": "SERVO1",
+   "type": "servo",
+   "pin": 12,
+   "speed": 600,
+   "start": 90
+  },
+  {
+   "id": "SERVO2",
+   "type": "servo",
+   "pin": 13,
+   "speed": 600,
+   "start": 90
+  },
+  {
+   "id": "SERVO3",
+   "type": "servo",
+   "pin": 18,
+   "speed": 600,
+   "start": 90
+  },
+  {
+   "id": "ARM",
+   "type": "arm",
+   "H": 7,
+   "L1": 8,
+   "L2": 8,
+   "joints": [
+    {
+     "servo": "SERVO1",
+     "name": "底座",
+     "zero": 90,
+     "dir": 1
+    },
+    {
+     "servo": "SERVO2",
+     "name": "肩",
+     "zero": 0,
+     "dir": 1
+    },
+    {
+     "servo": "SERVO3",
+     "name": "肘",
+     "zero": 170,
+     "dir": -1
+    }
+   ]
+  }
+ ]
+}

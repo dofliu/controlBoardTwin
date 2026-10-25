@@ -148,7 +148,7 @@
     get writable() { return !!(this.ws && this.ws.readyState === 1 && this.hello); }
     write(bytes) { if (this.writable) this.ws.send(new Uint8Array(bytes)); return Promise.resolve(); }
     async setSignals(sig) { if (!this.writable) return false; const o = { op: 'signals' }; if ('dataTerminalReady' in sig) o.dtr = !!sig.dataTerminalReady; if ('requestToSend' in sig) o.rts = !!sig.requestToSend; this.sendJson(o); return true; }
-    info() { const h = this.hello || {}; let host = ''; try { host = new URL(this.url).host; } catch (e) { } return { kind: 'virtual', url: this.url, host, device: h.device, board: h.board, firmware: h.firmware, bench: h.bench, clock: h.clock, rtt: this.rtt, you: h.you, name: h.name, presence: this.presence }; }
+    info() { const h = this.hello || {}; let host = ''; try { host = new URL(this.url).host; } catch (e) { } return { kind: 'virtual', url: this.url, host, device: h.device, board: h.board, model: h.model || 'avr8js', note: h.note, mcu: h.mcu, firmware: h.firmware, bench: h.bench, clock: h.clock, rtt: this.rtt, you: h.you, name: h.name, presence: this.presence }; }
     close() {
       this.closing = true; clearInterval(this.pinger);
       if (!this.ws || this.ws.readyState === 3) return Promise.resolve();

@@ -1,0 +1,11 @@
+{
+ "id": "esp32-night-light",
+ "name": "ESP32：光敏模組＋LED（與 ESP32-DevKitC 的「小夜燈」相同接線）",
+ "board": "esp32",
+ "seed": 20261024,
+ "note": "協定模型，不是實際韌體；ADC 假設為線性 0–3.3 V → 0–4095",
+ "parts": [
+  { "id": "LDR1", "type": "ldr", "pin": 34, "light": 60, "noise": 0.01 },
+  { "id": "LED1", "type": "led", "pin": 23, "ohm": 220 }
+ ]
+}

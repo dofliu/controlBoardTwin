@@ -59,7 +59,9 @@
       this.closing = false;
       await t.open();
       const vi = virtual ? t.info() : null;
-      this.log(virtual ? `已經由網路連到虛擬設備 ${vi.device}（${vi.host}；avr8js 模擬的晶片，不是實體板子），等待 Firmata 回應…` : '序列埠已開啟（57600 bps），等待板子重新啟動並回應 Firmata…');
+      // 虛擬 Uno：avr8js 跑真的韌體機器碼；虛擬 ESP32：協定模型（行為和韌體相同的 JS 程式，不是實際韌體，第 6 階段）
+      const what = vi && vi.model === 'protocol' ? '協定模型：行為和 DofLabFirmata 相同的 JS 程式，不是實際韌體，也不是實體板子' : 'avr8js 模擬的晶片，不是實體板子';
+      this.log(virtual ? `已經由網路連到虛擬設備 ${vi.device}（${vi.host}；${what}），等待 Firmata 回應…` : '序列埠已開啟（57600 bps），等待板子重新啟動並回應 Firmata…');
       // 虛擬 Uno 上傳過別的程式（第 4 階段）：主機知道快閃記憶體裡是什麼，不是 DofLabFirmata 時先提醒，沒回應就直接說明（重新啟動也只是再跑同一個程式）
       const otherFw = virtual && vi.firmware && vi.firmware.name && vi.firmware.name !== 'DofLabFirmata' ? vi.firmware.name : null;
       if (otherFw) this.log(`虛擬 Uno 現在跑的是「${otherFw}」，不是 DofLabFirmata；如果不是 Firmata，就不會回應。`, 'w');
@@ -70,15 +72,18 @@
       if (!this.version && otherFw) { await this.disconnect(true); throw new Error(`虛擬 Uno 現在跑的是上傳的程式（${otherFw}），不是 Firmata，所以不能同步。要同步請先按「上傳 DofLabFirmata」（和實體板子一樣）；想看程式的輸出，請用「程式」頁上傳後的序列埠監看。`); }
       if (!this.version) { await this.disconnect(true); throw new Error(virtual ? `虛擬設備 ${vi.device} 沒有回應 Firmata（已重新啟動再等一次）。請確認虛擬設備主機執行的是 DofLabFirmata 或 StandardFirmata。` : `沒有收到 Firmata 回應（已重新啟動板子再等一次）。請確認板子已上傳 ${(this.board.family || this.board.id) === 'esp32' ? 'DofLabFirmata' : 'DofLabFirmata 或 StandardFirmata'}（57600 bps），而且沒有其他程式占用序列埠。`); }
       const pinCount = this.caps ? this.caps.length : null; const want = this.board.firmataPins;
-      const fw = `${this.firmware || 'Firmata'} ${this.version}`;
-      const boardOk = !virtual || vi.board === this.board.id;
-      const who = virtual ? `虛擬設備 ${vi.device}（${vi.board}，另一個程序以 avr8js 模擬，不是實體板子）：` : '';
+      // 韌體名稱與版本（F0 79，例如 DofLabFirmata 1.2）在前，Firmata 協定版本（F9，例如 2.6）在後：連線標籤太長被截斷時仍看得到韌體版本
+      const fw = this.firmware ? `${this.firmware}${this.fwVersion ? ' ' + this.fwVersion.join('.') : ''} · Firmata 協定 ${this.version}` : `Firmata 協定 ${this.version}`;
+      const boardOk = !virtual || DL.boardFamily(vi.board) === DL.boardFamily(this.board.id);   // ESP32 DevKitC／DevKit V1 是同一顆晶片、同一份韌體（USB 也分不出來）
+      const who = virtual ? `虛擬設備 ${vi.device}（${vi.board}，${vi.model === 'protocol' ? '另一個程序裡的協定模型，不是實際韌體，也不是實體板子' : '另一個程序以 avr8js 模擬，不是實體板子'}）：` : '';
       const identity = pinCount === want && boardOk ? { ok: true, msg: `${who}${fw}，回報 ${pinCount} 個腳位，與 ${this.board.name} 相符。` } : { ok: false, msg: `${who}${fw}，回報 ${pinCount ?? '未知'} 個腳位，與 ${this.board.name}（${want} 個）不符。` };
-      if (virtual) identity.virtual = true;
+      if (virtual) { identity.virtual = true; if (vi.model === 'protocol') identity.protocol = true; }
       if (this.firmware === 'StandardFirmata') this.log('注意：StandardFirmata 開機時會自行把數位腳設為 OUTPUT LOW（韌體預設，不是 DofLab 送出）。建議改用 DofLabFirmata，開機時腳位維持輸入。', 'w');
-      this.hb = setInterval(() => this.send([0xF9]), 1000);
+      // 斷線保護（DofLabFirmata 1.2 起）：有輸出時 3 秒沒收到任何位元組，板子自己關掉輸出。舊版沒有，提醒更新
+      if (this.firmware === 'DofLabFirmata' && this.fwVersion && (this.fwVersion[0] < 1 || (this.fwVersion[0] === 1 && this.fwVersion[1] < 2))) this.log(`DofLabFirmata ${this.fwVersion.join('.')} 沒有斷線保護（斷線時輸出會停在最後的命令）：請用「上傳 DofLabFirmata」更新到 1.2。`, 'w');
+      this.hb = setInterval(() => this.send([0xF9]), 1000);   // 心跳：也讓板子知道連線還在（斷線保護）
       this.readyAt = Date.now() + 1500;   // 之後才開始判斷「設備重新開機」：交握時重問的查詢可能晚一點才回來
-      if (virtual) return { deviceId: `vdev:${vi.device}@${vi.host}`, info: `虛擬設備 ${vi.device} · ${fw}`, identity, virtual: true };
+      if (virtual) return { deviceId: `vdev:${vi.device}@${vi.host}`, info: `虛擬設備 ${vi.device} · ${fw}${vi.model === 'protocol' ? '（協定模型）' : ''}`, identity, virtual: true, protocol: vi.model === 'protocol' };
       return { deviceId: 'firmata:' + (this.port.getInfo ? JSON.stringify(this.port.getInfo()) : 'serial'), info: fw, identity };
     }
     parse(b) {
@@ -128,6 +133,10 @@
         else if (this.readyAt && Date.now() > this.readyAt && !this.closing) this.rebooted('收到韌體的開機訊息');
       } else if (cmd === 0x63) { // DofLab 擴充：超音波距離（trig、cm 兩個 7 位元）
         const s = this.sonarSignals[d[1]]; if (s) { this.twin.measure(s, d[2] | (d[3] << 7), { seq: ++this.seq }); this.twin.heard(); }
+      } else if (cmd === 0x64) { // DofLab 擴充（1.2）：板子太久沒收到訊息，自己把輸出關掉了（斷線保護）
+        this.outPins = {}; this.lastCmdByPin = {};
+        const why = '設備端 3 秒沒有收到 DofLab 的訊息，已自己關掉輸出（斷線保護）';
+        this.log(why + '。', 'w'); if (this.hooks.onGuard) this.hooks.onGuard(why);
       } else if (cmd === 0x6A) { // ANALOG_MAPPING_RESPONSE：每個腳位對應的類比通道（0x7F = 無）
         this.analogMap = {}; for (let i = 1; i < d.length; i++) if (d[i] !== 0x7F) this.analogMap[i - 1] = d[i];
       }
@@ -136,6 +145,7 @@
     rebooted(why) {
       this.outPins = {}; this.lastCmdByPin = {}; this.buf = []; this.sysex = null;
       this.log(`設備重新開機（${why}）。`, 'w');
+      this.release().catch(() => { });   // 虛擬設備：授權已撤銷，控制權也交出去（否則別人一直拿不到）
       if (this.hooks.onReboot) this.hooks.onReboot(why);
     }
     // 重新開機後恢復唯讀觀測：再送一次輸入腳位的設定與回報（只碰輸入，不改變任何輸出）
@@ -161,15 +171,25 @@
       return r && r.ok ? r : { ok: false, holder: r && r.holder, message: (r && r.message) || '沒有取得控制權。' };
     }
     async release() { const t = this.transport; if (this.holding && t && t.lock) { this.holding = false; await t.lock('release'); } }
+    // o.initial：授權時先送的命令（伺服的目前角度，V2.13）。韌體的 Servo 函式庫在 attach 後、第一個角度到達前會輸出預設的 1500 µs（約 93°），
+    // 所以「設成伺服模式」和「寫入角度」放在同一次傳送，韌體同一輪 loop 就處理完，伺服不會先往中間轉
     async authorize(outputs) {
       if (this.virtual && !this.holding) { const r = await this.acquire(); if (!r.ok) throw Object.assign(new Error(r.message), { code: 'not_holder', holder: r.holder }); }
-      for (const o of outputs) { this.outPins[o.num] = o; await this.send([0xF4, o.num, o.kind === 'servo' ? 0x04 : 0x01]); }
+      for (const o of outputs) {
+        this.outPins[o.num] = o;
+        const mode = [0xF4, o.num, o.kind === 'servo' ? 0x04 : 0x01];
+        if (o.initial) await this.write(o.initial, o, mode); else await this.send(mode);
+      }
     }
-    async write(cmd, out) {
+    valueBytes(pin, kind, v) {
+      if (kind !== 'servo') return [0xF5, pin, v ? 1 : 0];
+      const a = Math.round(v); return pin < 16 ? [0xE0 | pin, a & 0x7F, (a >> 7) & 0x7F] : [0xF0, 0x6F, pin, a & 0x7F, (a >> 7) & 0x7F, 0xF7];
+    }
+    // before：要和這個命令一起送的位元組（授權時的「設成伺服模式」）
+    async write(cmd, out, before) {
       const pin = out.num;
       if (!this.outPins[pin]) { this.log(`${cmd.name} 的腳位沒有授權，命令未送出。`, 'e'); return; }
-      if (out.kind === 'servo') { const a = Math.round(cmd.v); await this.send(pin < 16 ? [0xE0 | pin, a & 0x7F, (a >> 7) & 0x7F] : [0xF0, 0x6F, pin, a & 0x7F, (a >> 7) & 0x7F, 0xF7]); }
-      else await this.send([0xF5, pin, cmd.v ? 1 : 0]);
+      await this.send((before || []).concat(this.valueBytes(pin, out.kind, cmd.v)));
       (this.lastCmdByPin[pin] = this.lastCmdByPin[pin] || []).push({ id: cmd.id, v: out.kind === 'servo' ? Math.round(cmd.v) : cmd.v ? 1 : 0 });
       await this.send([0xF0, 0x6D, pin, 0xF7]);   // 回讀暫存值作為 ACK（不證明 LED 真的亮或伺服到位）
     }
@@ -207,6 +227,14 @@
             hello = m; clearTimeout(fail);
             if (m.proto !== 2) { reject(new Error(`pi_bridge 協定版本 ${m.proto} 不符（需要 2）。`)); return; }
             const isPi4 = /Raspberry Pi 4/i.test(m.model || '');
+            // 虛擬樹莓派（第 6 階段）：虛擬設備主機啟動的 pi_bridge.py --bench（gpiozero 模擬腳位＋工作台），一律標示虛擬
+            if (m.virtual) {
+              this.virtual = true; let host = ''; try { host = new URL(url).host; } catch (e) { }
+              this.deploy = { ok: m.deploy !== false, why: m.deployWhy || '' };
+              this.hb = setInterval(() => this.send({ op: 'ping', t: Date.now() }), 1000);
+              resolve({ deviceId: `vdev:${m.device || 'pi'}@${host}`, info: `虛擬設備 ${m.device || ''} · pi_bridge（模擬腳位）`, identity: { ok: true, virtual: true, msg: `虛擬設備 ${m.device || ''}（pi4b，虛擬設備主機上的 pi_bridge.py＋gpiozero 模擬腳位＋工作台，不是實體樹莓派）：${m.model}` }, virtual: true });
+              return;
+            }
             const identity = m.mock ? { ok: true, mock: true, msg: `模擬腳位（--mock），不是實體樹莓派：${m.model}` } : isPi4 ? { ok: true, msg: `${m.model}（${m.host}）` } : { ok: false, msg: `回報型號為「${m.model || '未知'}」，與 Raspberry Pi 4 Model B 不符。` };
             this.hb = setInterval(() => this.send({ op: 'ping', t: Date.now() }), 1000);
             resolve({ deviceId: 'pi:' + (m.host || url), info: m.model, identity });
@@ -217,6 +245,7 @@
           else if (m.op === 'ack') this.twin.ack(m.id, m.kind === 'servo' ? m.value : m.value ? 1 : 0);
           else if (m.op === 'authorized') this.log(`樹莓派已允許寫入：${m.outputs.map(o => 'GPIO' + o.pin).join('、')}`, 's');
           else if (m.op === 'error') this.log('樹莓派：' + m.message, 'e');
+          else if (m.op === 'guard') { this.outPins = {}; this.log('樹莓派：' + m.message, 'w'); if (this.hooks.onGuard) this.hooks.onGuard(m.message); }   // 斷線保護：閘道自己關掉了輸出
         };
       });
     }
@@ -228,7 +257,8 @@
       const so = inputs.filter(i => i.kind === 'sonar'); if (so.length) this.send({ op: 'sonar', sensors: so.map(i => ({ trig: i.num, echo: i.echo })) });
       return {};
     }
-    async authorize(outputs) { for (const o of outputs) this.outPins[o.num] = o; this.send({ op: 'authorize', outputs: outputs.map(o => ({ pin: o.num, kind: o.kind })) }); }
+    // o.initial：授權時先送的命令（伺服的目前角度）。pi_bridge 的伺服沒有預設脈寬（initial_angle=None），送了只是讓伺服馬上到目前的角度，和 Firmata 一致
+    async authorize(outputs) { for (const o of outputs) this.outPins[o.num] = o; this.send({ op: 'authorize', outputs: outputs.map(o => ({ pin: o.num, kind: o.kind })) }); for (const o of outputs) if (o.initial) await this.write(o.initial, o); }
     async write(cmd, out) {
       if (!this.outPins[out.num]) { this.log(`${cmd.name} 的腳位沒有授權，命令未送出。`, 'e'); return; }
       this.send(out.kind === 'servo' ? { op: 'servo', id: cmd.id, pin: out.num, angle: cmd.v } : { op: 'write', id: cmd.id, pin: out.num, value: cmd.v ? 1 : 0 });
@@ -238,18 +268,27 @@
     log(m, k) { this.hooks.log && this.hooks.log(m, k); }
   }
 
-  // source：'usb'（預設）或 'virtual'（虛擬設備主機，目前只有 Uno）；sources 列出這個板型可選的來源
+  // source：'usb'（預設）、'pibridge'（樹莓派閘道）或 'virtual'（虛擬設備主機）；sources 列出這個板型可選的來源
+  // 虛擬設備（第 6 階段起三種板子都有）：Uno＝avr8js 跑真的韌體；ESP32＝協定模型（不是實際韌體）；樹莓派＝pi_bridge.py＋gpiozero 模擬腳位
   function driverFor(boardId, source) {
     const b = DL.boards[boardId];
     if (b.driver === 'firmata') {
-      const sources = b.id === 'uno' ? ['usb', 'virtual'] : ['usb'];
-      if (source === 'virtual' && sources.includes('virtual')) return { cls: FirmataDriver, source: 'virtual', sources, label: '虛擬設備（WebSocket＋Firmata）', tag: '已在虛擬設備驗證', status: '已在虛擬設備驗證：另一個程序以 avr8js 執行 DofLabFirmata 機器碼，資料經網路交換；不是實體板子' };
+      const sources = ['usb', 'virtual'];
+      if (source === 'virtual' && b.id !== 'uno') return { cls: FirmataDriver, source: 'virtual', sources, label: '虛擬設備（ESP32 協定模型，WebSocket＋Firmata）', tag: '已在協定模型驗證', status: '已在虛擬設備（協定模型）驗證：另一個程序裡行為和 DofLabFirmata 相同的 JS 程式，不是實際韌體，也不是實體板子' };
+      if (source === 'virtual') return { cls: FirmataDriver, source: 'virtual', sources, label: '虛擬設備（WebSocket＋Firmata）', tag: '已在虛擬設備驗證', status: '已在虛擬設備驗證：另一個程序以 avr8js 執行 DofLabFirmata 機器碼，資料經網路交換；不是實體板子' };
       return { cls: FirmataDriver, source: 'usb', sources, label: 'USB 序列埠（Firmata）', tag: b.id === 'uno' ? '已在虛擬 Uno 驗證，未接實體板' : '虛擬 Uno 驗證＋使用者實測', status: b.id === 'uno' ? '已在虛擬 Uno（真實韌體）驗證，未以實體板驗證' : '協定在虛擬 Uno 驗證；使用者已在實體 ESP32 DevKit V1 實測連線、BOOT 同步與藍燈（2026-10-23）' };
     }
-    if (b.driver === 'pibridge') return { cls: PiBridgeDriver, source: 'pibridge', sources: ['pibridge'], label: '網路閘道（pi_bridge.py）', status: '已實作，僅以 --mock 模擬腳位測試' };
+    if (b.driver === 'pibridge') {
+      const sources = ['pibridge', 'virtual'];
+      if (source === 'virtual') return { cls: PiBridgeDriver, source: 'virtual', sources, label: '虛擬設備（虛擬樹莓派：pi_bridge＋模擬腳位）', tag: '已在虛擬設備驗證', status: '已在虛擬設備驗證：虛擬設備主機執行真的 pi_bridge.py，GPIO 是 gpiozero 的模擬腳位，外面接工作台；不是實體樹莓派' };
+      return { cls: PiBridgeDriver, source: 'pibridge', sources, label: '網路閘道（pi_bridge.py）', status: '已實作，僅以 --mock 模擬腳位與虛擬樹莓派測試，未以實體樹莓派驗證' };
+    }
     return { cls: null, source: null, sources: [], label: '無', status: `${b.short} 的真機驅動尚未實作：可以模擬與產生程式，但不能連線同步。` };
   }
 
-  DL.drivers = { FirmataDriver, PiBridgeDriver, driverFor, VDEV_URL: 'ws://127.0.0.1:8770/dev/uno-1' };
+  // 虛擬設備主機上各板型預設的設備名稱（npm run vdev -- --pi --esp32）
+  const VDEV_DEVICE = { uno: 'uno-1', esp32: 'esp32-1', esp32doit: 'esp32-1', pi4b: 'pi-1' };
+  const vdevUrl = boardId => 'ws://127.0.0.1:8770/dev/' + (VDEV_DEVICE[boardId] || 'uno-1');
+  DL.drivers = { FirmataDriver, PiBridgeDriver, driverFor, VDEV_URL: vdevUrl('uno'), VDEV_DEVICE, vdevUrl };
   if (typeof module !== 'undefined') module.exports = DL;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

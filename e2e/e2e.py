@@ -426,6 +426,112 @@ async def vdev_flow(p):
     finally:
         await b.close(); srv.kill()
 
+async def vboards_flow(p):
+    """雲端虛擬硬體第 6 階段：同一台虛擬設備主機上的虛擬樹莓派（pi_bridge＋模擬腳位）與虛擬 ESP32（協定模型，不是實際韌體）。
+    介面選「虛擬設備」來源、預設網址依板型；連線後各處標示虛擬與種類；工作台由這個測試經主機的 HTTP API 操作。"""
+    import urllib.request
+    VPORT = 8770; base = f'http://127.0.0.1:{VPORT}/api/devices/'
+    srv = subprocess.Popen(['node', str(ROOT / 'tools' / 'vdev' / 'server.js'), '--port', str(VPORT), '--pi', 'pi-dist-gauge', '--esp32', 'esp32-hold-blink'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(VPORT)
+    def state(d): return json.loads(urllib.request.urlopen(base + d, timeout=5).read())
+    def bench(d, q): urllib.request.urlopen(urllib.request.Request(base + d + '/bench', data=json.dumps(q).encode(), method='POST'), timeout=5).read()
+    def part(d, pid): return next(x for x in state(d)['bench']['parts'] if x['id'] == pid)
+    # 等虛擬樹莓派（子程序）就緒
+    for i in range(100):
+        try: state('pi-1'); break
+        except Exception: await asyncio.sleep(0.1)
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 1000})
+    try:
+        pg = await ctx.new_page(); errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+        await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p")
+        async def load(exp, board):
+            await ev(pg, "([e,b])=>{const r=DL.experiments.solved(e,b); doflab.load(DL.project.clone(r.project,{name:'虛擬'+b,origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}})); }", [exp, board])
+            await pg.click('#t-behavior'); await pg.wait_for_timeout(400); await pg.click('#btnConfirm')
+            await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+            await pg.check('input[name="hwSrc"][value="virtual"]'); await pg.wait_for_timeout(100)
+        # ---------- 虛擬樹莓派 ----------
+        await load('dist-gauge', 'pi4b')
+        body = await pg.inner_text('#hwBody')
+        check("虛擬樹莓派：來源有「網路閘道（實體樹莓派）」與「虛擬設備」；預設網址指向 pi-1；說明寫明不是實體樹莓派、只模擬距離、不能部署",
+              await pg.input_value('#vdevUrl') == f'ws://127.0.0.1:{VPORT}/dev/pi-1' and await pg.locator('input[name="hwSrc"][value="pibridge"]').count() == 1 and '不是實體樹莓派' in body and '只模擬距離' in body and '不能部署' in body and await pg.locator('#vdevName').count() == 0, body[:400])
+        await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=20000); await pg.wait_for_timeout(300)
+        body = await pg.inner_text('#hwBody'); pill = await pg.inner_text('#modePill')
+        check("虛擬樹莓派：連線後辨識寫「虛擬設備 pi-1、不是實體樹莓派」，模式標籤「虛擬設備 · 唯讀」，量測欄「量測（虛擬）」",
+              'pi-1' in body and '不是實體樹莓派' in body and pill.endswith('虛擬設備 · 唯讀') and await pg.inner_text('#thMeas') == '量測（虛擬）' and await ev(pg, "doflab.twin.conn.virtual && doflab.twin.conn.deviceId.startsWith('vdev:pi-1@')"), body[:300] + ' | ' + pill)
+        href = await pg.get_attribute('#hwBody a[target=_blank]', 'href')
+        check("虛擬樹莓派：「開啟工作台」直接選到 pi-1", href == f'http://127.0.0.1:{VPORT}/?d=pi-1', href)
+        bench('pi-1', {'part': 'US1', 'action': 'set', 'cm': 30})
+        try: await pg.wait_for_function("(v => v.measured && Math.abs(v.measured.v - 30) <= 1 && v.quality === 'ok')(doflab.twin.view('US1.distance'))", timeout=5000); ok = True
+        except Exception: ok = False
+        check("虛擬樹莓派：工作台把距離設成 30 cm → 介面的量測層 30 cm", ok, json.dumps(await ev(pg, "doflab.twin.view('US1.distance')"))[:200])
+        for cb in await pg.locator('[data-chk]').all(): await cb.check()
+        await pg.click('#hwAuth'); await pg.wait_for_timeout(300); await pg.click('#simRun')
+        try: await pg.wait_for_function("(v => v.ack && v.commanded && v.ack.id === v.commanded.id)(doflab.twin.view('SERVO1.angle'))", timeout=8000); ok = True
+        except Exception: ok = False
+        cmd = await ev(pg, "doflab.twin.view('SERVO1.angle').commanded.v"); s1 = part('pi-1', 'SERVO1')
+        check("虛擬樹莓派：受控寫入 → 伺服命令經網路到 pi_bridge，收到 ACK；工作台量到的脈寬 = 544 + 角度 × 1856 / 180 µs（和 Uno／ESP32 相同）",
+              ok and (await pg.inner_text('#modePill')).endswith('虛擬設備 · 受控寫入') and s1['pulseUs'] is not None and abs(s1['pulseUs'] - (544 + cmd * 1856 / 180)) <= 3, json.dumps([cmd, s1]))
+        check("虛擬樹莓派：工作台由脈寬換算的角度和 DofLab 送出的命令相差 ≤ 1°（脈寬範圍和 Uno／ESP32 統一後）", s1['cmd'] is not None and abs(s1['cmd'] - cmd) <= 1, json.dumps([cmd, s1['cmd']]))
+        bench('pi-1', {'part': 'US1', 'action': 'set', 'cm': 12})
+        try: await pg.wait_for_function("(v => v.ack && v.commanded && v.ack.id === v.commanded.id && v.commanded.v !== %s)(doflab.twin.view('SERVO1.angle'))" % json.dumps(cmd), timeout=8000); ok = True
+        except Exception: ok = False
+        check("虛擬樹莓派：距離改成 12 cm → 介面算出新角度、命令再次確認；SG90 量測欄仍是「無回授」", ok and await ev(pg, "doflab.twin.view('SERVO1.angle').quality") == 'none')
+        await pg.screenshot(path=str(SHOTS / "v6_pi_control.png"))
+        await pg.click('#hwDisc'); await pg.wait_for_timeout(500)
+        # ---------- 虛擬 ESP32（協定模型） ----------
+        await load('hold-blink', 'esp32')
+        body = await pg.inner_text('#hwBody')
+        check("虛擬 ESP32：預設網址指向 esp32-1；說明寫明「協定模型」「不是實際韌體」；按鈕寫「連接虛擬 ESP32（協定模型）」",
+              await pg.input_value('#vdevUrl') == f'ws://127.0.0.1:{VPORT}/dev/esp32-1' and '協定模型' in body and '不是實際韌體' in body and '連接虛擬 ESP32（協定模型）' in body, body[:400])
+        await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=20000); await pg.wait_for_timeout(300)
+        body = await pg.inner_text('#hwBody')
+        check("虛擬 ESP32：連線後辨識與說明都寫「協定模型、不是實際韌體」，回報 40 個腳位；驗證狀態寫「已在虛擬設備（協定模型）驗證」",
+              '協定模型' in body and '不是實際韌體' in body and '40 個腳位' in body and '已在虛擬設備（協定模型）驗證' in body and (await pg.inner_text('#modePill')).endswith('虛擬設備 · 唯讀'), body[:500])
+        cp = await pg.inner_text('#connPill'); cpt = await pg.get_attribute('#connPill', 'title')
+        check("虛擬 ESP32：上方的連線標籤太長時以「…」結尾（不會切在字中間），完整文字（含「協定模型」）在滑鼠提示", len(cp.strip()) <= 42 and (cp.strip().endswith('…') or '協定模型' in cp) and '協定模型' in (cpt or '') + cp, json.dumps([cp, cpt], ensure_ascii=False))
+        check("連線標籤顯示韌體版本（DofLabFirmata 1.2，截斷時也看得到），協定版本（Firmata 協定 2.6）在後面", 'DofLabFirmata 1.2' in cp and 'Firmata 協定 2.6' in (cpt or '') + cp, json.dumps([cp, cpt], ensure_ascii=False))
+        bench('esp32-1', {'part': 'BTN1', 'action': 'press'})
+        try: await pg.wait_for_function("doflab.twin.view('BTN1.pressed').measured && doflab.twin.view('BTN1.pressed').measured.v === true", timeout=5000); ok = True
+        except Exception: ok = False
+        check("虛擬 ESP32：工作台按下 GPIO4 的按鈕 → 介面量測按下", ok)
+        for cb in await pg.locator('[data-chk]').all(): await cb.check()
+        await pg.click('#hwAuth'); await pg.wait_for_timeout(300); await pg.click('#simRun')
+        t0 = part('esp32-1', 'LED1')['toggles']
+        try:
+            for i in range(60):
+                await asyncio.sleep(0.1)
+                if part('esp32-1', 'LED1')['toggles'] - t0 >= 2: break
+            ok = part('esp32-1', 'LED1')['toggles'] - t0 >= 2 and await ev(pg, "(v => !!(v.ack && v.ack.matches))(doflab.twin.view('LED1.state'))")
+        except Exception: ok = False
+        check("虛擬 ESP32：按住按鈕 → 行為在介面執行、命令送到協定模型 → 工作台 GPIO23 的 LED 閃爍，並收到回讀 ACK", ok)
+        await pg.screenshot(path=str(SHOTS / "v6_esp32_control.png"))
+        # 斷線保護（韌體 1.2，協定模型照做）：按住按鈕、LED 閃爍時網路中斷 → DofLab 回到模擬；設備端約 3 秒沒收到位元組，自己關掉 GPIO23
+        urllib.request.urlopen(urllib.request.Request(base + 'esp32-1/fault', data=json.dumps({'fault': 'disconnect'}).encode(), method='POST'), timeout=5).read()
+        try: await pg.wait_for_function("doflab.twin.conn.state==='lost' && doflab.twin.mode==='sim'", timeout=6000); lost = True
+        except Exception: lost = False
+        t0 = time.monotonic(); off = False
+        while time.monotonic() - t0 < 6:
+            st = state('esp32-1')
+            if st['pins']['23'] == 'input' and not part('esp32-1', 'LED1')['on']: off = True; break
+            await asyncio.sleep(0.1)
+        check("斷線保護：LED 閃爍時網路中斷 → DofLab 回到模擬；設備端約 3 秒沒收到任何位元組，自己關掉 GPIO23（LED 熄滅、腳位回到輸入）", lost and off, json.dumps([lost, round(time.monotonic() - t0, 2), state('esp32-1')['pins']['23']]))
+        bench('esp32-1', {'part': 'BTN1', 'action': 'release'})
+        # ---------- 工作台頁：設備選單、腳位名稱、故障按鈕依板型 ----------
+        bp = await ctx.new_page(); await bp.goto(f'http://127.0.0.1:{VPORT}/?d=pi-1'); await bp.wait_for_function("window.__bench && window.__bench.board === 'pi4b' && document.querySelector('[data-part=SERVO1]')")
+        txt = await bp.inner_text('body')
+        check("工作台頁（虛擬樹莓派）：設備選單有三台、標示「pi_bridge＋gpiozero 模擬腳位」、腳位寫 GPIO、沒有 RESET 與瞬間斷電",
+              await bp.locator('#devSel option').count() == 3 and 'pi_bridge' in await bp.inner_text('#kindTag') and 'GPIO18' in txt and 'TRIG GPIO5' in txt and not await bp.is_visible('#fReset') and not await bp.is_visible('#fBrownout') and await bp.is_visible('#fDisconnect'), txt[:300])
+        await bp.screenshot(path=str(SHOTS / "v6_bench_pi.png"))
+        await bp.select_option('#devSel', 'esp32-1'); await bp.wait_for_function("window.__bench && window.__bench.board === 'esp32' && document.querySelector('[data-part=LED1]')")
+        txt = await bp.inner_text('body')
+        check("工作台頁（虛擬 ESP32）：切換設備後標示「協定模型，不是實際韌體」、腳位寫 GPIO23、有 RESET；網址改成 ?d=esp32-1",
+              '協定模型' in await bp.inner_text('#kindTag') and '不是實際韌體' in await bp.inner_text('#kindTag') and 'GPIO23 → 220 Ω' in txt and 'GPIO4 → GND' in txt and await bp.is_visible('#fReset') and bp.url.endswith('?d=esp32-1'), txt[:300])
+        await bp.screenshot(path=str(SHOTS / "v6_bench_esp32.png"))
+        check("第 6 階段流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    finally:
+        await b.close(); srv.terminate()
+        try: srv.wait(5)
+        except Exception: srv.kill()
+
 async def bench_flow(p):
     """雲端虛擬硬體第 2 階段：兩個介面同時開著——DofLab（左）與虛擬設備的工作台頁（右，另一個程序提供的網頁）。
     工作台的按鈕、拉桿都在工作台頁上用滑鼠操作；DofLab 那邊只看得到 Firmata 回報的量測與回讀。"""
@@ -484,7 +590,12 @@ async def bench_flow(p):
         t0 = part(state(), 'LED1')['toggles']
         for i in range(4):
             await hold(bp, 'BTN1', 100); await bp.wait_for_timeout(350)
-        await bp.wait_for_timeout(800)
+        # 等狀態，不用固定延遲：按鈕都已送進引擎、之後再過 100 ms 模擬時間（去彈跳），沒有在途命令、最新的命令已確認，工作台的 LED 和命令一致
+        try:
+            await pg.wait_for_function("doflab.twin.view('BTN1.pressed').measured && doflab.twin.view('BTN1.pressed').measured.v === false && !(doflab.hw.btnQ||[]).length", timeout=5000)
+            t_sim = await ev(pg, "doflab.sim.time")
+            await pg.wait_for_function("(v=>doflab.sim.time>=%d+100 && doflab.twin.pending.length===0 && v.commanded && v.ack && v.ack.id===v.commanded.id)(doflab.twin.view('LED1.state'))" % t_sim, timeout=8000)
+        except Exception: pass
         n = part(state(), 'LED1')['toggles'] - t0
         check("快速點 4 下（每下 100 ms，比畫面一幀還短）→ 工作台上的 LED 也正好切換 4 次，沒有漏掉", n == 4, str(n))
         await pg.click('#simRun'); await pg.click('#hwDisc'); await pg.wait_for_timeout(300); srv.kill(); srv.wait()
@@ -522,10 +633,10 @@ async def bench_flow(p):
             await pg.click('#armSavePose'); await pg.wait_for_timeout(150)
         check("手臂頁記下兩個姿態 A、B（模擬中）", await ev(pg, "doflab.p.arm.poses.map(x=>x.name).join()") == 'A,B')
         await connect(pg)
+        # 記錄 DofLab 經驅動送出的每一筆伺服命令（腳位、角度）：只是旁聽，不改變送出的內容；在授權之前裝好（V2.13 起授權時就會先送目前的角度）；Twin Core 的紀錄只留最近 500 筆，不夠用
+        await ev(pg, "(()=>{const d=doflab.hw.driver, w=d.write.bind(d); window.__sent=[]; d.write=(c,o,b)=>{ if(o.kind==='servo') window.__sent.push([o.num, Math.round(c.v)]); return w(c,o,b); };})()")
         for cb in await pg.locator('[data-chk]').all(): await cb.check()
         await pg.click('#hwAuth'); await pg.wait_for_timeout(200)
-        # 記錄 DofLab 經驅動送出的每一筆伺服命令（腳位、角度）：只是旁聽，不改變送出的內容；在開始送出之前裝好；Twin Core 的紀錄只留最近 500 筆，不夠用
-        await ev(pg, "(()=>{const d=doflab.hw.driver, w=d.write.bind(d); window.__sent=[]; d.write=(c,o)=>{ if(o.kind==='servo') window.__sent.push([o.num, Math.round(c.v)]); return w(c,o); };})()")
         await pg.click('#t-arm'); await pg.wait_for_timeout(500); await pg.check('#armStream'); await pg.wait_for_timeout(300)
         check("手臂頁：授權後勾選「把手臂命令送到設備」，模式為「虛擬設備 · 受控寫入」", await ev(pg, "doflab.arm.stream && doflab.twin.mode==='hw-control' && doflab.twin.conn.virtual"))
         BQ = "window.__bench.bench.parts.find(p=>p.type==='arm').joints.map(j=>j.q)"
@@ -572,7 +683,7 @@ async def bench_flow(p):
         await pg.click('#armRun')
         check("自動序列（A → B → 預備姿態 → A）：DofLab 每停在一個姿態，工作台上的手臂都到達同一個姿態（≤ 1.5°）", all(x['benchMs'] is not None for x in seq), json.dumps(seq))
         await quiet(w0, n0); st = state(); sent = (await servo_cmds())[n0:]; got = device_writes(st)
-        check("自動序列的命令也一個不少、順序相同（設備端的寫入筆數與內容和 DofLab 送出的一致）", len(sent) > 10 and st['traffic']['writeCount'] - w0 == len(sent) and got == ((await servo_cmds())[-len(got):]), json.dumps([len(sent), st['traffic']['writeCount'] - w0]))
+        check("自動序列的命令也一個不少、順序相同（設備端的寫入筆數與內容和 DofLab 送出的一致）", len(sent) > 10 and st['traffic']['writeCount'] - w0 == len(sent) and got == ((await servo_cmds())[-len(got):]), json.dumps([len(sent), st['traffic']['writeCount'] - w0, got[-6:], (await servo_cmds())[-6:]]))
         print('ARMSYNC', json.dumps({'manual': res, 'sequence': seq}, ensure_ascii=False))
         await pg.click('#t-observe'); await pg.click('#hwDisc'); await pg.wait_for_timeout(300); srv.kill(); srv.wait()
 
@@ -585,7 +696,17 @@ async def bench_flow(p):
         except Exception: ok = False
         check("唯讀：在工作台頁把物體拉到 30 cm → DofLab 的量測層顯示 30 cm（經 DofLabFirmata 量回波），設備端沒有收到寫入", ok and state()['traffic']['writeCount'] == 0)
         for cb in await pg.locator('[data-chk]').all(): await cb.check()
-        await pg.click('#hwAuth'); await pg.wait_for_timeout(200); await pg.click('#simRun'); await pg.wait_for_timeout(300)
+        # 授權時先送伺服目前的角度（V2.13）：設備的第一個脈衝就是畫面上的角度，不會先轉到 Servo 函式庫預設的 1500 µs（約 93°）
+        urllib.request.urlopen(api + '/trace?clear=1', timeout=5).read()
+        v0 = await ev(pg, "doflab.twin.view('SERVO1.angle').simulated.v")
+        await pg.click('#hwAuth')
+        try: await pg.wait_for_function("(v=>v.commanded && v.commanded.src==='authorize' && v.ack && v.ack.id===v.commanded.id)(doflab.twin.view('SERVO1.angle'))", timeout=5000); ok = True
+        except Exception: ok = False
+        await bp.wait_for_timeout(100)
+        us = [e['us'] for e in json.loads(urllib.request.urlopen(api + '/trace', timeout=5).read())['trace'] if e.get('part') == 'SERVO1' and 'us' in e]
+        check("授權受控寫入時先送伺服目前的角度：設備收到畫面上的角度並回讀確認，第一個脈衝就是這個角度（不是預設的 1500 µs）",
+              ok and us and abs(us[0] - (544 + round(v0) * 1856 / 180)) <= 3 and abs(us[0] - 1500) > 10, json.dumps([v0, us[:4]]))
+        await pg.click('#simRun'); await pg.wait_for_timeout(300)
         await bp.locator('#us-US1').fill('12'); await bp.locator('#us-US1').dispatch_event('input')
         try:
             await pg.wait_for_function("(v=>v.ack && v.ack.v===152)(doflab.twin.view('SERVO1.angle'))", timeout=6000)
@@ -691,18 +812,32 @@ async def faults_flow(p):
         check("接回後按一下：DofLab 顯示「已偵測到變化」", await wf(pg, "document.querySelector('#saw-BTN1').textContent.includes('已偵測到變化')", 5000))
 
         # ---------- 5. 設備重置（RESET）與瞬間斷電 ----------
-        await authorize(pg); await pg.click('#simRun'); await pg.wait_for_timeout(500)
-        for k in range(3):   # 按一下切換：按到工作台的 LED 亮為止（切換狀態接著前面的操作）
-            if part(state(), 'LED1')['on']: break
-            await hold(bp, 'BTN1', 250); await bp.wait_for_timeout(600)
-        await wf(pg, "(v=>v.ack && v.ack.v===1)(doflab.twin.view('LED1.state'))", 5000)
+        await authorize(pg); await pg.click('#simRun')
+        # 等「安靜」：收到的按鈕都已送進引擎、之後再過 100 ms 模擬時間（去彈跳），沒有在途命令、最新的命令已確認。
+        # 不能用固定延遲：headless 繪圖一幀 0.3–0.6 秒時，LED 可能先因為授權後的命令亮起，按下造成的切換（→ 0）還沒送出（完整測試時發生過）
+        async def settled():
+            t = await ev(pg, "(async()=>{ const q=()=>!(doflab.hw.btnQ||[]).length; for(let i=0;i<200&&!q();i++) await new Promise(r=>setTimeout(r,25)); return doflab.sim.time })()")
+            return await wf(pg, "(v=>doflab.sim.time>=%d+100 && !(doflab.hw.btnQ||[]).length && doflab.twin.pending.length===0 && v.commanded && v.ack && v.ack.id===v.commanded.id)(doflab.twin.view('LED1.state'))" % t, 8000)
+        for k in range(3):   # 按一下切換：按到 LED 的命令是 1 而且工作台的 LED 亮為止（切換狀態接著前面的操作）
+            await settled()
+            if await ev(pg, "doflab.twin.view('LED1.state').commanded.v") in (1, True) and part(state(), 'LED1')['on']: break
+            await hold(bp, 'BTN1', 250)
+            await wf(pg, "doflab.twin.view('BTN1.pressed').measured && doflab.twin.view('BTN1.pressed').measured.v === false", 4000)
         on0 = part(state(), 'LED1')['on']; w0 = state()['traffic']['writeCount']
         await bp.click('#fReset')
         ok = await wf(pg, "doflab.twin.mode==='hw-read' && doflab.events.some(e=>/設備重新開機/.test(e.text))", 6000)
         pill = await pg.inner_text('#modePill')
-        check("按 RESET：DofLab 偵測到重新開機 → 撤銷寫入授權、回到「虛擬設備 · 唯讀」、模擬暫停，事件紀錄寫明原因", on0 and ok and pill.endswith('虛擬設備 · 唯讀') and not await ev(pg, "doflab.sim.running"), pill)
+        check("按 RESET：DofLab 偵測到重新開機 → 撤銷寫入授權、回到「虛擬設備 · 唯讀」、模擬暫停，事件紀錄寫明原因", on0 and ok and pill.endswith('虛擬設備 · 唯讀') and not await ev(pg, "doflab.sim.running"), json.dumps([on0, ok, pill, await ev(pg, "doflab.sim.running")], ensure_ascii=False))
         st = state()
-        check("重新開機後：晶片的 D13 回到輸入、工作台的 LED 熄滅，DofLab 沒有重送任何命令", st['pins']['13'] == 'input' and not part(st, 'LED1')['on'] and st['traffic']['writeCount'] == w0)
+        check("重新開機後：晶片的 D13 回到輸入、工作台的 LED 熄滅，DofLab 沒有重送任何命令", st['pins']['13'] == 'input' and not part(st, 'LED1')['on'] and st['traffic']['writeCount'] == w0, json.dumps([st['pins']['13'], part(st, 'LED1'), w0, st['traffic']['writeCount'], st['traffic']['writes'][-4:], st['resets'], st['devMs'], json.loads(urllib.request.urlopen(api + '/trace', timeout=5).read())['resets'][-2:], await ev(pg, "doflab.events.slice(-14).map(e=>(e.simT!==undefined?e.simT+' ':'')+e.text)")], ensure_ascii=False))
+        # 產品規則本身（和上一項的時序無關）：依設備時間，重置之後設備沒有收到任何寫入
+        rs = [r for r in json.loads(urllib.request.urlopen(api + '/trace', timeout=5).read())['resets'] if r['flags'] == 2]; t_reset = rs[-1]['devMs'] if rs else None   # 2 = EXTRF（RESET 腳）；之後 Optiboot 以看門狗重置進入程式
+        late = [w for w in st['traffic']['writes'] if t_reset is not None and w.get('devMs', 0) >= t_reset]
+        check("重新開機後（依設備時間）：重置之後設備沒有收到任何寫入", t_reset is not None and not late, json.dumps([t_reset, late]))
+        try: await pg.wait_for_function("document.querySelector('#vdevPresence') && document.querySelector('#vdevPresence').textContent.includes('沒有人控制')", timeout=5000); ok = True
+        except Exception: ok = False
+        ok = ok and await wf(bp, "document.querySelector('#holder') && document.querySelector('#holder').textContent === '沒有人'", 5000)
+        check("重新開機後：控制權也交出去（DofLab 顯示「沒有人控制」，工作台頁的控制權是「沒有人」），別人才能取得", ok, await pg.inner_text('#vdevPresence') if await pg.locator('#vdevPresence').count() else '')
         await shots('f5_reboot.png', pg, bp)
         await hold(bp, 'BTN1', 300)
         check("重新開機後唯讀觀測自動恢復：在工作台頁按 BTN1，DofLab 量到按下", await wf(pg, "doflab.twin.log.some(e=>e.type==='measure' && e.name==='BTN1.pressed' && e.v===true && e.t > (doflab.twin.log.filter(x=>x.type==='reboot').pop()||{t:0}).t)", 5000))
@@ -888,7 +1023,12 @@ async def vmulti_flow(p):
         await ca.close()
         try: await B.wait_for_function("document.querySelector('#vdevPresence').textContent.includes('1 個連線') && document.querySelector('#vdevPresence').textContent.includes('沒有人控制')", timeout=10000); ok = True
         except Exception: ok = False
-        check("中斷後控制權釋放：老師關掉分頁，學生看到控制權釋放（控制者中斷連線）、只剩 1 個連線", ok and await ev(B, "doflab.events.some(e=>/控制權已釋放（控制者中斷連線）/.test(e.text))"))
+        pin_in = False   # 主機把關掉輸出的位元組交給虛擬晶片（另一個執行緒）處理：等腳位狀態，不要只讀一次
+        for i in range(50):
+            if state()['pins']['13'] == 'input': pin_in = True; break
+            await asyncio.sleep(0.1)
+        check("中斷後控制權釋放：老師關掉分頁，學生看到控制權釋放（控制者中斷連線，主機已關掉他的輸出）、只剩 1 個連線；設備的 D13 回到輸入（斷線保護）",
+              ok and await ev(B, "doflab.events.some(e=>/控制權已釋放（控制者中斷連線，主機已關掉他的輸出）/.test(e.text))") and pin_in, json.dumps([ok, state()['pins']['13'], await ev(B, "doflab.events.filter(e=>/控制/.test(e.text)).map(e=>e.text)")], ensure_ascii=False)[:400])
         await B.wait_for_timeout(200)
         check("中斷後控制權釋放：學生的授權按鈕可以按了", await B.locator('#hwAuth').is_enabled())
         await B.click('#hwAuth'); await B.wait_for_function("doflab.twin.mode==='hw-control'", timeout=8000)
@@ -1484,6 +1624,7 @@ async def main():
             if on('upload'): await upload_flow(p)
             if on('vupload'): await vupload_flow(p)
             if on('vmulti'): await vmulti_flow(p)
+            if on('vboards'): await vboards_flow(p)
             if on('pideploy'): await pi_deploy(p)
             if on('mobile'): await mobile(p)
             if on('dark'): await dark(p)

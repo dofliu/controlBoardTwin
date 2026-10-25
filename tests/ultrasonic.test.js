@@ -184,7 +184,7 @@ test('虛擬 Uno 執行真實機器碼：每 60 ms 一個 10 µs 觸發脈衝；
   s.cm = 10; u.runMs(150); assert.strictEqual(u.isHigh(12), true, '10 cm：紅燈亮');
 });
 
-test('虛擬 Uno 執行真實機器碼：感應垃圾桶蓋、停車場柵欄、距離指針的伺服脈寬（量測精度約 1 cm）', { skip: !hasCli && '沒有 arduino-cli', timeout: 400000 }, () => {
+test('虛擬 Uno 執行真實機器碼：感應垃圾桶蓋、停車場柵欄、距離指針的伺服脈寬（距離量測和模擬相同，指針誤差 ≤ 1°）', { skip: !hasCli && '沒有 arduino-cli', timeout: 400000 }, () => {
   let { u, s } = unoWith('smart-bin'); let pulses = servoWidth(u, 9);
   const angle = (cm, ms) => { s.cm = cm; pulses.length = 0; u.runMs(ms || 300); return angleOf(pulses[pulses.length - 1]); };
   assert.ok(Math.abs(angle(80) - 10) < 3, '80 cm：蓋子關著（10°）'); assert.ok(Math.abs(angle(9) - 100) < 3, '9 cm：打開（100°）'); assert.ok(Math.abs(angle(40) - 10) < 3, '手離開：關上');
@@ -193,6 +193,29 @@ test('虛擬 Uno 執行真實機器碼：感應垃圾桶蓋、停車場柵欄、
   assert.ok(Math.abs(angle(6) - 90) < 3, '6 cm：柵欄抬到 90°'); assert.strictEqual(u.isHigh(13), true, '綠燈亮');
   ({ u, s } = unoWith('dist-gauge')); pulses = servoWidth(u, 9);
   const worst = [];
-  for (const cm of [5, 10, 17, 25, 33, 41, 50]) { const want = Math.trunc((cm - 5) * (0 - 180) / 45) + 180; const got = angle(cm); worst.push(Math.abs(got - want)); assert.ok(Math.abs(got - want) <= 6, `${cm} cm：指針 ${got.toFixed(1)}°（應為 ${want}°）`); }
-  console.log(`# 距離指針：7 個距離的最大角度誤差 ${Math.max(...worst).toFixed(1)}°（含伺服脈寬量化；1 cm ≈ 4°）`);
+  for (const cm of [5, 10, 17, 25, 33, 41, 50]) { const want = Math.trunc((cm - 5) * (0 - 180) / 45) + 180; const got = angle(cm); worst.push(Math.abs(got - want)); assert.ok(Math.abs(got - want) <= 1, `${cm} cm：指針 ${got.toFixed(1)}°（應為 ${want}°）`); }
+  console.log(`# 距離指針：7 個距離的最大角度誤差 ${Math.max(...worst).toFixed(1)}°（含伺服脈寬量化；1 cm ≈ 4°，所以距離沒有量錯）`);
+});
+
+// V2.13：產生的程式改用 ECHO 腳位變化中斷量回波寬度。之前每一輪迴圈看一次 ECHO，量到的寬度受迴圈裡其他工作影響：
+// 距離指針（有伺服）約 42 % 少 1 cm、倒車雷達（LED 閃爍）約 15 % 多 1 cm、距離警示燈（只有 LED）沒有誤差（虛擬 Uno 實測，各 1080 次）
+test('虛擬 Uno 執行真實機器碼：隨機距離 × 三種迴圈工作量（只有 LED、有伺服、LED 閃爍），每一次量到的距離都等於工作台的距離；回波寬度誤差在 12 µs 以內', { skip: !hasCli && '沒有 arduino-cli', timeout: 600000 }, () => {
+  for (const id of ['dist-alarm', 'dist-gauge', 'parking-radar']) {
+    const hex = build(DL.codegen.generate(solved(id, 'uno')).code);
+    const nm = execFileSync('avr-nm', [hex.replace(/\.hex$/, '.elf')]).toString();
+    const addr = n => { const m = new RegExp('^([0-9a-f]+) \\w ' + n + '$', 'm').exec(nm); assert.ok(m, '找不到 ' + n); return parseInt(m[1], 16) - 0x800000; };
+    const aCm = addr('us1Cm'), aW = addr('us1Width');
+    const u = new VirtualUno(hex); const s = u.attachSonar(7, 8, 100); u.runMs(300);
+    const rd16 = a => { const v = u.cpu.data[a] | u.cpu.data[a + 1] << 8; return v > 32767 ? v - 65536 : v; };
+    const rd32 = a => (u.cpu.data[a] | u.cpu.data[a + 1] << 8 | u.cpu.data[a + 2] << 16 | u.cpu.data[a + 3] << 24) >>> 0;
+    let got = [], last = u.isHigh(7); u.pinWatchers.push(() => { const h = u.isHigh(7); if (h && !last) got.push([rd16(aCm), rd32(aW)]); last = h; });
+    let rnd = 11; const rand = () => (rnd = (rnd * 1103515245 + 12345) % 2147483648) / 2147483648;
+    let n = 0, worstUs = 0;
+    for (let k = 0; k < 40; k++) {
+      const cm = 3 + Math.floor(rand() * 60); s.cm = cm; u.runMs(150 + rand() * 13); got = []; u.runMs(360);
+      for (const [v, w] of got.slice(1)) { n++; assert.strictEqual(v, cm, `${id}：工作台 ${cm} cm，程式量到 ${v} cm`); worstUs = Math.max(worstUs, Math.abs(w - (cm * 58 + 29))); }
+    }
+    assert.ok(n >= 150 && worstUs <= 12, `${id}：${n} 次量測，回波寬度最大誤差 ${worstUs} µs`);
+    console.log(`# ${id}：${n} 次量測全部正確，回波寬度最大誤差 ${worstUs} µs`);
+  }
 });

@@ -37,4 +37,24 @@ function netConfig(x) {
   return { delayMs: n(x.delayMs, 0, 5000, '延遲（ms）'), jitterMs: n(x.jitterMs, 0, 5000, '抖動（ms）'), loss: n(x.loss, 0, 1, '掉包比例'), dir };
 }
 
-module.exports = { Lane, netConfig };
+// 一台設備的網路故障設定（虛擬 Uno、虛擬 ESP32、虛擬樹莓派共用）：套用到目前的每個連線，之後的新連線也沿用
+class NetHost {
+  constructor() { this.links = new Set(); this.net = null; this.faultLog = []; }
+  setNet(cfg) {
+    this.net = cfg; for (const l of this.links) this.applyNet(l);
+    this.faultLog.push({ at: Date.now(), net: cfg }); if (this.faultLog.length > 50) this.faultLog.shift();
+  }
+  applyNet(l) {
+    if (!l) return; const c = this.net;
+    l.up.set(c && c.dir !== 'down' ? c : null); l.down.set(c && c.dir !== 'up' ? c : null);
+  }
+  // 各連線的佇列統計加總
+  netState() {
+    const sum = k => { if (!this.links.size) return null; const o = { frames: 0, dropped: 0, delayed: 0 }; for (const l of this.links) for (const f of Object.keys(o)) o[f] += l[k].stats[f]; return o; };
+    return { net: this.net, up: sum('up'), down: sum('down') };
+  }
+  // 像網路線被拔掉：不送關閉訊息，直接斷（每個連線）
+  cutAll() { if (!this.links.size) return false; this.faultLog.push({ at: Date.now(), fault: 'disconnect' }); for (const l of [...this.links]) l.terminate(); return true; }
+}
+
+module.exports = { Lane, netConfig, NetHost };

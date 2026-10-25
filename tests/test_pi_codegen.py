@@ -112,9 +112,9 @@ class PiCodegen(unittest.TestCase):
             def val(k):
                 pin = led_pins[k]
                 if k.startswith("SERVO"):
-                    # 由 PWM 脈寬換回角度（0.5–2.4 ms 對應 0–180°）
+                    # 由 PWM 脈寬換回角度（0.544–2.4 ms 對應 0–180°，和 Uno／ESP32 的 Servo 函式庫相同）
                     w = pin.state * 20.0 if pin.frequency else None
-                    return None if w is None else round((w - 0.5) * 180 / 1.9)
+                    return None if w is None else round((w - 0.544) * 180 / 1.856)
                 return 1 if pin.state else 0
             fake = types.ModuleType("time"); fake.monotonic = lambda: clock["ms"] / 1000.0
             def sleep(s):
