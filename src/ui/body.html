@@ -1,6 +1,6 @@
 <header class="bar">
   <div class="wrap">
-    <div class="brand"><span class="logo" aria-hidden="true"></span><b>DofLab</b><span class="ver">V2.13 原型</span></div>
+    <div class="brand"><span class="logo" aria-hidden="true"></span><b>DofLab</b><span class="ver">V2.14 原型</span></div>
     <div class="proj"><input id="projName" aria-label="專案名稱" maxlength="80"><span id="projMeta" class="meta">r0</span></div>
     <div class="status">
       <span class="chip" id="boardChip">—</span>
@@ -160,8 +160,22 @@
         </div>
       </div>
       <div class="card" id="traceCard">
-        <h3>訊號波形（最近 6 秒）</h3>
-        <div class="bd"><canvas class="trace" id="trace" aria-label="訊號波形"></canvas></div>
+        <h3>訊號波形 <span class="muted" id="waveTitle" style="font-weight:500;letter-spacing:0">（最近 6 秒）</span></h3>
+        <div class="bd">
+          <div class="wave-bar">
+            <label for="waveSpan">範圍<select class="inp" id="waveSpan" style="width:auto"><option value="2000">2 秒</option><option value="6000" selected>6 秒</option><option value="20000">20 秒</option><option value="60000">60 秒</option></select></label>
+            <button class="btn sm" id="wavePause" aria-pressed="false" title="凍結畫面；背景繼續記錄，可以往回看">❚❚ 暫停畫面</button>
+            <input type="range" id="waveBack" min="0" max="0" value="0" step="1" hidden aria-label="往回看（秒）"><span class="muted" id="waveBackLab"></span>
+            <button class="btn sm" id="waveCapA" title="把畫面上這一段存成 A">擷取為 A</button><button class="btn sm" id="waveCapB" title="把畫面上這一段存成 B，和 A 上下並排比較">擷取為 B</button>
+            <button class="btn sm" id="waveSave" disabled title="把 A、B 存成檔案">存檔</button><button class="btn sm" id="waveOpen" title="開啟存過的 A、B">開啟…</button><input type="file" id="waveFile" accept=".json,application/json" hidden>
+          </div>
+          <canvas class="trace" id="trace" aria-label="訊號波形"></canvas>
+          <div id="waveCmp" hidden>
+            <div><div class="lab" id="waveLabA"></div><canvas class="trace cmp" id="waveA" aria-label="擷取 A 的波形"></canvas></div>
+            <div><div class="lab" id="waveLabB"></div><canvas class="trace cmp" id="waveB" aria-label="擷取 B 的波形"></canvas></div>
+            <div class="row"><button class="btn sm" id="waveClear">清除比較</button><span class="hint">A、B 上下並排：時間軸都從擷取的起點算起、刻度相同；粉紅色的短線與「#序號」是訊號測試的每一次寫入。</span></div>
+          </div>
+        </div>
       </div>
     </div>
     <div class="col">
@@ -176,6 +190,10 @@
       <div class="card">
         <h3>真機連線 <span id="drvStatus" class="status-tag st-unver"></span></h3>
         <div class="bd" id="hwBody"></div>
+      </div>
+      <div class="card" id="tsigCard">
+        <h3>訊號測試 <span class="muted" style="font-weight:500;letter-spacing:0">每次寫入都換一個值，螢幕與示波器上看得出變化</span></h3>
+        <div class="bd" id="tsigBody"></div>
       </div>
       <div class="card">
         <h3>事件與錯誤 <button class="btn sm" id="clearEvents">清除</button></h3>

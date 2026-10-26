@@ -1,6 +1,6 @@
 {
   "name": "doflab",
-  "version": "2.13.0",
+  "version": "2.14.0",
   "description": "DofLab：多板教學平台（Uno／ESP32／Raspberry Pi 4B）— 電路配置、行為積木、程式產生、模擬與數位孿生",
   "scripts": {
     "build": "node build.js",

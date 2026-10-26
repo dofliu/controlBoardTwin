@@ -57,6 +57,14 @@ table.j { border-collapse:collapse; font-size:.84rem; width:100% }
 table.j th, table.j td { text-align:right; padding:4px 6px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums } table.j th:first-child, table.j td:first-child { text-align:left }
 .log { font-family:var(--font-mono); font-size:.78rem; color:var(--muted); max-height:160px; overflow:auto; margin:0; white-space:pre-wrap }
 .empty { color:var(--muted) }
+/* 自動產生輸入（V2.14）：讓 DofLab 每次讀到的值都不一樣 */
+.auto { display:grid; gap:6px; border-top:1px dashed var(--line); padding-top:8px; font-size:.8rem; color:var(--muted) }
+.auto .row { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:end }
+.auto label { display:grid; gap:2px }
+.auto input, .auto select { font:inherit; font-size:.86rem; width:5.2em; padding:2px 5px; border:1px solid var(--line); border-radius:6px; background:var(--surface-2); color:var(--ink) }
+.auto select { width:auto }
+.auto .st { font-family:var(--font-mono); color:var(--ink) }
+.auto .st.on { color:var(--virt); font-weight:700 }
 </style>
 </head>
 <body>
@@ -88,7 +96,7 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const qs = new URLSearchParams(location.search);
 let dev = qs.get('d'); const built = {}; let lastState = null;
-const post = (q) => fetch(`/api/devices/${dev}/bench`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(q) }).then(r => r.json()).then(s => { if (s && s.error) console.warn(s.error); });
+const post = (q) => fetch(`/api/devices/${dev}/bench`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(q) }).then(r => r.json()).then(s => { if (s && s.error) { console.warn(s.error); if (q.action === 'auto') alert(s.error); } });
 const f1 = x => x === null || x === undefined ? '—' : (Math.round(x * 10) / 10).toFixed(1);
 // 腳位名稱依板型：Uno 是 D0–D13／A0–A5，ESP32 與樹莓派是 GPIO 編號（第 6 階段）
 let board = 'uno';
@@ -199,6 +207,23 @@ function faultControls(el, p) {
   el.querySelector('[data-k=wire]').addEventListener('click', e => post({ part: p.id, action: e.target.dataset.cut === '1' ? 'plug' : 'unplug' }));
   const st = el.querySelector('[data-k=stuck]'); if (st) st.addEventListener('click', () => post({ part: p.id, action: st.dataset.on === '1' ? 'unstuck' : 'stuck' }));
 }
+// 自動產生輸入（V2.14）：按鈕只有方波（按下／放開交替）；超音波、光敏可以鋸齒、三角、方波
+const AUTO_DEF = { ultrasonic: { unit: 'cm', min: 5, max: 100, step: 5, every: 200 }, ldr: { unit: '%', min: 0, max: 100, step: 10, every: 200 }, button: { every: 500 } };
+const PATTERN = { ramp: '鋸齒（遞增，到頂回起點）', triangle: '三角（來回）', square: '方波（兩個值交替）' };
+function autoControls(el, p) {
+  const d = AUTO_DEF[p.type]; if (!d || p.auto === undefined) return;
+  const num = (k, lab, v) => `<label>${lab}<input type="number" data-k="${k}" value="${v}" aria-label="${p.id} 自動變化：${lab}"></label>`;
+  const pats = p.type === 'button' ? '<option value="square">按下／放開交替</option>' : Object.entries(PATTERN).map(([k, t]) => `<option value="${k}">${t}</option>`).join('');
+  el.insertAdjacentHTML('beforeend', `<div class="auto"><b>自動變化</b><div class="row"><label>方式<select data-k="ap" aria-label="${p.id} 自動變化的方式">${pats}</select></label>${p.type === 'button' ? '' : num('amin', `從（${d.unit}）`, d.min) + num('amax', `到（${d.unit}）`, d.max) + num('astep', '每次變化', d.step)}${num('aevery', p.type === 'button' ? '每幾 ms 切換' : '每幾 ms 一次', d.every)}</div><div class="row"><button class="sm" type="button" data-k="ago">開始自動</button><button class="sm" type="button" data-k="astop">停止</button><span class="st" data-k="ast"></span></div></div>`);
+  const v = k => { const i = el.querySelector(`[data-k=${k}]`); return i ? +i.value : undefined; };
+  el.querySelector('[data-k=ago]').addEventListener('click', () => post({ part: p.id, action: 'auto', pattern: el.querySelector('[data-k=ap]').value, min: v('amin'), max: v('amax'), step: v('astep'), everyMs: v('aevery') }));
+  el.querySelector('[data-k=astop]').addEventListener('click', () => post({ part: p.id, action: 'auto', pattern: 'off' }));
+}
+function autoUpdate(el, p) {
+  const st = el.querySelector('[data-k=ast]'); if (!st) return; const a = p.auto, d = AUTO_DEF[p.type];
+  st.className = 'st' + (a ? ' on' : '');
+  st.textContent = !a ? '（目前是手動）' : p.type === 'button' ? `自動：每 ${a.everyMs} ms 按下／放開 · 第 ${a.seq} 步` : `自動：${PATTERN[a.pattern].split('（')[0]} ${a.min}→${a.max} ${d.unit}，每 ${a.everyMs} ms ${a.pattern === 'square' ? '交替' : '變化 ' + a.step} · 第 ${a.seq} 步`;
+}
 function faultUpdate(el, p) {
   if (p.type === 'arm') return;
   const w = el.querySelector('[data-k=wire]'); w.dataset.cut = p.unplugged ? '1' : '0'; w.textContent = p.unplugged ? `接回 ${p.id} 的線` : `拔掉 ${p.id} 的線`;
@@ -212,12 +237,12 @@ function render(s) {
   $('#title').textContent = `虛擬工作台 · ${s.id}`;
   $('#meta').innerHTML = `<span>工作台 <b>${s.bench.id}</b>（${s.bench.name}）</span><span>韌體 <b id="fwName">${esc(s.firmware.name)}</b>${s.uploads ? `（已上傳 ${s.uploads} 次）` : ''}</span><span>晶片時間 <b>${(s.devMs / 1000).toFixed(1)} s</b></span><span>速度 <b>${s.realtime ?? '—'}×</b> 即時</span><span>DofLab <b id="linked">${s.hub && s.hub.links.length ? `${s.hub.links.length} 個連線（${s.hub.links.map(l => esc(l.name)).join('、')}）` : '沒有連線'}</b></span><span>控制權 <b id="holder">${s.hub && s.hub.holder ? esc(s.hub.holder.name) : '沒有人'}</b></span>`;
   const n = $('#note'); n.hidden = !s.bench.note; n.textContent = s.bench.note || '';
-  for (const p of s.bench.parts) { const k = KIND[p.type]; if (!k) continue; if (!built[p.id]) { built[p.id] = k.build(p); faultControls(built[p.id], p); } k.update(built[p.id], p); faultUpdate(built[p.id], p); }
+  for (const p of s.bench.parts) { const k = KIND[p.type]; if (!k) continue; if (!built[p.id]) { built[p.id] = k.build(p); autoControls(built[p.id], p); faultControls(built[p.id], p); } k.update(built[p.id], p); autoUpdate(built[p.id], p); faultUpdate(built[p.id], p); }
   const f = s.faults || {}, nf = f.net, cut = s.bench.parts.filter(p => p.unplugged).map(p => p.id + ' 拔線'), stuck = s.bench.parts.filter(p => p.stuck).map(p => p.id + ' 卡住');
   const list = (nf ? [`網路：延遲 ${nf.delayMs} ± ${nf.jitterMs} ms、掉包 ${Math.round(nf.loss * 100)} %（${{ both: '兩個方向', up: '介面 → 設備', down: '設備 → 介面' }[nf.dir]}）`] : []).concat(cut, stuck);
   $('#fState').textContent = list.length ? '目前：' + list.join('；') : '（目前沒有故障）'; $('#fState').className = 'stat' + (list.length ? ' on' : '');
   $('#fStats').textContent = f.up ? `已送 介面→設備 ${f.up.frames} 筆（丟 ${f.up.dropped}）、設備→介面 ${f.down.frames} 筆（丟 ${f.down.dropped}）；重新開機 ${s.resets} 次` : `重新開機 ${s.resets} 次`;
-  $('#log').textContent = s.bench.log.slice().reverse().map(e => `${(e.devMs / 1000).toFixed(3)} s  ${e.part} ${e.action}${e.light !== undefined ? ' ' + e.light + ' %' : ''}${e.cm !== undefined ? ' ' + (e.cm === null ? '移走物體' : e.cm + ' cm') : ''}${e.bounces ? '（彈跳 ' + e.bounces + ' 次）' : ''}${e.action === 'upload' ? '：收到新程式（' + e.pages + ' 頁）' + e.firmware : ''}`).join('\n') || '（還沒有操作）';
+  $('#log').textContent = s.bench.log.slice().reverse().map(e => `${(e.devMs / 1000).toFixed(3)} s  ${e.part} ${e.action === 'auto' ? (e.seq ? `自動 #${e.seq}` : `開始自動（${PATTERN[e.pattern] ? PATTERN[e.pattern].split('（')[0] : e.pattern}，每 ${e.everyMs} ms）`) : e.action === 'auto-off' ? `停止自動（${e.why}）` : e.action + (e.auto ? ` 自動 #${e.seq}` : '')}${e.light !== undefined ? ' ' + e.light + ' %' : ''}${e.cm !== undefined ? ' ' + (e.cm === null ? '移走物體' : e.cm + ' cm') : ''}${e.bounces ? '（彈跳 ' + e.bounces + ' 次）' : ''}${e.action === 'upload' ? '：收到新程式（' + e.pages + ' 頁）' + e.firmware : ''}`).join('\n') || '（還沒有操作）';
 }
 // 設備選單：同一台主機上有好幾台虛擬設備時（--pi、--esp32）切換；切換時重建元件卡片
 async function devices() {

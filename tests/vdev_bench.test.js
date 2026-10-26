@@ -170,11 +170,11 @@ test('授權時先送伺服目前的角度（V2.13）：真韌體在虛擬 Uno �
   }
 });
 
-test('斷線保護（DofLabFirmata 1.2，真韌體）：有心跳時輸出一直維持；心跳停了 3 秒 → LED 熄滅、D13 回到輸入、DofLab 收到通知；伺服停止送脈衝但不會轉到 0°', { timeout: 60000 }, async () => {
+test('斷線保護（DofLabFirmata 1.2 起，真韌體）：有心跳時輸出一直維持；心跳停了 3 秒 → LED 熄滅、D13 回到輸入、DofLab 收到通知；伺服停止送脈衝但不會轉到 0°', { timeout: 60000 }, async () => {
   let R = await rig('hold-blink');
   try {
     const guards = []; R.drv.hooks.onGuard = w => guards.push(w);
-    assert.deepStrictEqual(R.drv.fwVersion, [1, 2]);
+    assert.deepStrictEqual(R.drv.fwVersion, [1, 3]);
     R.twin.define('LED1.state', { feedback: false }); R.twin.authorize(['LED1.state']);
     const out = { signal: 'LED1.state', num: 13, kind: 'digital' };
     await R.drv.authorize([out]); const c = R.twin.command('LED1.state', 1).cmd; await R.drv.write(c, out);
@@ -201,7 +201,7 @@ test('斷線保護（DofLabFirmata 1.2，真韌體）：有心跳時輸出一直
   } finally { await R.close(); }
 });
 
-test('連到舊版 DofLabFirmata 1.1（沒有斷線保護）：DofLab 提醒更新到 1.2；1.1 的輸出在心跳停了之後仍停在最後的命令', { timeout: 30000 }, async () => {
+test('連到舊版 DofLabFirmata 1.1（沒有斷線保護）：DofLab 提醒更新（到 1.3）；1.1 的輸出在心跳停了之後仍停在最後的命令', { timeout: 30000 }, async () => {
   const path = require('path');
   const dev = new VirtualDevice({ bench: 'hold-blink', hex: path.join(__dirname, 'fixtures', 'DofLabFirmata-1.1-uno.hex') });
   const port = dev.uno.webSerialPort();
@@ -212,7 +212,7 @@ test('連到舊版 DofLabFirmata 1.1（沒有斷線保護）：DofLab 提醒更�
     const r = await drv.connect(); twin.connected(r.deviceId, r.info, { virtual: true });
     assert.deepStrictEqual(drv.fwVersion, [1, 1]);
     assert.match(r.info, /DofLabFirmata 1\.1 · Firmata 協定 2\.6/, '連線資訊寫出韌體版本 1.1（不是協定版本 2.6）：' + r.info);
-    assert.ok(logs.some(([k, m]) => k === 'w' && /1\.1 沒有斷線保護/.test(m) && /更新到 1\.2/.test(m)), JSON.stringify(logs));
+    assert.ok(logs.some(([k, m]) => k === 'w' && /1\.1 沒有斷線保護/.test(m) && /更新到 1\.3/.test(m)), JSON.stringify(logs));
     twin.define('LED1.state', { feedback: false }); twin.authorize(['LED1.state']);
     const out = { signal: 'LED1.state', num: 13, kind: 'digital' };
     await drv.authorize([out]); await drv.write(twin.command('LED1.state', 1).cmd, out);
@@ -220,4 +220,76 @@ test('連到舊版 DofLabFirmata 1.1（沒有斷線保護）：DofLab 提醒更�
     clearInterval(drv.hb); await wait(4000);
     assert.ok(dev.bench.partState(dev.bench.parts.LED1).on, '1.1 沒有斷線保護：LED 仍亮（這就是要更新的原因）');
   } finally { await drv.disconnect(true); port.stop(); }
+});
+
+test('PWM（DofLabFirmata 1.3，真韌體，V2.14）：驅動授權成 PWM、寫工作週期、回讀 ACK；工作台從腳位波形量到頻率與工作週期；改回數位輸出、斷線保護都會停掉 PWM', { timeout: 60000 }, async () => {
+  const spec = { id: 'pwm-led', name: 'PWM LED', parts: [{ id: 'LED1', type: 'led', pin: 6 }, { id: 'LED2', type: 'led', pin: 13 }] };
+  const R = await rig(spec);
+  try {
+    assert.deepStrictEqual(R.drv.fwVersion, [1, 3]);
+    assert.ok(R.drv.pwmSupport(6).ok, 'D6 可以 PWM'); assert.ok(!R.drv.pwmSupport(13).ok && /不能 PWM/.test(R.drv.pwmSupport(13).msg), 'D13 不能 PWM');
+    R.twin.define('LED1.pwm', { feedback: false }); R.twin.authorize(['LED1.pwm']);
+    const out = { signal: 'LED1.pwm', num: 6, kind: 'pwm' }; await R.drv.authorize([out]);
+    for (const [duty, hz] of [[64, 977], [191, 977], [128, 977]]) {
+      const c = R.twin.command('LED1.pwm', duty).cmd; await R.drv.write(c, out);
+      assert.ok(await until(() => { const v = R.twin.view('LED1.pwm'); return v.ack && v.ack.id === c.id; }, 3000), `工作週期 ${duty} 收到回讀 ACK`);
+      assert.strictEqual(R.twin.view('LED1.pwm').ack.v, duty, '回讀是寫入的工作週期');
+      assert.ok(await until(() => { const l = R.part('LED1'); return l.duty !== null && Math.abs(l.duty - duty / 255) < 0.02; }, 3000), `工作台量到工作週期 ${duty}/255：${JSON.stringify(R.part('LED1'))}`);
+      assert.ok(Math.abs(R.part('LED1').pwmHz - hz) <= 5, `D6 是 Timer0 的 977 Hz：${R.part('LED1').pwmHz}`);
+    }
+    const tr = R.dev.bench.trace.filter(e => e.part === 'LED1');
+    assert.ok(tr.length < 30 && tr.every(e => e.duty !== undefined || e.on !== undefined || e.pwm), `軌跡只記工作週期的變化（不是每一次亮滅）：${tr.length} 筆`);
+    // 改回數位輸出：PWM 停止、寫 LOW
+    await R.drv.setKind(out, 'digital');
+    assert.ok(await until(() => { const l = R.part('LED1'); return l.duty === null && !l.on; }, 2000), '改回數位輸出：PWM 停止、LED 熄滅');
+    await R.drv.setKind(out, 'pwm'); const c2 = R.twin.command('LED1.pwm', 200).cmd; await R.drv.write(c2, Object.assign({}, out, { kind: 'pwm' }));
+    assert.ok(await until(() => { const l = R.part('LED1'); return l.duty !== null && Math.abs(l.duty - 200 / 255) < 0.02; }, 3000), '再改回 PWM 可以繼續');
+    // 斷線保護：PWM 的腳位也會關掉
+    clearInterval(R.drv.hb);
+    assert.ok(await until(() => { const l = R.part('LED1'); return l.duty === null && !l.on; }, 6000), '心跳停了：PWM 停止、LED 熄滅');
+    assert.strictEqual(R.dev.uno.pinState(6), 2, 'D6 回到輸入');
+  } finally { await R.close(); }
+});
+
+test('PWM：連到 DofLabFirmata 1.2 時說明要更新（1.3 起才有 PWM）', { timeout: 30000 }, async () => {
+  const path = require('path');
+  const dev = new VirtualDevice({ bench: 'hold-blink', hex: path.join(__dirname, 'fixtures', 'DofLabFirmata-1.2-uno.hex') });
+  const port = dev.uno.webSerialPort();
+  Object.defineProperty(globalThis.navigator, 'serial', { configurable: true, value: { requestPort: async () => port } });
+  const drv = new DL.drivers.FirmataDriver(DL.createTwin(), {}, 'uno');
+  try {
+    await drv.connect(); assert.deepStrictEqual(drv.fwVersion, [1, 2]);
+    const r = drv.pwmSupport(6); assert.ok(!r.ok && /1\.3 起才有/.test(r.msg) && /上傳 DofLabFirmata/.test(r.msg), r.msg);
+  } finally { await drv.disconnect(true); port.stop(); }
+});
+
+test('工作台自動產生輸入（V2.14）：超音波三角波、按鈕定時按放 → DofLab 經 Firmata 讀到依序變化的值；設定錯誤明確拒絕；手動操作停掉自動', { timeout: 60000 }, async () => {
+  const R = await rig({ id: 'auto', name: '自動輸入', parts: [{ id: 'US1', type: 'ultrasonic', trig: 7, echo: 8 }, { id: 'BTN1', type: 'button', pin: 2, bounceMs: 0 }] });
+  try {
+    R.twin.define('US1.distance', {}); R.twin.define('BTN1.pressed', {});
+    await R.drv.watch([{ signal: 'US1.distance', num: 7, echo: 8, kind: 'sonar' }, { signal: 'BTN1.pressed', num: 2, kind: 'button' }]);
+    const bench = R.dev.bench;
+    assert.throws(() => bench.act({ part: 'BTN1', action: 'auto', pattern: 'ramp' }), /只能是 square/);
+    assert.throws(() => bench.act({ part: 'US1', action: 'auto', pattern: 'ramp', min: 50, max: 10 }), /最小值小於最大值/);
+    assert.throws(() => bench.act({ part: 'US1', action: 'auto', pattern: 'ramp', everyMs: 5 }), /間隔至少 20 ms/);
+    // 超音波：10 → 30 → 10，每 300 ms 變化 10 cm（韌體每 60 ms 量一次，所以每一步都量得到好幾次）
+    const cms = []; R.twin.on(e => { if (e.type === 'measure' && e.name === 'US1.distance') cms.push(e.v); });
+    const st = bench.act({ part: 'US1', action: 'auto', pattern: 'triangle', min: 10, max: 30, step: 10, everyMs: 300 });
+    assert.deepStrictEqual(st.auto && [st.auto.pattern, st.auto.seq], ['triangle', 1]);
+    await until(() => bench.parts.US1.auto.seq >= 7, 8000);
+    const seen = cms.filter((v, i) => i === 0 || v !== cms[i - 1]).filter(v => Math.abs(v - Math.round(v / 10) * 10) <= 1).map(v => Math.round(v / 10) * 10);
+    const dedup = seen.filter((v, i) => i === 0 || v !== seen[i - 1]);
+    assert.ok(dedup.join(',').includes('10,20,30,20,10,20'), `DofLab 讀到的距離依序變化：${dedup.join(',')}`);
+    assert.ok(bench.log.some(e => e.part === 'US1' && e.action === 'auto' && e.seq >= 5), '工作台紀錄每一步都有序號');
+    // 按鈕：每 200 ms 按下／放開
+    const btn = []; R.twin.on(e => { if (e.type === 'measure' && e.name === 'BTN1.pressed') btn.push(e.v); });
+    bench.act({ part: 'BTN1', action: 'auto', pattern: 'square', everyMs: 200 });
+    await until(() => bench.parts.BTN1.auto.seq >= 6, 6000);
+    const flips = btn.filter((v, i) => i === 0 || v !== btn[i - 1]);
+    assert.ok(flips.length >= 5 && flips.every((v, i) => i === 0 || v !== flips[i - 1]), `DofLab 讀到按下／放開交替：${flips.join(',')}`);
+    // 手動操作停掉自動
+    bench.act({ part: 'US1', action: 'set', cm: 55 }); bench.act({ part: 'BTN1', action: 'release' });
+    assert.ok(bench.parts.US1.auto === null && bench.parts.BTN1.auto === null && bench.log.some(e => e.action === 'auto-off' && e.why === '手動操作'));
+    const n = bench.log.length; await wait(700); assert.ok(!bench.log.slice(n).some(e => e.action === 'auto'), '停掉之後不再自動變化');
+  } finally { await R.close(); }
 });

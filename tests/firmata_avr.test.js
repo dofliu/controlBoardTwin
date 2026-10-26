@@ -25,8 +25,8 @@ test(`虛擬 Uno＋${fw}：辨識、唯讀、授權寫入、ACK、伺服、斷�
   try {
   const r = await drv.connect();
   assert.ok(r.identity.ok, r.identity.msg); assert.ok(r.info.startsWith(name), r.info);
-  // 連線資訊：韌體名稱與版本（F0 79）在前、Firmata 協定版本（F9）在後；DofLabFirmata 1.2 才有斷線保護，所以韌體版本一定要看得到
-  assert.match(r.info, name === 'DofLabFirmata' ? /^DofLabFirmata 1\.2 · Firmata 協定 2\.6$/ : /^StandardFirmata 2\.\d+ · Firmata 協定 2\.\d+$/, r.info);
+  // 連線資訊：韌體名稱與版本（F0 79）在前、Firmata 協定版本（F9）在後；DofLabFirmata 1.2 起才有斷線保護、1.3 起才有 PWM，所以韌體版本一定要看得到
+  assert.match(r.info, name === 'DofLabFirmata' ? /^DofLabFirmata 1\.3 · Firmata 協定 2\.6$/ : /^StandardFirmata 2\.\d+ · Firmata 協定 2\.\d+$/, r.info);
   twin.connected(r.deviceId, r.info);
 
   // 唯讀：設定 D2 為上拉輸入並開啟回報；D13 不應被改成輸出

@@ -59,7 +59,8 @@
       this.p = p;
       this.saved = opts.saved ? this.contentKey(JSON.parse(opts.saved)) : null;
       this.ui.selected = null; this.cancelModes();
-      this.twin.reset(); this.events = []; this.trace = [];
+      if (this.tsigStop) this.tsigStop('開啟其他專案', true);
+      this.twin.reset(); this.events = []; this.trace = []; if (this.waveReset) this.waveReset();
       this.hw.checks = {}; this.hw.sawChange = {};
       this.sim.maxHoldMs = 0; this.sim.minLight = 101; this.sim.maxLight = -1; this.sim.presses = 0; this.sim.minDist = 999; this.sim.nearMin = 999; this.sim.nearMax = -1; this.sim.farAfterNear = false; this.sim.serialCount = 0;
       this.analysis = DL.netlist.analyze(p);

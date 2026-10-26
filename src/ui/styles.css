@@ -3,7 +3,7 @@
   --bg:#e9edf0; --surface:#f7f9fa; --surface-2:#eef2f5; --surface-3:#e2e8ec; --ink:#16202a; --muted:#5a6873; --line:#cdd6dc; --line-strong:#aeb9c1;
   --accent:#b4581c; --accent-ink:#ffffff; --accent-soft:#f5e2d3;
   --ok:#17805a; --ok-soft:#d9efe5; --warn:#9a6210; --warn-soft:#f8ead0; --err:#b3261e; --err-soft:#f9e0dd; --unk:#5b4fb0; --unk-soft:#e6e3f7; --info:#2a6496; --info-soft:#dde9f4;
-  --sim:#2a6496; --meas:#17805a; --cmd:#b4581c; --ackc:#7a4fd0;
+  --sim:#2a6496; --meas:#17805a; --cmd:#b4581c; --ackc:#7a4fd0; --tsig:#b0337f;
   --code-bg:#18212a; --code-fg:#e3e9ee; --code-muted:#7d8a95; --code-hl:#3a2a1c;
   --scene-bg:#dfe5ea; --scene-grid:#c3ccd3; --scene-grid2:#d2dae0;
   --font-ui:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
@@ -14,14 +14,14 @@
   --bg:#0f1418; --surface:#172027; --surface-2:#1d2830; --surface-3:#25323b; --ink:#e2e9ee; --muted:#93a2ad; --line:#2b3842; --line-strong:#3b4a55;
   --accent:#e58c4e; --accent-ink:#1b1009; --accent-soft:#3a2617;
   --ok:#3ec28c; --ok-soft:#14352a; --warn:#e2a64a; --warn-soft:#3a2c12; --err:#f27a6c; --err-soft:#3d1b18; --unk:#a99cf2; --unk-soft:#2a2550; --info:#79b3e6; --info-soft:#172d42;
-  --sim:#79b3e6; --meas:#3ec28c; --cmd:#e58c4e; --ackc:#b89af0;
+  --sim:#79b3e6; --meas:#3ec28c; --cmd:#e58c4e; --ackc:#b89af0; --tsig:#f08bd0;
   --code-bg:#0c1115; --code-fg:#e3e9ee; --code-muted:#74828d; --code-hl:#3a2a1c;
   --scene-bg:#151d23; --scene-grid:#2a363f; --scene-grid2:#1f2a32; color-scheme:dark }}
 :root[data-theme="dark"]{
   --bg:#0f1418; --surface:#172027; --surface-2:#1d2830; --surface-3:#25323b; --ink:#e2e9ee; --muted:#93a2ad; --line:#2b3842; --line-strong:#3b4a55;
   --accent:#e58c4e; --accent-ink:#1b1009; --accent-soft:#3a2617;
   --ok:#3ec28c; --ok-soft:#14352a; --warn:#e2a64a; --warn-soft:#3a2c12; --err:#f27a6c; --err-soft:#3d1b18; --unk:#a99cf2; --unk-soft:#2a2550; --info:#79b3e6; --info-soft:#172d42;
-  --sim:#79b3e6; --meas:#3ec28c; --cmd:#e58c4e; --ackc:#b89af0;
+  --sim:#79b3e6; --meas:#3ec28c; --cmd:#e58c4e; --ackc:#b89af0; --tsig:#f08bd0;
   --code-bg:#0c1115; --code-fg:#e3e9ee; --code-muted:#74828d; --code-hl:#3a2a1c;
   --scene-bg:#151d23; --scene-grid:#2a363f; --scene-grid2:#1f2a32; color-scheme:dark }
 
@@ -231,6 +231,24 @@ table.twin small{display:block;color:var(--muted);font-size:.68rem}
 .q{font-size:.68rem;font-weight:700;padding:1px 6px;border-radius:4px}
 .q.ok{background:var(--ok-soft);color:var(--ok)} .q.stale{background:var(--warn-soft);color:var(--warn)} .q.unknown,.q.none{background:var(--surface-3);color:var(--muted)}
 canvas.trace{width:100%;height:180px;display:block}
+/* 波形（V2.14）：控制列、擷取 A／B 上下並排 */
+.wave-bar{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-bottom:6px;font-size:.84rem}
+.wave-bar label{display:flex;gap:4px;align-items:center;color:var(--muted)}
+.wave-bar input[type=range]{width:140px}
+#waveCmp{display:grid;gap:8px;margin-top:10px;border-top:1px dashed var(--line);padding-top:8px}
+#waveCmp .lab{font-size:.8rem;line-height:1.4}
+canvas.trace.cmp{height:150px}
+/* 訊號測試（V2.14） */
+.tsig-rows{display:grid;gap:6px}
+.tsig-row{display:grid;grid-template-columns:minmax(0,1fr);gap:4px;border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.tsig-row .head{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.tsig-row .opts{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:end;font-size:.8rem;color:var(--muted)}
+.tsig-row .opts label{display:grid;gap:1px}
+.tsig-row .opts input{width:4.8em}
+.tsig-row.off .opts{opacity:.55}
+.tsig-bar{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-top:6px}
+.tsig-stat{font-family:var(--font-mono);font-size:.82rem}
+.tsig-stat b{color:var(--tsig)}
 .events{list-style:none;margin:0;padding:0;max-height:220px;overflow:auto;font-family:var(--font-mono);font-size:.76rem;display:grid;gap:1px}
 .events li{display:grid;grid-template-columns:74px 1fr;gap:8px;padding:2px 4px;border-radius:4px}
 .events li .t{color:var(--muted);text-align:right}

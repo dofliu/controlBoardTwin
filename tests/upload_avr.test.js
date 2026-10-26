@@ -82,3 +82,40 @@ test('觀測頁內建的 DofLabFirmata .hex 與 firmware 原始碼編譯結果�
   const ino = fs.readFileSync(path.join(__dirname, '..', 'tools', 'firmware', 'DofLabFirmata', 'DofLabFirmata.ino'), 'utf8');
   assert.strictEqual(build(ino), FIRMATA, '原始碼改了之後，請重新編譯並更新 tests/fixtures/DofLabFirmata-uno.hex');
 });
+
+// V2.14 發現：連線慢時（經網路的虛擬設備、電腦很忙），同步重試的回應（14 10）會在確認之後才到，讀簽章時整串回應錯開一組 →「回應不同步」。
+// 用照劇本回應的假開機程式（STK500v1 的子集），結果不受機器快慢影響：確認同步時多送一組晚到的 14 10；第一次確認可以設定成不回應（回應超過 400 ms）
+function scriptedOptiboot(opts) {
+  const flash = new Uint8Array(0x8000).fill(0xff); let addr = 0, syncs = 0, ctrl = null; const sent = [];
+  const reply = b => { try { ctrl.enqueue(new Uint8Array(b)); } catch (e) { } };
+  const port = {
+    flash, sent,
+    async open() { port.readable = new ReadableStream({ start(c) { ctrl = c; } }); port.writable = new WritableStream({ write(c) { handle([...c]); } }); },
+    async setSignals() { }, async close() { try { ctrl.close(); } catch (e) { } }
+  };
+  function handle(b) {
+    sent.push(b[0]);
+    if (b[0] === 0x30) { syncs++; if (syncs === opts.silentSync) return; reply(syncs === opts.lateAt ? [0x14, 0x10, 0x14, 0x10] : [0x14, 0x10]); }
+    else if (b[0] === 0x75) reply([0x14, 0x1e, 0x95, 0x0f, 0x10]);
+    else if (b[0] === 0x55) { addr = (b[1] | b[2] << 8) * 2; reply([0x14, 0x10]); }
+    else if (b[0] === 0x64) { const n = b[1] << 8 | b[2]; flash.set(b.slice(4, 4 + n), addr); reply([0x14, 0x10]); }
+    else if (b[0] === 0x74) { const n = b[1] << 8 | b[2]; reply([0x14, ...flash.slice(addr, addr + n), 0x10]); }
+    else reply([0x14, 0x10]);   // 進入／離開燒錄模式
+  }
+  return port;
+}
+const smallHex = () => { const hexLine = (a, bytes) => { const b = [bytes.length, a >> 8, a & 0xff, 0, ...bytes]; const sum = (-b.reduce((x, y) => x + y, 0)) & 0xff; return ':' + b.concat(sum).map(x => x.toString(16).padStart(2, '0')).join('').toUpperCase(); };
+  const lines = []; for (let a = 0; a < 256; a += 16) lines.push(hexLine(a, Array.from({ length: 16 }, (_, i) => (a + i) & 0xff))); return lines.join('\n') + '\n:00000001FF'; };
+test('連線慢時晚到的同步回應：確認同步之後多一組 14 10 → 讀簽章時跳過，寫入與讀回一致', { timeout: 30000 }, async () => {
+  const port = scriptedOptiboot({ lateAt: 2 }); const logs = [];
+  const r = await DL.stk500.flash(port, smallHex(), { log: m => logs.push(m) });
+  assert.ok(r.ok && r.verified, JSON.stringify(r));
+  assert.ok(logs.includes('跳過 1 個晚到的同步回應'), logs.join(' | '));
+  for (let i = 0; i < 256; i++) assert.strictEqual(port.flash[i], i);
+});
+test('連線慢時確認同步的回應超過 400 ms：清掉再確認，不會一次就放棄', { timeout: 30000 }, async () => {
+  const port = scriptedOptiboot({ silentSync: 2 });
+  const r = await DL.stk500.flash(port, smallHex());
+  assert.ok(r.ok && r.verified, JSON.stringify(r));
+  assert.deepStrictEqual(port.sent.slice(0, 4), [0x30, 0x30, 0x30, 0x75], '同步、確認（沒有回應）、再確認、讀簽章');
+});

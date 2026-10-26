@@ -1,4 +1,4 @@
-# DofLab V2.13 原型
+# DofLab V2.14 原型
 
 從電路配置、行為設計、模擬測試，到真實設備同步的教學與開發平台。本版依《DofLab 規劃文件 v0.1》重新開發。
 
@@ -32,7 +32,7 @@
 3. 到「觀測」頁按「連接 Arduino（USB）」或「連接 ESP32（USB）」，再依序完成：辨識、唯讀觀測、核對接線、授權受控寫入。
 4. 連不上時（V2.6.1）：先關掉 Arduino IDE 的序列埠監控視窗與其他開著 DofLab 的分頁。本頁上一次沒關乾淨的連線會自動關閉；被其他程式占用時會自動重試並說明；板子沒回應時會自動重新啟動板子再試一次。上傳程式前會自動中斷觀測頁的連線，上傳後按「用上次的連接埠重新連線」即可。
 
-### 虛擬設備：沒有板子也能走完數位孿生（V2.8；V2.9 加上工作台；V2.11 可以上傳程式；V2.12 多人與控制權；V2.13 虛擬樹莓派與 ESP32）
+### 虛擬設備：沒有板子也能走完數位孿生（V2.8；V2.9 加上工作台；V2.11 可以上傳程式；V2.12 多人與控制權；V2.13 虛擬樹莓派與 ESP32；V2.14 自動產生輸入）
 
 虛擬設備是**另一個程式**裡的虛擬 Uno：avr8js 執行真的 DofLabFirmata 機器碼，外面接著「工作台」——這塊虛擬板子實際接了哪些元件。介面經網路（WebSocket）連過去，送出與收到的 Firmata 位元組和接 USB 時完全相同。
 
@@ -89,6 +89,17 @@ curl -X POST -d '{"part":"BTN1","action":"unplug"}' http://127.0.0.1:8770/api/de
 ```
 
 **斷線保護（V2.13）**：斷線時設備端自己把輸出關掉，不會停在最後的命令。DofLabFirmata 1.2 起，有輸出時 3 秒沒收到任何位元組（DofLab 每秒送一次心跳），就把數位輸出寫 LOW 並改成輸入、伺服停止送脈衝（停在原地，不會轉到 0°；Uno 與 ESP32 都會等目前的脈衝送完才停，不會送出被截短的脈衝），並通知 DofLab；樹莓派的 pi_bridge 做同樣的事。虛擬設備有好幾個人連著時，控制者斷線或逾時，由虛擬設備主機關掉他的輸出（別人的心跳會讓韌體一直收得到位元組）。連線其實還在、只是太久沒收到訊息時（例如網路延遲超過 3 秒），DofLab 收到通知就撤銷授權、回到唯讀。板子上是 DofLabFirmata 1.1 時，連線後會提醒更新（「觀測」頁的「上傳 DofLabFirmata」）。已在虛擬設備驗證，未以實體設備驗證。
+
+**訊號測試與波形比較（V2.14）**：要在螢幕和示波器上看出每一次寫入，「觀測」頁有兩張卡片：
+
+- **訊號測試**：每次寫入都換一個值。伺服角度用鋸齒（0→180 每次 +10°，到頂先寫 180° 再回 0°）、三角（來回，兩端都寫到）或方波；LED 可以亮滅交替，接在能 PWM 的腳位時也可以改用 **PWM 工作週期** 0–255 遞增（新功能，Uno 的 D3／5／6／9／10／11，有伺服時 D9／D10 不行；ESP32 GPIO0／1／3 以外能輸出的腳位；樹莓派是軟體 PWM）。每一次寫入有序號（#1、#2…），記在事件紀錄和波形上。可以設定間隔（20 ms–60 秒）、暫停、單步（一次只寫一次，方便在示波器上一筆一筆看）、停止。
+  - 模擬：數值只寫進模擬層（畫面與波形），不送到設備。
+  - 連線後要先「授權受控寫入」；每一次寫入都是 Twin Core 的命令，設備回讀確認（ACK），斷線保護照常。開始測試會暫停「▶ 執行」的行為（同一個輸出不能同時由兩邊寫）；停止時 PWM 的腳位切回數位輸出並寫 LOW。手臂的伺服請用「手臂」頁。
+  - PWM 要 **DofLabFirmata 1.3**（舊版連線時 PWM 選項會停用並說明要更新）或新版 `pi_bridge.py`。
+- **訊號波形**：模擬、命令、量測三層，粉紅色的短線與「#序號」是訊號測試的每一次寫入。範圍 2–60 秒；「❚❚ 暫停畫面」只凍結畫面，背景繼續記錄（保留最近 3 分鐘），暫停時拖動拉桿往回看。「擷取為 A／B」把目前畫面上這一段存起來，**上下並排**比較（時間軸都從擷取的起點算、刻度相同），可以存檔（`doflab-wave` JSON）之後再開。
+- **虛擬工作台自動產生輸入**：工作台頁每個超音波、光敏、按鈕都有「自動變化」（鋸齒、三角、方波，和訊號測試同一套規則；按鈕只有方波），每一步也有序號（工作台紀錄與 `/trace`）。HTTP：`curl -X POST -d '{"part":"US1","action":"auto","pattern":"triangle","min":20,"max":60,"step":10,"everyMs":300}' http://127.0.0.1:8770/api/devices/uno-1/bench`（`"pattern":"off"` 停止；手動操作也會停掉自動）。
+
+訊號測試在虛擬 Uno（真韌體）、虛擬 ESP32（協定模型）、虛擬樹莓派上驗證過：設備端量到的伺服脈寬、PWM 工作週期依序出現。已在虛擬設備驗證，未以實體設備驗證；實際示波器上的波形、實體 ESP32 的 LEDC PWM、樹莓派的軟體 PWM 抖動都**未驗證**。
 
 **上傳程式與序列埠監看（V2.11）**：虛擬 Uno 裡有 Arduino 官方的 Optiboot 開機程式，可以像實體 Uno 一樣上傳自己的程式：
 
@@ -208,7 +219,7 @@ Arduino IDE 設定：開發板管理員安裝「esp32 by Espressif Systems」，
 - 產生的 Arduino 程式不用 `pulseIn`（它會讓整個程式停住最多數十毫秒），所以閃爍、按鈕與伺服照常運作。V2.13 起 ECHO 的變化由腳位變化中斷記下時間（Uno：PCINT；ESP32：`attachInterrupt`），量到的回波寬度不受迴圈裡其他工作影響：在虛擬 Uno 上，隨機距離、三種迴圈工作量，每一次都量對（回波寬度誤差 ≤ 3 µs，1 cm ≈ 58 µs）。之前每一輪迴圈看一次 ECHO，有伺服的程式約 42 % 少 1 cm。ESP32 版只確認能編譯，沒有執行過。樹莓派版使用 gpiozero 的 `DistanceSensor`。
 - 新積木：條件「量到的距離小於／大於 … cm」，動作「伺服角度跟著距離」（線性換算，與 Arduino 的 `map()` 相同）。
 - 觀測頁用拉桿移動前方的物體（3D 畫面的橘色板，距離經過壓縮，只是示意），也可以按「移走物體」模擬沒有回波。
-- 真機同步：Uno／ESP32 需要 **DofLabFirmata 1.1** 以上（斷線保護要 1.2；連線後上方的標籤會寫出板子上的版本，例如「DofLabFirmata 1.2 · Firmata 協定 2.6」）（觀測頁按「上傳 DofLabFirmata」即可）；StandardFirmata 沒有超音波功能，距離會顯示「不支援」。唯讀時韌體會每 60 ms 送一次 10 µs 的 TRIG 觸發脈衝，這是量距離必須的輸出。樹莓派經 `pi_bridge.py` 回報。
+- 真機同步：Uno／ESP32 需要 **DofLabFirmata 1.1** 以上（斷線保護要 1.2、PWM 要 1.3；連線後上方的標籤會寫出板子上的版本，例如「DofLabFirmata 1.3 · Firmata 協定 2.6」）（觀測頁按「上傳 DofLabFirmata」即可）；StandardFirmata 沒有超音波功能，距離會顯示「不支援」。唯讀時韌體會每 60 ms 送一次 10 µs 的 TRIG 觸發脈衝，這是量距離必須的輸出。樹莓派經 `pi_bridge.py` 回報。
 
 ## 教師模式
 
@@ -290,9 +301,9 @@ e2e/           Playwright 端到端測試
 ## 測試
 
 ```bash
-node --test --test-concurrency=1 tests/*.test.js     # 205 項（需要 g++；虛擬硬體測試與第 4 階段驗收需要 arduino-cli 與 avr-nm；第 6 階段的虛擬樹莓派需要 Python 的 gpiozero 與 aiohttp）
-python3 -m unittest discover -s tests -p "test_*.py" # 21 項（上傳端到端需要 avrdude 與 socat）
-python3 e2e/e2e.py                                   # 268 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults vupload vmulti vboards）
+node --test --test-concurrency=1 tests/*.test.js     # 217 項（需要 g++；虛擬硬體測試與第 4 階段驗收需要 arduino-cli 與 avr-nm；第 6 階段的虛擬樹莓派需要 Python 的 gpiozero 與 aiohttp）
+python3 -m unittest discover -s tests -p "test_*.py" # 23 項（上傳端到端需要 avrdude 與 socat）
+python3 e2e/e2e.py                                   # 286 項（需要 Playwright；可只跑部分段落，例如 python3 e2e/e2e.py experiments ultrasonic onboard v27 vdev bench faults vupload vmulti vboards tsig）
 ```
 
 ### 示範影片

@@ -179,14 +179,14 @@ test('斷線保護（主機）：控制者沒有撤銷就斷線，別人還連�
   } finally { await s.close(); }
 });
 
-test('斷線保護（主機）：控制者斷線或逾時時送給晶片的位元組——數位輸出 F5 腳位 0 再 F4 腳位 0；伺服只有 F4 腳位 0（寫 0 會轉到 0°）', () => {
+test('斷線保護（主機）：控制者斷線或逾時時送給晶片的位元組——數位輸出 F5 腳位 0 再 F4 腳位 0；伺服、PWM 只有 F4 腳位 0（伺服寫 0 會轉到 0°；PWM 改成輸入時韌體先停掉）', () => {
   const { Hub } = require('../tools/vdev/hub.js');
   const dev = []; const h = new Hub({ send: () => { }, notify: () => { }, toDevice: b => dev.push([...b]) });
   try {
     const { link: A } = h.join({ readyState: 1 }, { name: '控制者' }); h.join({ readyState: 1 }, { name: '觀看者' });
     assert.ok(h.lock(A, 'control').ok);
-    h.fromLink(A, Uint8Array.from([0xF4, 13, 1, 0xF4, 9, 4, 0xF4, 2, 0x0B])); dev.length = 0;
+    h.fromLink(A, Uint8Array.from([0xF4, 13, 1, 0xF4, 9, 4, 0xF4, 2, 0x0B, 0xF4, 6, 3])); dev.length = 0;
     h.leave(A);
-    assert.deepStrictEqual(dev, [[0xF5, 13, 0, 0xF4, 13, 0, 0xF4, 9, 0]], '只關掉控制者設成輸出的 D13、D9；D2 是輸入，不動');
+    assert.deepStrictEqual(dev, [[0xF5, 13, 0, 0xF4, 13, 0, 0xF4, 9, 0, 0xF4, 6, 0]], '只關掉控制者設成輸出的 D13、D9、D6（PWM）；D2 是輸入，不動');
   } finally { h.stop(); }
 });

@@ -83,7 +83,7 @@ class Hub {
     const bytes = [];
     for (const [pin, o] of [...this.outputs]) {
       if (o.id !== link.id) continue;
-      if (o.mode !== 4) bytes.push(0xF5, pin, 0);
+      if (o.mode === 1) bytes.push(0xF5, pin, 0);   // 數位輸出先寫 LOW；伺服、PWM 改成輸入時韌體自己先停掉
       bytes.push(0xF4, pin, 0); this.outputs.delete(pin);
     }
     if (bytes.length) { this.toDevice(Uint8Array.from(bytes)); this.log(`${why}：已關掉他的輸出（斷線保護）`); }

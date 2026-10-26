@@ -70,6 +70,7 @@ class VirtualPi(unittest.TestCase):
     def setUpClass(cls):
         spec = json.loads((BENCHES / "pi-dist-gauge.json").read_text(encoding="utf-8"))
         spec["parts"].append({"id": "BTN1", "type": "button", "pin": 27, "bounceMs": 8})
+        spec["parts"].append({"id": "LED1", "type": "led", "pin": 22})
         cls.proc, cls.port = start(json.dumps(spec))
         assert cls.port, stop(cls.proc)
 
@@ -157,6 +158,74 @@ class VirtualPi(unittest.TestCase):
                     await ws.send_json({"op": "servo", "id": "g2", "pin": 18, "angle": 30})
                     e = await rx("error")
                     self.assertIn("沒有授權", e["message"], f"授權已經撤銷，命令不會執行：{e}")
+        asyncio.run(go())
+
+    def test_pwm(self):
+        """PWM（V2.14 的訊號測試）：授權成 pwm、寫工作週期 0–255、回讀 ACK；工作台量到工作週期與 1 kHz；同一個腳位改回數位輸出；不是 pwm 的腳位拒絕 pwm 命令"""
+        port = self.port
+        async def go():
+            async with aiohttp.ClientSession() as s:
+                async def led():
+                    return next(p for p in (await get(port, "/api/bench"))["bench"]["parts"] if p["id"] == "LED1")
+                async with s.ws_connect(f"http://127.0.0.1:{port}/ws") as ws:
+                    async def rx(op, n=400):
+                        for _ in range(n):
+                            m = await asyncio.wait_for(ws.receive_json(), 6)
+                            if m["op"] == op: return m
+                    await ws.send_json({"op": "hello", "client": "test", "proto": 2}); h = await rx("hello")
+                    self.assertTrue(h.get("pwm"), "hello 回報支援 PWM")
+                    await ws.send_json({"op": "authorize", "outputs": [{"pin": 22, "kind": "pwm"}]}); await rx("authorized")
+                    for v in (64, 191, 255, 0):
+                        await ws.send_json({"op": "pwm", "id": f"p{v}", "pin": 22, "value": v}); a = await rx("ack")
+                        self.assertEqual((a["kind"], a["value"]), ("pwm", v), a)
+                        for _ in range(50):
+                            l = await led()
+                            if l["duty"] is not None and abs(l["duty"] - v / 255) < 0.01: break
+                            await asyncio.sleep(0.02)
+                        self.assertTrue(l["duty"] is not None and abs(l["duty"] - v / 255) < 0.01 and l["pwmHz"] == 1000, l)
+                        self.assertEqual(l["on"], v > 0, l)
+                    await ws.send_json({"op": "pwm", "id": "p300", "pin": 22, "value": 300}); a = await rx("ack"); self.assertEqual(a["value"], 255, "超過 255 限制為 255")
+                    await ws.send_json({"op": "authorize", "outputs": [{"pin": 22, "kind": "digital"}]}); await rx("authorized")
+                    await ws.send_json({"op": "write", "id": "d1", "pin": 22, "value": 1}); a = await rx("ack"); self.assertEqual((a["kind"], a["value"]), ("digital", 1))
+                    for _ in range(50):
+                        l = await led()
+                        if l["duty"] is None and l["on"]: break
+                        await asyncio.sleep(0.02)
+                    self.assertTrue(l["duty"] is None and l["on"], f"改回數位輸出：{l}")
+                    await ws.send_json({"op": "pwm", "id": "p2", "pin": 22, "value": 10}); e = await rx("error"); self.assertIn("不是 PWM 輸出", e["message"])
+        asyncio.run(go())
+
+    def test_auto(self):
+        """工作台自動產生輸入（V2.14）：超音波鋸齒、按鈕定時按放 → pi_bridge 送出的距離與按鈕依序變化；設定錯誤回 400；手動操作停掉自動"""
+        port = self.port
+        def cleanup():   # 不管成功與否都停掉自動，不影響同一台虛擬樹莓派的其他測試
+            for part, q in (("US1", {"action": "set", "cm": 100}), ("BTN1", {"action": "release"})):
+                asyncio.run(post(port, "/api/bench", dict(q, part=part)))
+        self.addCleanup(cleanup)
+        async def go():
+            async with aiohttp.ClientSession() as s:
+                async with s.ws_connect(f"http://127.0.0.1:{port}/ws") as ws:
+                    await ws.send_json({"op": "hello", "client": "test", "proto": 2})
+                    await ws.send_json({"op": "watch", "pins": [{"pin": 27, "pull": "up"}]})
+                    await ws.send_json({"op": "sonar", "sensors": [{"trig": 5, "echo": 6}]})
+                    code, r = await post(port, "/api/bench", {"part": "BTN1", "action": "auto", "pattern": "ramp"})
+                    self.assertEqual(code, 400); self.assertIn("只能是 square", r["error"])
+                    code, r = await post(port, "/api/bench", {"part": "US1", "action": "auto", "pattern": "ramp", "min": 10, "max": 40, "step": 10, "everyMs": 400})
+                    self.assertEqual(code, 200); self.assertEqual(next(p for p in r["bench"]["parts"] if p["id"] == "US1")["auto"]["pattern"], "ramp")
+                    code, r = await post(port, "/api/bench", {"part": "BTN1", "action": "auto", "pattern": "square", "everyMs": 300})
+                    cms, btn = [], []
+                    t0 = time.monotonic()
+                    while time.monotonic() - t0 < 3.6:
+                        m = await asyncio.wait_for(ws.receive_json(), 3)
+                        if m["op"] == "distance" and (not cms or cms[-1] != m["cm"]): cms.append(m["cm"])
+                        if m["op"] == "input" and m["pin"] == 27 and (not btn or btn[-1] != m["value"]): btn.append(m["value"])
+                    self.assertIn("10,20,30,40,10,20", ",".join(map(str, cms)), f"距離依序遞增、到頂回到起點：{cms}")
+                    self.assertGreaterEqual(len(btn), 6, f"按鈕按下／放開交替：{btn}")
+                    await post(port, "/api/bench", {"part": "US1", "action": "set", "cm": 77})
+                    st = await get(port, "/api/bench"); us = next(p for p in st["bench"]["parts"] if p["id"] == "US1")
+                    self.assertIsNone(us["auto"], "手動操作停掉自動"); self.assertEqual(us["cm"], 77)
+                    await post(port, "/api/bench", {"part": "BTN1", "action": "auto", "pattern": "off"})
+                    st = await get(port, "/api/bench"); self.assertIsNone(next(p for p in st["bench"]["parts"] if p["id"] == "BTN1")["auto"])
         asyncio.run(go())
 
     def test_bad_bench_action(self):

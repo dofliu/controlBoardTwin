@@ -16,12 +16,21 @@
   const { WebSerialTransport, WebSocketTransport } = DL.transport;
 
   /* ======================= Arduino／ESP32：Firmata（USB 序列埠或虛擬設備的 WebSocket） ======================= */
+  const MODE = { digital: 0x01, pwm: 0x03, servo: 0x04 };   // Firmata 腳位模式
+  const numeric = kind => kind === 'servo' || kind === 'pwm';   // 回讀是數值（角度、工作週期），不是 0／1
   class FirmataDriver {
     constructor(twin, hooks, boardId) { this.twin = twin; this.hooks = hooks || {}; this.board = DL.boards[boardId || 'uno']; this.kind = 'firmata'; this.buf = []; this.sysex = null; this.version = null; this.caps = null; this.firmware = null; this.fwVersion = null; this.analogMap = null; this.seq = 0; this.pinSignals = {}; this.sonarSignals = {}; this.outPins = {}; this.lastCmdByPin = {}; }
     // 超音波需要 DofLabFirmata 1.1 以上（StandardFirmata 沒有這個功能）
     sonarSupport() {
       if (this.firmware !== 'DofLabFirmata') return { ok: false, msg: `${this.firmware || '目前的韌體'} 不支援超音波測距：請在「觀測」頁按「上傳 DofLabFirmata」，再重新連線。超音波的距離會一直顯示「未知」。` };
       const v = this.fwVersion || [1, 0]; if (v[0] < 1 || (v[0] === 1 && v[1] < 1)) return { ok: false, msg: `DofLabFirmata ${v.join('.')} 太舊，1.1 起才支援超音波：請重新上傳 DofLabFirmata。` };
+      return { ok: true };
+    }
+    // PWM（V2.14 的訊號測試）：腳位能力回報有 PWM 模式（03）才行；DofLabFirmata 1.3 起才有（StandardFirmata 本來就有）
+    pwmSupport(pin) {
+      const caps = this.caps && this.caps[pin];
+      if (this.firmware === 'DofLabFirmata') { const v = this.fwVersion || [1, 0]; if (v[0] < 1 || (v[0] === 1 && v[1] < 3)) return { ok: false, msg: `DofLabFirmata ${v.join('.')} 沒有 PWM，1.3 起才有：請在「觀測」頁按「上傳 DofLabFirmata」更新。` }; }
+      if (!caps || !caps.some(c => c[0] === 0x03)) return { ok: false, msg: `這個腳位不能 PWM（板子回報的腳位能力沒有 PWM）。` };
       return { ok: true };
     }
     static available() { return WebSerialTransport.available(); }
@@ -80,7 +89,7 @@
       if (virtual) { identity.virtual = true; if (vi.model === 'protocol') identity.protocol = true; }
       if (this.firmware === 'StandardFirmata') this.log('注意：StandardFirmata 開機時會自行把數位腳設為 OUTPUT LOW（韌體預設，不是 DofLab 送出）。建議改用 DofLabFirmata，開機時腳位維持輸入。', 'w');
       // 斷線保護（DofLabFirmata 1.2 起）：有輸出時 3 秒沒收到任何位元組，板子自己關掉輸出。舊版沒有，提醒更新
-      if (this.firmware === 'DofLabFirmata' && this.fwVersion && (this.fwVersion[0] < 1 || (this.fwVersion[0] === 1 && this.fwVersion[1] < 2))) this.log(`DofLabFirmata ${this.fwVersion.join('.')} 沒有斷線保護（斷線時輸出會停在最後的命令）：請用「上傳 DofLabFirmata」更新到 1.2。`, 'w');
+      if (this.firmware === 'DofLabFirmata' && this.fwVersion && (this.fwVersion[0] < 1 || (this.fwVersion[0] === 1 && this.fwVersion[1] < 2))) this.log(`DofLabFirmata ${this.fwVersion.join('.')} 沒有斷線保護（斷線時輸出會停在最後的命令）：請用「上傳 DofLabFirmata」更新到 1.3（1.2 起有斷線保護、1.3 起有 PWM）。`, 'w');
       this.hb = setInterval(() => this.send([0xF9]), 1000);   // 心跳：也讓板子知道連線還在（斷線保護）
       this.readyAt = Date.now() + 1500;   // 之後才開始判斷「設備重新開機」：交握時重問的查詢可能晚一點才回來
       if (virtual) return { deviceId: `vdev:${vi.device}@${vi.host}`, info: `虛擬設備 ${vi.device} · ${fw}${vi.model === 'protocol' ? '（協定模型）' : ''}`, identity, virtual: true, protocol: vi.model === 'protocol' };
@@ -120,7 +129,7 @@
         // 給最早一個「值相同」的命令（更早的視為回讀遺失）；都不相同就給最早的命令，顯示「回讀不一致」（命令沒有生效）
         const q = this.lastCmdByPin[pin];
         if (q && q.length) {
-          const o = this.outPins[pin]; const v = o && o.kind === 'servo' ? state : state ? 1 : 0;
+          const o = this.outPins[pin]; const v = o && numeric(o.kind) ? state : state ? 1 : 0;
           const k = Math.max(0, q.findIndex(e => e.v === v)); const e = q[k]; q.splice(0, k + 1);
           if (!q.length) delete this.lastCmdByPin[pin];
           this.twin.ack(e.id, v);
@@ -177,24 +186,31 @@
       if (this.virtual && !this.holding) { const r = await this.acquire(); if (!r.ok) throw Object.assign(new Error(r.message), { code: 'not_holder', holder: r.holder }); }
       for (const o of outputs) {
         this.outPins[o.num] = o;
-        const mode = [0xF4, o.num, o.kind === 'servo' ? 0x04 : 0x01];
+        const mode = [0xF4, o.num, MODE[o.kind] || 0x01];
         if (o.initial) await this.write(o.initial, o, mode); else await this.send(mode);
       }
     }
     valueBytes(pin, kind, v) {
-      if (kind !== 'servo') return [0xF5, pin, v ? 1 : 0];
-      const a = Math.round(v); return pin < 16 ? [0xE0 | pin, a & 0x7F, (a >> 7) & 0x7F] : [0xF0, 0x6F, pin, a & 0x7F, (a >> 7) & 0x7F, 0xF7];
+      if (kind !== 'servo' && kind !== 'pwm') return [0xF5, pin, v ? 1 : 0];
+      const a = kind === 'pwm' ? Math.max(0, Math.min(255, Math.round(v))) : Math.round(v); return pin < 16 ? [0xE0 | pin, a & 0x7F, (a >> 7) & 0x7F] : [0xF0, 0x6F, pin, a & 0x7F, (a >> 7) & 0x7F, 0xF7];
     }
     // before：要和這個命令一起送的位元組（授權時的「設成伺服模式」）
     async write(cmd, out, before) {
       const pin = out.num;
       if (!this.outPins[pin]) { this.log(`${cmd.name} 的腳位沒有授權，命令未送出。`, 'e'); return; }
       await this.send((before || []).concat(this.valueBytes(pin, out.kind, cmd.v)));
-      (this.lastCmdByPin[pin] = this.lastCmdByPin[pin] || []).push({ id: cmd.id, v: out.kind === 'servo' ? Math.round(cmd.v) : cmd.v ? 1 : 0 });
+      (this.lastCmdByPin[pin] = this.lastCmdByPin[pin] || []).push({ id: cmd.id, v: numeric(out.kind) ? (out.kind === 'pwm' ? Math.max(0, Math.min(255, Math.round(cmd.v))) : Math.round(cmd.v)) : cmd.v ? 1 : 0 });
       await this.send([0xF0, 0x6D, pin, 0xF7]);   // 回讀暫存值作為 ACK（不證明 LED 真的亮或伺服到位）
     }
+    // 訊號測試（V2.14）：已授權的腳位在數位輸出與 PWM 之間切換（例如 LED 改用 PWM 測工作週期）。韌體換模式時先停掉舊的輸出、寫 LOW；在途命令作廢
+    async setKind(out, kind) {
+      const o = this.outPins[out.num]; if (!o) { this.log(`腳位 ${out.num} 沒有授權，不能切換。`, 'e'); return false; }
+      if (o.kind === kind) return true;
+      this.outPins[out.num] = Object.assign({}, o, { kind }); delete this.lastCmdByPin[out.num];
+      await this.send([0xF4, out.num, MODE[kind] || 0x01]); return true;
+    }
     async revoke() {
-      if (!this.virtual || this.holding) for (const o of Object.values(this.outPins))   /* 控制權已經不在手上（例如逾時）：寫入會被主機擋下，不必送 */ { if (o.kind !== 'servo') await this.send([0xF5, o.num, 0]); await this.send([0xF4, o.num, 0x00]); }
+      if (!this.virtual || this.holding) for (const o of Object.values(this.outPins))   /* 控制權已經不在手上（例如逾時）：寫入會被主機擋下，不必送 */ { if (o.kind === 'digital') await this.send([0xF5, o.num, 0]); await this.send([0xF4, o.num, 0x00]); }   // PWM、伺服：改成輸入時韌體先停掉輸出
       this.outPins = {};
       await this.release();   // 虛擬設備：撤銷授權時交出控制權，別人才能取得
     }
@@ -224,7 +240,7 @@
         this.ws.onmessage = ev => {
           let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
           if (m.op === 'hello') {
-            hello = m; clearTimeout(fail);
+            hello = m; clearTimeout(fail); this.hello = m;
             if (m.proto !== 2) { reject(new Error(`pi_bridge 協定版本 ${m.proto} 不符（需要 2）。`)); return; }
             const isPi4 = /Raspberry Pi 4/i.test(m.model || '');
             // 虛擬樹莓派（第 6 階段）：虛擬設備主機啟動的 pi_bridge.py --bench（gpiozero 模擬腳位＋工作台），一律標示虛擬
@@ -242,7 +258,7 @@
             const s = this.pinSignals[m.pin]; if (s) this.twin.measure(s.name, m.value === 0, { seq: m.seq, src: 'pi:' + (hello && hello.host) });
           } else if (m.op === 'distance') { const s = this.sonarSignals && this.sonarSignals[m.trig]; if (s) this.twin.measure(s, m.cm, { seq: m.seq, src: 'pi:' + (hello && hello.host) }); }
           else if (m.op === 'pong') this.twin.heard();
-          else if (m.op === 'ack') this.twin.ack(m.id, m.kind === 'servo' ? m.value : m.value ? 1 : 0);
+          else if (m.op === 'ack') this.twin.ack(m.id, m.kind === 'servo' || m.kind === 'pwm' ? m.value : m.value ? 1 : 0);
           else if (m.op === 'authorized') this.log(`樹莓派已允許寫入：${m.outputs.map(o => 'GPIO' + o.pin).join('、')}`, 's');
           else if (m.op === 'error') this.log('樹莓派：' + m.message, 'e');
           else if (m.op === 'guard') { this.outPins = {}; this.log('樹莓派：' + m.message, 'w'); if (this.hooks.onGuard) this.hooks.onGuard(m.message); }   // 斷線保護：閘道自己關掉了輸出
@@ -259,9 +275,16 @@
     }
     // o.initial：授權時先送的命令（伺服的目前角度）。pi_bridge 的伺服沒有預設脈寬（initial_angle=None），送了只是讓伺服馬上到目前的角度，和 Firmata 一致
     async authorize(outputs) { for (const o of outputs) this.outPins[o.num] = o; this.send({ op: 'authorize', outputs: outputs.map(o => ({ pin: o.num, kind: o.kind })) }); for (const o of outputs) if (o.initial) await this.write(o.initial, o); }
+    // PWM（V2.14）：pi_bridge 在 hello 回報 pwm（新版才有）；樹莓派是軟體 PWM
+    pwmSupport() { return this.hello && this.hello.pwm ? { ok: true } : { ok: false, msg: 'pi_bridge 版本太舊，沒有 PWM：請更新樹莓派上的 pi_bridge.py。' }; }
+    async setKind(out, kind) {
+      const o = this.outPins[out.num]; if (!o) { this.log(`GPIO${out.num} 沒有授權，不能切換。`, 'e'); return false; }
+      if (o.kind === kind) return true;
+      this.outPins[out.num] = Object.assign({}, o, { kind }); this.send({ op: 'authorize', outputs: [{ pin: out.num, kind }] }); return true;
+    }
     async write(cmd, out) {
       if (!this.outPins[out.num]) { this.log(`${cmd.name} 的腳位沒有授權，命令未送出。`, 'e'); return; }
-      this.send(out.kind === 'servo' ? { op: 'servo', id: cmd.id, pin: out.num, angle: cmd.v } : { op: 'write', id: cmd.id, pin: out.num, value: cmd.v ? 1 : 0 });
+      this.send(out.kind === 'servo' ? { op: 'servo', id: cmd.id, pin: out.num, angle: cmd.v } : out.kind === 'pwm' ? { op: 'pwm', id: cmd.id, pin: out.num, value: Math.max(0, Math.min(255, Math.round(cmd.v))) } : { op: 'write', id: cmd.id, pin: out.num, value: cmd.v ? 1 : 0 });
     }
     async revoke() { this.outPins = {}; this.send({ op: 'revoke' }); }
     async disconnect() { this.closing = true; clearInterval(this.hb); try { await this.revoke(); } catch (e) { } try { this.ws.close(); } catch (e) { } }
