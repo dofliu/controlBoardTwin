@@ -72,6 +72,7 @@ def board_model(mock):
 
 OUTPUT_GUARD_S = 3.0   # 斷線保護：有輸出時這麼久沒收到這個連線的任何訊息就關掉輸出（DofLab 每 1 秒送一次 ping；和 DofLabFirmata 1.2 相同）
 GUARD_MSG = "樹莓派 3 秒沒有收到 DofLab 的訊息，已自己關掉輸出（斷線保護）"
+PWM_HZ = 1000         # 訊號測試的 PWM 頻率（和 ESP32 的 analogWrite 相同）；樹莓派是軟體 PWM，實際頻率與抖動未驗證
 
 
 class Session:
@@ -164,11 +165,16 @@ class Session:
             if pin in self.sonar_pins():
                 raise ValueError(f"GPIO{pin} 正在給超音波模組使用，不能授權為輸出")
             if pin in self.outputs:
-                granted.append({"pin": pin, "kind": self.outputs[pin][0]})
-                continue
-            self.hub.claim(pin, self)
+                if self.outputs[pin][0] == kind:
+                    granted.append({"pin": pin, "kind": kind})
+                    continue
+                self.close_out(*self.outputs.pop(pin))      # 同一個連線換種類（V2.14 訊號測試：LED 改用 PWM 再改回來）：先關掉舊的輸出
+            else:
+                self.hub.claim(pin, self)
             if kind == "servo":
                 dev = self.hub.Servo(pin, min_angle=0, max_angle=180, min_pulse_width=0.000544, max_pulse_width=0.0024, initial_angle=None)   # 544–2400 µs：和 Uno／ESP32 的 Servo 函式庫相同（V2.13 統一）
+            elif kind == "pwm":
+                dev = self.hub.PWM(pin, frequency=PWM_HZ, initial_value=0)   # 軟體 PWM（V2.14 的訊號測試）；工作週期 0–255 和 Firmata 相同
             else:
                 dev = self.hub.Out(pin, initial_value=False)
             self.outputs[pin] = (kind, dev)
@@ -191,6 +197,11 @@ class Session:
             angle = max(0, min(180, float(m["angle"])))
             dev.angle = angle
             value = dev.angle                       # 回讀命令值（不是實測角度）
+        elif m["op"] == "pwm":
+            if kind != "pwm":
+                raise ValueError(f"GPIO{pin} 不是 PWM 輸出")
+            dev.value = max(0, min(255, int(m["value"]))) / 255
+            value = round(dev.value * 255)          # 回讀工作週期暫存值（不證明 LED 的亮度）
         else:
             if kind != "digital":
                 raise ValueError(f"GPIO{pin} 不是數位輸出")
@@ -204,14 +215,18 @@ class Session:
             self.acks.popitem(last=False)
         return ack
 
+    @staticmethod
+    def close_out(kind, dev):
+        if kind == "servo":
+            dev.detach()
+        else:
+            dev.off()                               # 數位輸出、PWM：先寫 LOW
+        dev.close()
+
     def revoke(self):
         for pin, (kind, dev) in list(self.outputs.items()):
             try:
-                if kind == "digital":
-                    dev.off()
-                else:
-                    dev.detach()
-                dev.close()
+                self.close_out(kind, dev)
             finally:
                 self.hub.release(pin, self)
         self.outputs.clear()
@@ -257,11 +272,11 @@ class Deployed:
 
 class Hub:
     def __init__(self, loop, mock, deploy_dir=None, bench=None):
-        from gpiozero import Device, DigitalInputDevice, DigitalOutputDevice, AngularServo, DistanceSensor
+        from gpiozero import Device, DigitalInputDevice, DigitalOutputDevice, AngularServo, DistanceSensor, PWMOutputDevice
         if mock:
             from gpiozero.pins.mock import MockFactory, MockPWMPin
             Device.pin_factory = MockFactory(pin_class=MockPWMPin)
-        self.Device, self.In, self.Out, self.Servo, self.Distance = Device, DigitalInputDevice, DigitalOutputDevice, AngularServo, DistanceSensor
+        self.Device, self.In, self.Out, self.Servo, self.Distance, self.PWM = Device, DigitalInputDevice, DigitalOutputDevice, AngularServo, DistanceSensor, PWMOutputDevice
         self.mock_cm = {}      # 模擬腳位時的超音波距離（測試用，trig -> cm）
         self.loop, self.mock = loop, mock
         self.owner = {}
@@ -380,7 +395,7 @@ async def ws_handler(request):
                 m = json.loads(msg.data)
                 op = m.get("op")
                 if op == "hello":
-                    h = {"op": "hello", "proto": PROTO, "board": "pi4b", "model": board_model(hub.mock), "host": socket.gethostname(), "mock": hub.mock, "deploy": True, "running": hub.running.info() if hub.running else None}
+                    h = {"op": "hello", "proto": PROTO, "board": "pi4b", "model": board_model(hub.mock), "host": socket.gethostname(), "mock": hub.mock, "pwm": True, "deploy": True, "running": hub.running.info() if hub.running else None}
                     if hub.bench:   # 虛擬樹莓派：明確標示，介面據此顯示「虛擬設備」
                         h.update(virtual=True, kind="virtual", model="虛擬樹莓派（pi_bridge＋gpiozero 模擬腳位＋工作台）", device=hub.bench.spec.get("device", "pi-1"),
                                  bench=hub.bench.spec.get("id"), benchName=hub.bench.spec.get("name"), deploy=False, deployWhy=DEPLOY_NO_BENCH)
@@ -393,7 +408,7 @@ async def ws_handler(request):
                     s.sonar(m.get("sensors", []))
                 elif op == "authorize":
                     await s.send({"op": "authorized", "outputs": s.authorize(m.get("outputs", []))})
-                elif op in ("write", "servo"):
+                elif op in ("write", "servo", "pwm"):
                     await s.send(s.command(m))
                 elif op == "revoke":
                     s.revoke()

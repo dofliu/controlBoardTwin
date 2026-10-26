@@ -2,7 +2,7 @@
 // 這是一段 JS 程式，照 tools/firmware/DofLabFirmata/DofLabFirmata.ino（ESP32 分支）逐段寫出相同的行為：
 // 腳位表（pinValid、只能輸入的 GPIO34–39、類比通道 32/33/34/35/36/39）、訊息解析、能力／類比對應／腳位狀態回覆、
 // 數位回報（有變化才送）、類比回報（每 50 ms、12 位元）、伺服（544–2400 µs）、超音波（F0 62／F0 63，每 60 ms、逾時 30 ms、最多 400 cm）、
-// 斷線保護（1.2 起：有輸出時 3 秒沒收到位元組就關掉輸出，送出 F0 64 F7）。
+// 斷線保護（1.2 起：有輸出時 3 秒沒收到位元組就關掉輸出，送出 F0 64 F7）、PWM（1.3 起：F4 <pin> 03，工作週期 0–255）。
 // 和虛擬 Uno 不同：虛擬 Uno 跑的是編譯好的 .hex（真的機器碼）；這裡沒有 Xtensa 模擬，韌體的錯誤**不會**在這裡出現。
 // 在這裡通過只能寫「已在虛擬設備（協定模型）驗證，未以實體設備驗證」。
 // 介面與虛擬 Uno 的 VirtualUno 相容（工作台 bench.js 用的那幾個方法）：時間單位也一樣是 1/16 µs（cycle），工作台不用改時序。
@@ -13,13 +13,15 @@
 //     附加後在下一個 20 ms 週期才開始輸出脈衝（和虛擬 Uno 上真韌體的 Servo 函式庫相同）；實體 ESP32 的 LEDC 會不會在附加當下先送一個 1500 µs 的脈衝，未驗證。
 //   - ADC 線性：0–3.3 V → 0–4095（實際 ESP32 的 ADC 在兩端非線性）；沒有接東西的類比腳讀 0。
 //   - 沒有上拉、沒有接東西的輸入腳讀 LOW（實物會浮動）。
+//   - PWM：每個週期先高電位、工作週期／255 的時間後變低；0 與 255 是固定的電位；新的工作週期從下一個週期開始（和 LEDC 一樣）。
+//     ESP32 是 analogWrite 預設的 1 kHz；Uno 腳位表（只用來逐位元組比對）D5、D6 是 977 Hz，其他 490 Hz（和 avr8js 上的真韌體相同）。
 //   - DTR／RTS 不會重新啟動（DevKit 的自動重置電路依時序而定；這裡不模擬）。只有故障注入的 RESET 會重新啟動。
 const { PinState } = require('avr8js');
 
 const TICKS_PER_MS = 16000;   // 與虛擬 Uno 相同：1 cycle = 1/16 µs
 const BOOT_MS = 300;
 const ANALOG_CHANNELS = 6;
-const M = { INPUT: 0, OUTPUT: 1, ANALOG: 2, SERVO: 4, PULLUP: 0x0B, SONAR: 0x0C, UNSET: 0x7F };
+const M = { INPUT: 0, OUTPUT: 1, ANALOG: 2, PWM: 3, SERVO: 4, PULLUP: 0x0B, SONAR: 0x0C, UNSET: 0x7F };
 const MAX_SONARS = 2, SONAR_PERIOD_MS = 60, SONAR_TIMEOUT_US = 30000, SONAR_MAX_CM = 400;
 const OUTPUT_GUARD_MS = 3000;   // 斷線保護（和韌體相同）
 const SERVO_MIN_US = 544, SERVO_MAX_US = 2400, SERVO_PERIOD_US = 20000, SERVO_DEFAULT_US = 1500;
@@ -29,8 +31,10 @@ const RESET = { PORF: 1, EXTRF: 2, BORF: 4, WDRF: 8 };
 const pinValid = p => p <= 5 || (p >= 12 && p <= 19) || (p >= 21 && p <= 23) || (p >= 25 && p <= 27) || (p >= 32 && p <= 36) || p === 39;
 // 腳位表（和韌體的 #if 兩個分支相同）。uno 只用來驗證這個模型：同一段 Firmata 訊息送給「Uno 腳位表的模型」與「虛擬 Uno 上的真韌體」，回覆要逐位元組相同
 const PROFILES = {
-  esp32: { total: 40, valid: pinValid, inputOnly: p => p >= 34, toAnalog: p => ADC_PINS.indexOf(p), adcPin: ch => ADC_PINS[ch], adcBits: 12, vref: 3.3, maxServos: 8, analogKey: p => p },
-  uno: { total: 20, valid: p => p < 20, inputOnly: () => false, toAnalog: p => p >= 14 ? p - 14 : -1, adcPin: ch => 14 + ch, adcBits: 10, vref: 5, maxServos: 6, analogKey: p => p - 14 }
+  esp32: { total: 40, valid: pinValid, inputOnly: p => p >= 34, toAnalog: p => ADC_PINS.indexOf(p), adcPin: ch => ADC_PINS[ch], adcBits: 12, vref: 3.3, maxServos: 8, analogKey: p => p,
+    pwm: p => pinValid(p) && p < 34 && p !== 0 && p !== 1 && p !== 3, pwmHz: () => 1000 },
+  uno: { total: 20, valid: p => p < 20, inputOnly: () => false, toAnalog: p => p >= 14 ? p - 14 : -1, adcPin: ch => 14 + ch, adcBits: 10, vref: 5, maxServos: 6, analogKey: p => p - 14,
+    pwm: p => [3, 5, 6, 9, 10, 11].includes(p), pwmHz: p => p === 5 || p === 6 ? 976.5625 : 490.196, timer1: true }
 };
 const arduinoMap = (x, a, b, c, d) => Math.trunc((x - a) * (d - c) / (b - a)) + c;
 
@@ -58,7 +62,7 @@ class VirtualEsp32 {
     this.gen = (this.gen || 0) + 1; this.running = false;
     this.mode = new Array(this.P.total).fill(M.UNSET); this.state = new Array(this.P.total).fill(0);
     this.hw = new Array(this.P.total).fill('input'); this.out = new Array(this.P.total).fill(false);
-    this.servoOf = new Array(this.P.total).fill(-1); this.servoUs = {}; this.servoTrain = {}; this.pulseEnd = {}; this.tail = {};
+    this.servoOf = new Array(this.P.total).fill(-1); this.servoUs = {}; this.servoTrain = {}; this.pulseEnd = {}; this.tail = {}; this.pwmDuty = {}; this.pwmGen = {}; this.pwmRun = {};
     this.sonar = Array.from({ length: MAX_SONARS }, () => ({ on: false }));
     const ports = Math.ceil(this.P.total / 8); this.reportPort = new Array(ports).fill(0); this.lastPort = new Array(ports).fill(0);
     this.reportAnalog = 0; this.lastAnalog = 0; this.analogTimer = false;
@@ -104,15 +108,16 @@ class VirtualEsp32 {
     if (this.cycle - this.lastRx < OUTPUT_GUARD_MS * TICKS_PER_MS - 0.5) return;   // 用時間單位比較（留半個單位）：用毫秒（浮點數）相減，剛好 3000 ms 會算成 2999.9999…，保護就不會觸發（V2.13 發現）
     let any = false;
     for (let p = 0; p < this.P.total; p++) {
-      if (this.mode[p] !== M.OUTPUT && this.mode[p] !== M.SERVO) continue;
+      if (this.mode[p] !== M.OUTPUT && this.mode[p] !== M.SERVO && this.mode[p] !== M.PWM) continue;
       any = true;
       if (this.mode[p] === M.OUTPUT) this.drive(p, false);
+      if (this.mode[p] === M.PWM) this.pwmOff(p);
       this.detachServo(p); this.setHw(p, 'input'); this.mode[p] = M.INPUT; this.state[p] = 0;
     }
     if (any) { this.write(0xF0, 0x64, 0xF7); this.react(); }
   }
   sendVersion() { this.write(0xF9, 2, 6); }
-  sendFirmware() { this.write(0xF0, 0x79, 1, 2); for (const c of 'DofLabFirmata') this.write(c.charCodeAt(0) & 0x7F, 0); this.write(0xF7); }
+  sendFirmware() { this.write(0xF0, 0x79, 1, 3); for (const c of 'DofLabFirmata') this.write(c.charCodeAt(0) & 0x7F, 0); this.write(0xF7); }
   readPort(port) {
     let v = 0;
     for (let i = 0; i < 8; i++) {
@@ -141,16 +146,33 @@ class VirtualEsp32 {
     this.later(w, () => { if (this.servoOf[p] >= 0 && train === this.servoTrain[p]) this.drive(p, false); });
     this.later(SERVO_PERIOD_US, () => this.servoPulse(p, train));
   }
+  // ---------- PWM（韌體 1.3）：每個週期先高電位、工作週期／255 的時間後變低 ----------
+  pwmSet(p, v) { this.pwmDuty[p] = v; if (!this.pwmRun[p]) this.pwmCycle(p, this.pwmGen[p] = (this.pwmGen[p] || 0) + 1); }
+  pwmCycle(p, g) {
+    if (this.mode[p] !== M.PWM || g !== this.pwmGen[p]) { this.pwmRun[p] = false; return; }
+    const d = this.pwmDuty[p] || 0;
+    if (d <= 0 || d >= 255) { this.pwmRun[p] = false; this.drive(p, d >= 255); return; }   // 0、255：固定的電位，工作週期再改時才重新開始
+    this.pwmRun[p] = true; this.drive(p, true);
+    const per = 1e6 / this.P.pwmHz(p);
+    this.later(per * d / 255, () => { if (g === this.pwmGen[p] && this.mode[p] === M.PWM) this.drive(p, false); });
+    this.later(per, () => this.pwmCycle(p, g));
+  }
+  pwmOff(p) { this.pwmGen[p] = (this.pwmGen[p] || 0) + 1; this.pwmRun[p] = false; this.pwmDuty[p] = 0; this.drive(p, false); }   // 和韌體的 pwmOff 相同：停 PWM、寫 LOW
   // ---------- Firmata 訊息 ----------
   setMode(p, m) {
     if (p >= this.P.total || !this.P.valid(p)) return;
     if (this.P.inputOnly(p) && (m === M.OUTPUT || m === M.SERVO || m === M.PULLUP)) return;
     if (m !== M.SERVO) this.detachServo(p);
+    if (this.mode[p] === M.PWM && m !== M.PWM) { this.pwmOff(p); this.state[p] = 0; }
     if (m === M.INPUT) this.setHw(p, 'input');
     else if (m === M.PULLUP) this.setHw(p, 'pullup');
     else if (m === M.OUTPUT) { this.drive(p, false); this.state[p] = 0; }
     else if (m === M.ANALOG) { if (this.P.toAnalog(p) < 0) return; this.setHw(p, 'input'); }
-    else if (m === M.SERVO) {
+    else if (m === M.PWM) {
+      if (!this.P.pwm(p)) return;
+      if (this.P.timer1 && (p === 9 || p === 10) && this.servoOf.some(x => x >= 0)) return;   // Uno：D9、D10 的 PWM 和 Servo 函式庫共用 Timer1
+      this.pwmOff(p); this.state[p] = 0;   // 韌體：digitalWrite LOW、analogWrite(p, 0)
+    } else if (m === M.SERVO) {
       if (this.servoOf[p] < 0) { for (let i = 0; i < this.P.maxServos; i++) if (!this.servoOf.includes(i)) { this.servoOf[p] = i; break; } }
       if (this.servoOf[p] < 0) return;
       if (this.servoUs[p] === undefined) {   // 剛附加：下一個 20 ms 週期才開始輸出（模型假設，見檔案開頭），同一批訊息裡的角度先生效
@@ -165,6 +187,7 @@ class VirtualEsp32 {
     if (p >= this.P.total) return;
     if (this.mode[p] === M.OUTPUT) { this.state[p] = v ? 1 : 0; this.drive(p, !!v); this.react(); }
     else if (this.mode[p] === M.SERVO && this.servoOf[p] >= 0) { if (v > 180) v = 180; this.state[p] = v; this.servoUs[p] = arduinoMap(v, 0, 180, SERVO_MIN_US, SERVO_MAX_US); }
+    else if (this.mode[p] === M.PWM) { v = Math.max(0, Math.min(255, v)); this.state[p] = v; this.pwmSet(p, v); }
   }
   // ---------- 超音波：和韌體相同的狀態機（0 等待、1 觸發後等 ECHO 變高、2 量 ECHO 寬度） ----------
   sendSonar(i, cm) { this.write(0xF0, 0x63, this.sonar[i].trig, cm & 0x7F, (cm >> 7) & 0x7F, 0xF7); }
@@ -221,6 +244,7 @@ class VirtualEsp32 {
     this.sonarStop();
     for (let p = 0; p < this.P.total; p++) {
       if (this.mode[p] === M.SERVO) this.detachServo(p);
+      if (this.mode[p] === M.PWM) this.pwmOff(p);
       if (this.P.valid(p) && this.mode[p] !== M.UNSET && p > 1) this.setHw(p, 'input');
       this.mode[p] = this.P.valid(p) ? M.INPUT : M.UNSET; this.state[p] = 0; this.servoOf[p] = -1;
     }
@@ -235,6 +259,7 @@ class VirtualEsp32 {
         if (this.P.valid(p) && p > 1) {
           o.push(M.INPUT, 1);
           if (!this.P.inputOnly(p)) o.push(M.OUTPUT, 1, M.PULLUP, 1, M.SERVO, 14);
+          if (this.P.pwm(p)) o.push(M.PWM, 8);
           if (this.P.toAnalog(p) >= 0) o.push(M.ANALOG, this.P.adcBits);
         }
         o.push(0x7F);

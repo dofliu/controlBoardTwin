@@ -14,7 +14,10 @@
  *       數位輸出寫 LOW 再改成輸入、伺服停止送脈衝並改成輸入（不寫角度，否則會轉到 0°），然後送出 F0 64 F7。
  *       DofLab 每秒送一次查詢（心跳），所以正常連線時不會觸發；分頁關掉、電腦睡眠、網路斷了時，輸出不會停在最後的命令。
  *       超音波的觸發與輸入回報不受影響。
- * 序列埠 57600 bps。協定版本回報為 2.6；韌體名稱 DofLabFirmata、版本 1.2。
+ *   - PWM（韌體版本 1.3 起，V2.14 的「訊號測試」用）：Firmata 標準的 PWM 模式（F4 <pin> 03），工作週期 0–255 用類比訊息
+ *       （E<pin> 或擴充類比 F0 6F）寫入，回讀是寫入的值。Uno：D3、5、6、9、10、11（D9、D10 和 Servo 函式庫共用 Timer1，
+ *       有伺服時不能用）；ESP32：可以輸出的腳位，用 LEDC（analogWrite，1 kHz）。離開 PWM 模式、斷線保護、系統重設時先停 PWM 再寫 LOW。
+ * 序列埠 57600 bps。協定版本回報為 2.6；韌體名稱 DofLabFirmata、版本 1.3。
  * 授權：MIT（DofLab 原型）
  */
 #if defined(ARDUINO_ARCH_ESP32)
@@ -23,6 +26,7 @@
   static bool pinValid(uint8_t p) { return (p <= 5) || (p >= 12 && p <= 19) || (p >= 21 && p <= 23) || (p >= 25 && p <= 27) || (p >= 32 && p <= 36) || p == 39; }
   static bool pinInputOnly(uint8_t p) { return p >= 34; }
   static int8_t pinToAnalog(uint8_t p) { const uint8_t a[] = {32, 33, 34, 35, 36, 39}; for (uint8_t i = 0; i < 6; i++) if (a[i] == p) return i; return -1; }
+  static bool pinPwm(uint8_t p) { return pinValid(p) && !pinInputOnly(p) && p != 0 && p != 1 && p != 3; }   // GPIO0（BOOT）、1、3（序列埠）不給 PWM
   static uint8_t analogToPin(uint8_t ch) { const uint8_t a[] = {32, 33, 34, 35, 36, 39}; return a[ch]; }
   #define ADC_BITS 12
   #define MAX_SERVOS 8
@@ -32,13 +36,14 @@
   static bool pinValid(uint8_t p) { return p < TOTAL_PINS; }
   static bool pinInputOnly(uint8_t p) { return false; }
   static int8_t pinToAnalog(uint8_t p) { return p >= 14 ? (int8_t)(p - 14) : -1; }
+  static bool pinPwm(uint8_t p) { return p == 3 || p == 5 || p == 6 || p == 9 || p == 10 || p == 11; }
   static uint8_t analogToPin(uint8_t ch) { return 14 + ch; }
   #define ADC_BITS 10
   #define MAX_SERVOS 6
 #endif
 #define ANALOG_CHANNELS 6
 
-enum { M_INPUT = 0, M_OUTPUT = 1, M_ANALOG = 2, M_SERVO = 4, M_PULLUP = 0x0B, M_SONAR = 0x0C, M_UNSET = 0x7F };
+enum { M_INPUT = 0, M_OUTPUT = 1, M_ANALOG = 2, M_PWM = 3, M_SERVO = 4, M_PULLUP = 0x0B, M_SONAR = 0x0C, M_UNSET = 0x7F };
 #define MAX_SONARS 2
 #define SONAR_PERIOD_MS 60
 #define SONAR_TIMEOUT_US 30000UL
@@ -48,7 +53,7 @@ unsigned long lastRx = 0;
 struct Sonar { bool on; uint8_t trig, echo, state; unsigned long due, t0; };
 Sonar sonar[MAX_SONARS];
 uint8_t pinMode_[TOTAL_PINS];
-uint8_t pinState_[TOTAL_PINS];   // 輸出值或伺服角度
+uint8_t pinState_[TOTAL_PINS];   // 輸出值、PWM 工作週期或伺服角度
 int servoOf[TOTAL_PINS];
 Servo servos[MAX_SERVOS];
 #if defined(ARDUINO_ARCH_ESP32)
@@ -63,7 +68,7 @@ uint8_t buf[32]; uint8_t blen = 0; bool sysex = false; uint8_t cmd = 0; uint8_t 
 void sendVersion() { Serial.write(0xF9); Serial.write(2); Serial.write(6); }
 void sendFirmware() {
   const char *name = "DofLabFirmata";
-  Serial.write(0xF0); Serial.write(0x79); Serial.write(1); Serial.write(2);   // 韌體版本 1.2（1.1 起支援超音波、1.2 起有斷線保護）
+  Serial.write(0xF0); Serial.write(0x79); Serial.write(1); Serial.write(3);   // 韌體版本 1.3（1.1 起支援超音波、1.2 起有斷線保護、1.3 起有 PWM）
   for (const char *c = name; *c; c++) { Serial.write(*c & 0x7F); Serial.write(0); }
   Serial.write(0xF7);
 }
@@ -94,14 +99,30 @@ void detachServo(uint8_t p) {
 #endif
   servoOf[p] = -1;
 }
+// 停止 PWM 並寫 LOW（離開 PWM 模式、斷線保護、系統重設）。Uno：digitalWrite 會關掉計時器的 PWM 輸出；
+// ESP32：analogWrite 把腳位接到 LEDC，要先寫 0 再拆下來，腳位才回到一般 GPIO
+void pwmOff(uint8_t p) {
+#if defined(ARDUINO_ARCH_ESP32)
+  analogWrite(p, 0); ledcDetachPin(p);
+#endif
+  digitalWrite(p, LOW);
+}
 void setMode(uint8_t p, uint8_t m) {
   if (p >= TOTAL_PINS || !pinValid(p)) return;
   if (pinInputOnly(p) && (m == M_OUTPUT || m == M_SERVO || m == M_PULLUP)) return;   // 只能輸入的腳位：拒絕
   if (m != M_SERVO) detachServo(p);
+  if (pinMode_[p] == M_PWM && m != M_PWM) { pwmOff(p); pinState_[p] = 0; }
   if (m == M_INPUT) pinMode(p, INPUT);
   else if (m == M_PULLUP) pinMode(p, INPUT_PULLUP);
   else if (m == M_OUTPUT) { digitalWrite(p, LOW); pinMode(p, OUTPUT); pinState_[p] = 0; }
   else if (m == M_ANALOG) { if (pinToAnalog(p) < 0) return; pinMode(p, INPUT); }
+  else if (m == M_PWM) {
+    if (!pinPwm(p)) return;
+#if !defined(ARDUINO_ARCH_ESP32)
+    if (p == 9 || p == 10) for (uint8_t q = 0; q < TOTAL_PINS; q++) if (servoOf[q] >= 0) return;   // Uno：D9、D10 的 PWM 和 Servo 函式庫共用 Timer1，有伺服時拒絕
+#endif
+    digitalWrite(p, LOW); pinMode(p, OUTPUT); analogWrite(p, 0); pinState_[p] = 0;
+  }
   else if (m == M_SERVO) {
     if (servoOf[p] < 0) { for (uint8_t i = 0; i < MAX_SERVOS; i++) { bool used = false; for (uint8_t q = 0; q < TOTAL_PINS; q++) if (servoOf[q] == i) used = true; if (!used) { servoOf[p] = i; break; } } }
     if (servoOf[p] < 0) return;
@@ -117,6 +138,7 @@ void setValue(uint8_t p, int v) {
   if (p >= TOTAL_PINS) return;
   if (pinMode_[p] == M_OUTPUT) { pinState_[p] = v ? 1 : 0; digitalWrite(p, v ? HIGH : LOW); }
   else if (pinMode_[p] == M_SERVO && servoOf[p] >= 0) { if (v > 180) v = 180; pinState_[p] = v; servos[servoOf[p]].write(v); }
+  else if (pinMode_[p] == M_PWM) { if (v > 255) v = 255; if (v < 0) v = 0; pinState_[p] = v; analogWrite(p, v); }
 }
 void sendSonar(uint8_t i, int cm) { Serial.write(0xF0); Serial.write(0x63); Serial.write(sonar[i].trig); Serial.write(cm & 0x7F); Serial.write((cm >> 7) & 0x7F); Serial.write(0xF7); }
 void sonarStop() {
@@ -164,9 +186,10 @@ void outputGuard() {
   if (millis() - lastRx < OUTPUT_GUARD_MS) return;
   bool any = false;
   for (uint8_t p = 0; p < TOTAL_PINS; p++) {
-    if (pinMode_[p] != M_OUTPUT && pinMode_[p] != M_SERVO) continue;
+    if (pinMode_[p] != M_OUTPUT && pinMode_[p] != M_SERVO && pinMode_[p] != M_PWM) continue;
     any = true;
     if (pinMode_[p] == M_OUTPUT) digitalWrite(p, LOW);
+    if (pinMode_[p] == M_PWM) pwmOff(p);
     detachServo(p); pinMode(p, INPUT); pinMode_[p] = M_INPUT; pinState_[p] = 0;
   }
   if (any) { Serial.write(0xF0); Serial.write(0x64); Serial.write(0xF7); }
@@ -174,7 +197,7 @@ void outputGuard() {
 
 void resetAll() {
   sonarStop();
-  for (uint8_t p = 0; p < TOTAL_PINS; p++) { if (pinMode_[p] == M_SERVO) detachServo(p); if (pinValid(p) && pinMode_[p] != M_UNSET && p > 1) pinMode(p, INPUT); pinMode_[p] = pinValid(p) ? M_INPUT : M_UNSET; pinState_[p] = 0; servoOf[p] = -1; }
+  for (uint8_t p = 0; p < TOTAL_PINS; p++) { if (pinMode_[p] == M_SERVO) detachServo(p); if (pinMode_[p] == M_PWM) pwmOff(p); if (pinValid(p) && pinMode_[p] != M_UNSET && p > 1) pinMode(p, INPUT); pinMode_[p] = pinValid(p) ? M_INPUT : M_UNSET; pinState_[p] = 0; servoOf[p] = -1; }
   for (uint8_t i = 0; i < sizeof(reportPort); i++) { reportPort[i] = 0; lastPort[i] = 0; }
   reportAnalog = 0;
 }
@@ -188,6 +211,7 @@ void handleSysex() {
       if (pinValid(p) && p > 1) {
         Serial.write(M_INPUT); Serial.write(1);
         if (!pinInputOnly(p)) { Serial.write(M_OUTPUT); Serial.write(1); Serial.write(M_PULLUP); Serial.write(1); Serial.write(M_SERVO); Serial.write(14); }
+        if (pinPwm(p)) { Serial.write(M_PWM); Serial.write(8); }
         if (pinToAnalog(p) >= 0) { Serial.write(M_ANALOG); Serial.write(ADC_BITS); }
       }
       Serial.write(0x7F);

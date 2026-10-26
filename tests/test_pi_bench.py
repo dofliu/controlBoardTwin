@@ -70,6 +70,7 @@ class VirtualPi(unittest.TestCase):
     def setUpClass(cls):
         spec = json.loads((BENCHES / "pi-dist-gauge.json").read_text(encoding="utf-8"))
         spec["parts"].append({"id": "BTN1", "type": "button", "pin": 27, "bounceMs": 8})
+        spec["parts"].append({"id": "LED1", "type": "led", "pin": 22})
         cls.proc, cls.port = start(json.dumps(spec))
         assert cls.port, stop(cls.proc)
 
@@ -157,6 +158,41 @@ class VirtualPi(unittest.TestCase):
                     await ws.send_json({"op": "servo", "id": "g2", "pin": 18, "angle": 30})
                     e = await rx("error")
                     self.assertIn("沒有授權", e["message"], f"授權已經撤銷，命令不會執行：{e}")
+        asyncio.run(go())
+
+    def test_pwm(self):
+        """PWM（V2.14 的訊號測試）：授權成 pwm、寫工作週期 0–255、回讀 ACK；工作台量到工作週期與 1 kHz；同一個腳位改回數位輸出；不是 pwm 的腳位拒絕 pwm 命令"""
+        port = self.port
+        async def go():
+            async with aiohttp.ClientSession() as s:
+                async def led():
+                    return next(p for p in (await get(port, "/api/bench"))["bench"]["parts"] if p["id"] == "LED1")
+                async with s.ws_connect(f"http://127.0.0.1:{port}/ws") as ws:
+                    async def rx(op, n=400):
+                        for _ in range(n):
+                            m = await asyncio.wait_for(ws.receive_json(), 6)
+                            if m["op"] == op: return m
+                    await ws.send_json({"op": "hello", "client": "test", "proto": 2}); h = await rx("hello")
+                    self.assertTrue(h.get("pwm"), "hello 回報支援 PWM")
+                    await ws.send_json({"op": "authorize", "outputs": [{"pin": 22, "kind": "pwm"}]}); await rx("authorized")
+                    for v in (64, 191, 255, 0):
+                        await ws.send_json({"op": "pwm", "id": f"p{v}", "pin": 22, "value": v}); a = await rx("ack")
+                        self.assertEqual((a["kind"], a["value"]), ("pwm", v), a)
+                        for _ in range(50):
+                            l = await led()
+                            if l["duty"] is not None and abs(l["duty"] - v / 255) < 0.01: break
+                            await asyncio.sleep(0.02)
+                        self.assertTrue(l["duty"] is not None and abs(l["duty"] - v / 255) < 0.01 and l["pwmHz"] == 1000, l)
+                        self.assertEqual(l["on"], v > 0, l)
+                    await ws.send_json({"op": "pwm", "id": "p300", "pin": 22, "value": 300}); a = await rx("ack"); self.assertEqual(a["value"], 255, "超過 255 限制為 255")
+                    await ws.send_json({"op": "authorize", "outputs": [{"pin": 22, "kind": "digital"}]}); await rx("authorized")
+                    await ws.send_json({"op": "write", "id": "d1", "pin": 22, "value": 1}); a = await rx("ack"); self.assertEqual((a["kind"], a["value"]), ("digital", 1))
+                    for _ in range(50):
+                        l = await led()
+                        if l["duty"] is None and l["on"]: break
+                        await asyncio.sleep(0.02)
+                    self.assertTrue(l["duty"] is None and l["on"], f"改回數位輸出：{l}")
+                    await ws.send_json({"op": "pwm", "id": "p2", "pin": 22, "value": 10}); e = await rx("error"); self.assertIn("不是 PWM 輸出", e["message"])
         asyncio.run(go())
 
     def test_bad_bench_action(self):

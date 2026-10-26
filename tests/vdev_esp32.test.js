@@ -43,7 +43,12 @@ test('協定模型（Uno 腳位表）和虛擬 Uno 上的真 DofLabFirmata：同
     ['不存在的腳位', [0xF4, 25, 1, 0xF0, 0x6D, 30, 0xF7, 0xF5, 40, 1]],
     ['A0 類比＋回報', [0xF4, 14, 2, 0xC0, 1], 45], ['關掉類比回報', [0xC0, 0]],
     ['超音波 D7／D8', [0xF0, 0x62, 7, 8, 0xF7], 130], ['回讀 D7（超音波）', [0xF0, 0x6D, 7, 0xF7]], ['停止超音波', [0xF0, 0x62, 0x7F, 0xF7], 80], ['回讀 D7', [0xF0, 0x6D, 7, 0xF7]],
-    ['斷線保護：3.2 秒沒有收到位元組（D13 輸出、D9 伺服 → 關掉並送 F0 64 F7）', [], 3200], ['斷線保護之後回讀 D13、D9', [0xF0, 0x6D, 13, 0xF7, 0xF0, 0x6D, 9, 0xF7]],
+    // PWM（韌體 1.3）：設成 PWM、寫入工作週期、回讀；超過 255 限制為 255；不是 PWM 腳位、或 Uno 有伺服時的 D10（Timer1）拒絕；離開 PWM 寫 LOW
+    ['D6 PWM＋工作週期 128', [0xF4, 6, 3, 0xE6, 0x00, 0x01], 30], ['回讀 D6（兩個位元組）', [0xF0, 0x6D, 6, 0xF7]],
+    ['PWM 300 限制為 255', [0xE6, 0x2C, 0x02, 0xF0, 0x6D, 6, 0xF7]], ['擴充類比 D6 = 64', [0xF0, 0x6F, 6, 64, 0, 0xF7, 0xF0, 0x6D, 6, 0xF7]],
+    ['D7 不是 PWM 腳位（拒絕）', [0xF4, 7, 3, 0xF0, 0x6D, 7, 0xF7]], ['D10 PWM：有伺服時拒絕（Timer1）', [0xF4, 10, 3, 0xF0, 0x6D, 10, 0xF7]],
+    ['D6 離開 PWM（改成輸出）', [0xF4, 6, 1, 0xF0, 0x6D, 6, 0xF7]], ['D6 再設成 PWM＝100', [0xF4, 6, 3, 0xE6, 100, 0, 0xF0, 0x6D, 6, 0xF7]],
+    ['斷線保護：3.2 秒沒有收到位元組（D13 輸出、D9 伺服、D6 PWM → 關掉並送 F0 64 F7）', [], 3200], ['斷線保護之後回讀 D13、D9、D6', [0xF0, 0x6D, 13, 0xF7, 0xF0, 0x6D, 9, 0xF7, 0xF0, 0x6D, 6, 0xF7]],
     ['沒有輸出時不再通知', [], 3200],
         ['系統重設', [0xFF]], ['重設後回讀 D13、D9', [0xF0, 0x6D, 13, 0xF7, 0xF0, 0x6D, 9, 0xF7]], ['重設後不再回報', b => b.act({ part: 'BTN1', action: 'press' })]
   ];
@@ -67,6 +72,29 @@ test('協定模型（Uno 腳位表）和虛擬 Uno 上的真 DofLabFirmata：同
   assert.ok(n >= 20 && ns >= 2, `比對了 ${n} 則訊息、${ns} 則超音波回報`);
 });
 
+test('PWM 波形（韌體 1.3）：虛擬 Uno 上的真韌體和協定模型（Uno 腳位表）的頻率與工作週期相同；ESP32 腳位表 1 kHz', () => {
+  // 量 100 ms 的上升緣與高電位時間：真韌體是 avr8js 的計時器硬體 PWM（D6 Timer0 977 Hz、D3 Timer2 490 Hz），模型是照韌體寫的波形
+  const measure = (chip, pin, duty, warm) => {
+    let last = chip.isHigh(pin), rises = [], hiMs = 0, t = null;
+    chip.pinWatchers.push(() => { const h = chip.isHigh(pin); if (h === last) return; last = h; if (h) { rises.push(chip.timeMs); t = chip.timeMs; } else if (t !== null) { hiMs += chip.timeMs - t; t = null; } });
+    chip.sendBytes([0xF4, pin, 3]); chip.sendBytes(pin < 16 ? [0xE0 | pin, duty & 0x7F, duty >> 7] : [0xF0, 0x6F, pin, duty & 0x7F, duty >> 7, 0xF7]); chip.runMs(warm);
+    rises = []; hiMs = 0; t = chip.isHigh(pin) ? chip.timeMs : null; const t0 = chip.timeMs; chip.runMs(100);
+    if (t !== null) hiMs += chip.timeMs - t;
+    const n = rises.length; return { hz: n > 1 ? (n - 1) / (rises[n - 1] - rises[0]) * 1000 : 0, duty: hiMs / (chip.timeMs - t0), high: chip.isHigh(pin) };
+  };
+  for (const [pin, duty, hz] of [[6, 64, 976.5625], [3, 191, 490.196], [6, 255, 0], [3, 0, 0]]) {
+    const real = new VirtualUno(HEX); real.runMs(600); const model = new VirtualEsp32({ board: 'uno', profile: 'uno' }); model.runMs(600);
+    const a = measure(real, pin, duty, 20), b = measure(model, pin, duty, 20);
+    if (hz) {
+      assert.ok(Math.abs(a.hz - hz) / hz < 0.01 && Math.abs(b.hz - hz) / hz < 0.01, `D${pin} 頻率：真韌體 ${a.hz.toFixed(1)}、模型 ${b.hz.toFixed(1)}，應該約 ${hz} Hz`);
+      assert.ok(Math.abs(a.duty - b.duty) < 0.02 && Math.abs(b.duty - duty / 255) < 0.01, `D${pin} 工作週期：真韌體 ${a.duty.toFixed(3)}、模型 ${b.duty.toFixed(3)}，寫入 ${duty}/255`);
+    } else assert.ok(a.hz === 0 && b.hz === 0 && a.high === (duty === 255) && b.high === (duty === 255), `D${pin} = ${duty}：兩邊都是固定的${duty === 255 ? '高' : '低'}電位：${JSON.stringify([a, b])}`);
+  }
+  const e = new VirtualEsp32(); e.runMs(400); const m = measure(e, 18, 128, 5);
+  assert.ok(Math.abs(m.hz - 1000) < 5 && Math.abs(m.duty - 128 / 255) < 0.01, `ESP32 GPIO18：${JSON.stringify(m)}`);
+  for (const pin of [0, 1, 3, 34]) { const x = new VirtualEsp32(); x.runMs(400); x.sendBytes([0xF4, pin, 3]); assert.notStrictEqual(x.mode[pin], 3, `GPIO${pin} 不能 PWM`); }
+});
+
 test('ESP32 腳位表：能力、類比對應、只能輸入的腳位（GPIO34–39）、12 位元類比，和韌體原始碼的 ESP32 分支相同', () => {
   const m = new VirtualEsp32(); const rx = []; m.onSerial = b => rx.push(b);
   m.runMs(400);
@@ -76,9 +104,10 @@ test('ESP32 腳位表：能力、類比對應、只能輸入的腳位（GPIO34�
   assert.strictEqual(pins.length, 40);
   const modes = p => { const o = {}; for (let i = 0; i < pins[p].length; i += 2) o[pins[p][i]] = pins[p][i + 1]; return o; };
   assert.deepStrictEqual(modes(0), {}, 'GPIO0、1 不列能力（和韌體的 p > 1 相同）'); assert.deepStrictEqual(modes(6), {}, 'GPIO6–11 接 Flash，不能用');
-  assert.deepStrictEqual(modes(23), { 0: 1, 1: 1, 0x0B: 1, 4: 14 }, 'GPIO23：輸入、輸出、上拉、伺服');
+  assert.deepStrictEqual(modes(23), { 0: 1, 1: 1, 0x0B: 1, 4: 14, 3: 8 }, 'GPIO23：輸入、輸出、上拉、伺服、8 位元 PWM（1.3）');
   assert.deepStrictEqual(modes(34), { 0: 1, 2: 12 }, 'GPIO34：只能輸入＋12 位元類比');
-  assert.deepStrictEqual(modes(32), { 0: 1, 1: 1, 0x0B: 1, 4: 14, 2: 12 });
+  assert.deepStrictEqual(modes(32), { 0: 1, 1: 1, 0x0B: 1, 4: 14, 3: 8, 2: 12 });
+  assert.ok(modes(2)[3] === 8 && modes(3)[3] === undefined, 'GPIO2（DevKit V1 的藍燈）可以 PWM；GPIO3（RX）不行');
   m.sendBytes([0xF0, 0x69, 0xF7]); const am = frames(rx.splice(0))[0].slice(2, -1);
   assert.deepStrictEqual([32, 33, 34, 35, 36, 39].map(p => am[p]), [0, 1, 2, 3, 4, 5]); assert.strictEqual(am.filter(x => x !== 0x7F).length, 6);
   // 只能輸入的腳位拒絕輸出與伺服；有效腳位清單和韌體相同
@@ -149,4 +178,13 @@ test('伺服停止時不會送出被截短的脈衝（協定模型，ESP32 腳�
   assert.ok(w.length > 300, `脈衝數 ${w.length}`);
   assert.deepStrictEqual(w.filter(x => x < 1777 || x > 1785), [], '120° 的脈衝都是約 1780 µs（模型 1781，進位到時間單位），沒有被截短的');
   assert.strictEqual(d.pinState(18), 2, '最後 GPIO18 是輸入'); assert.ok(!d.isHigh(18));
+});
+
+test('PWM（協定模型＋工作台）：GPIO2（DevKit V1 的藍燈）工作週期 128 → 工作台量到 1 kHz、約 50 %；0 與 255 是固定的亮滅', () => {
+  const m = new VirtualEsp32(); const b = new Bench(m, { board: 'esp32', parts: [{ id: 'OBLED', type: 'led', pin: 2 }] }); m.runMs(400);
+  const led = () => b.partState(b.parts.OBLED);
+  m.sendBytes([0xF4, 2, 3, 0xE2, 0x00, 0x01]); m.runMs(30);
+  assert.ok(led().pwmHz === 1000 && Math.abs(led().duty - 128 / 255) < 0.01 && led().on, JSON.stringify(led()));
+  m.sendBytes([0xE2, 0x7F, 0x01]); m.runMs(60); assert.ok(led().duty === null && led().on, `255：固定亮 ${JSON.stringify(led())}`);
+  m.sendBytes([0xE2, 0x00, 0x00]); m.runMs(60); assert.ok(led().duty === null && !led().on, `0：固定滅 ${JSON.stringify(led())}`);
 });

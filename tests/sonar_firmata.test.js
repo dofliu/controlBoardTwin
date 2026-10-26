@@ -1,4 +1,4 @@
-// 超音波真機同步：Firmata 驅動 × DofLabFirmata 1.2（真實 hex 在虛擬 Uno 上執行），外接 HC-SR04 時序模型。
+// 超音波真機同步：Firmata 驅動 × DofLabFirmata 1.3（真實 hex 在虛擬 Uno 上執行），外接 HC-SR04 時序模型。
 // StandardFirmata 沒有超音波功能：驅動要明確回報「不支援」，不送出任何設定。
 const test = require('node:test'); const assert = require('node:assert'); const path = require('path');
 const { DL } = require('./helpers'); require('../src/drivers/drivers.js');
@@ -19,11 +19,11 @@ function rig(hex) {
 }
 const SONAR = [{ signal: 'US1.distance', num: 7, echo: 8, kind: 'sonar' }];
 
-test('虛擬 Uno＋DofLabFirmata 1.2：唯讀時讀到超音波距離（誤差 ≤ 1 cm）、沒有回波回報 400、斷線後 TRIG 回到輸入', { timeout: 90000 }, async () => {
+test('虛擬 Uno＋DofLabFirmata 1.3：唯讀時讀到超音波距離（誤差 ≤ 1 cm）、沒有回波回報 400、斷線後 TRIG 回到輸入', { timeout: 90000 }, async () => {
   const { uno, sonar, twin, drv, sent } = rig(FIX('DofLabFirmata-uno.hex'));
   try {
     const r = await drv.connect(); twin.connected(r.deviceId, r.info);
-    assert.deepStrictEqual(drv.fwVersion, [1, 2]);
+    assert.deepStrictEqual(drv.fwVersion, [1, 3]);
     const w = await drv.watch(SONAR); assert.ok(!w.sonarUnsupported);
     assert.ok(!sent.some((b, i) => b === 0xF5 || b === 0xF4), '唯讀：沒有設定輸出模式或寫值（只有超音波設定）');
     assert.ok(await until(() => twin.view('US1.distance').measured), '收到距離回報');

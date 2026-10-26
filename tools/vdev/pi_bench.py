@@ -18,6 +18,7 @@ import time
 
 SERVO_MIN_US, SERVO_MAX_US = 544, 2400       # 與 tools/vdev/bench.js 相同的 SG90 教學假設
 VCC, LED_VF = 3.3, 2.0                        # 樹莓派的 GPIO 是 3.3 V
+SERVO_HZ = 50                                 # pi_bridge 的伺服（AngularServo）是 50 Hz；其他頻率的腳位是 PWM（V2.14 的訊號測試）
 TYPES = ("button", "led", "ultrasonic", "servo", "arm")
 PRESET_DIR = pathlib.Path(__file__).resolve().parent / "benches"
 BCM_PINS = range(2, 28)                       # 40 針排針上的 GPIO2–GPIO27
@@ -90,7 +91,7 @@ class PiBench:
             p.update(bounceMs=p.get("bounceMs", 8), pressed=False, level=True, edges=0, gen=0, unplugged=False)
             self.pin(p["pin"]).drive_high()          # 放開：上拉成高電位
         elif t == "led":
-            p.update(ohm=p.get("ohm", 220), on=False, toggles=0, lastChangeMs=None, unplugged=False)
+            p.update(ohm=p.get("ohm", 220), on=False, toggles=0, lastChangeMs=None, unplugged=False, duty=None, pwmHz=None, traceDuty=None)
         elif t == "ultrasonic":
             p.update(cm=p.get("cm", 100), unplugged=False, stuck=False, reads=0)
             self.apply_cm(p)
@@ -172,7 +173,20 @@ class PiBench:
         for p in self.parts.values():
             if p["type"] == "led":
                 pin = self.pin(p["pin"])
-                on = (not p["unplugged"]) and pin.function == "output" and pin.frequency is None and float(pin.state or 0) > 0.5
+                f = pin.frequency
+                if not p["unplugged"] and pin.function == "output" and f and f != SERVO_HZ:
+                    # PWM（V2.14 的訊號測試）：模擬腳位直接給工作週期；亮度 ≈ 工作週期
+                    duty = float(pin.state or 0)
+                    if p["traceDuty"] is None or abs(duty - p["traceDuty"]) >= 0.5 / 255:
+                        p["traceDuty"] = duty
+                        self.rec({"devMs": round(now, 3), "part": p["id"], "duty": round(duty, 4)})
+                    p["duty"], p["pwmHz"] = duty, f
+                    on = duty > 0
+                    if on != p["on"]:
+                        p["on"] = on; p["toggles"] += 1; p["lastChangeMs"] = now
+                    continue
+                p["duty"] = p["pwmHz"] = p["traceDuty"] = None
+                on = (not p["unplugged"]) and pin.function == "output" and f is None and float(pin.state or 0) > 0.5
                 if on != p["on"]:
                     p["on"] = on; p["toggles"] += 1; p["lastChangeMs"] = now
                     self.rec({"devMs": round(now, 3), "part": p["id"], "on": on})
@@ -227,8 +241,10 @@ class PiBench:
         if t == "button":
             return {"id": p["id"], "type": t, "pin": p["pin"], "pressed": p["pressed"], "level": "high" if p["level"] else "low", "edges": p["edges"], "bounceMs": p["bounceMs"], "unplugged": p["unplugged"]}
         if t == "led":
-            mA = round((VCC - LED_VF) / p["ohm"] * 1000, 1) if p["on"] else 0
-            return {"id": p["id"], "type": t, "pin": p["pin"], "ohm": p["ohm"], "on": p["on"], "mA": mA, "overCurrent": mA > 20, "toggles": p["toggles"], "lastChangeMs": p["lastChangeMs"], "unplugged": p["unplugged"]}
+            peak = round((VCC - LED_VF) / p["ohm"] * 1000, 1) if p["on"] else 0
+            mA = round(peak * p["duty"], 1) if p["duty"] is not None else peak   # PWM：平均電流（峰值 × 工作週期）
+            return {"id": p["id"], "type": t, "pin": p["pin"], "ohm": p["ohm"], "on": p["on"], "mA": mA, "overCurrent": peak > 20, "toggles": p["toggles"], "lastChangeMs": p["lastChangeMs"], "unplugged": p["unplugged"],
+                    "duty": None if p["duty"] is None else round(p["duty"], 4), "pwmHz": p["pwmHz"]}
         if t == "ultrasonic":
             return {"id": p["id"], "type": t, "trig": p["trig"], "echo": p["echo"], "cm": p["cm"], "drop": 0, "pulses": None, "echoes": None, "dropped": 0, "unplugged": p["unplugged"], "stuck": p["stuck"], "model": "distance"}
         if t == "servo":
@@ -254,7 +270,7 @@ class PiBench:
         pins = {}
         for n in BCM_PINS:
             pin = self.pin(n)
-            pins[n] = "servo" if pin.frequency else (("high" if float(pin.state or 0) > 0.5 else "low") if pin.function == "output" else "input")
+            pins[n] = ("servo" if pin.frequency == SERVO_HZ else "pwm") if pin.frequency else (("high" if float(pin.state or 0) > 0.5 else "low") if pin.function == "output" else "input")
         return {"id": self.spec.get("device", "pi-1"), "kind": "virtual", "board": "pi4b",
                 "firmware": {"name": "pi_bridge（模擬腳位）", "model": "gpio-mock"},
                 "devMs": round(self.now_ms()), "realtime": 1, "linked": linked > 0, "links": linked, "resets": 0,

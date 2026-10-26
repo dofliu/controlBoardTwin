@@ -4,6 +4,8 @@
 // 元件模型都是教學假設，參數寫在工作台規格裡（tools/vdev/benches/*.json），可以調整：
 //   button      按下拉到 GND；放開時視為高電位（假設韌體開了內部上拉）。按下與放開各有 0–bounceMs 的隨機彈跳。
 //   led         依腳位的實際電位（不是介面的 ACK）判斷亮滅；以電源電壓（Uno 5 V、ESP32 3.3 V）、順向電壓 2.0 V、限流電阻估算電流，超過 20 mA 標示警告。
+//               PWM（V2.14 的訊號測試）：上升緣間隔短於 20 ms（高於 50 Hz）就當成 PWM，從腳位的高電位時間算工作週期（亮度 ≈ 工作週期）；
+//               3 個週期沒有變化就回到一般的亮／滅。軌跡只記工作週期的變化（否則每秒上千筆）。
 //   ldr         光敏分壓模組：AO ≈ 電源電壓 × 亮度比例（inverted 時相反），加上 ±noise 的隨機雜訊；量化由晶片做（Uno：avr8js 的 10 位元 ADC；ESP32：協定模型的 12 位元）。
 //   ultrasonic  HC-SR04 時序：TRIG ≥ 10 µs 後 460 µs ECHO 變高，寬度 = 距離 × 58 µs；沒有物體或掉回波時 ECHO 維持高電位 38 ms。
 //   servo       SG90：從腳位高電位寬度算命令角（544 µs = 0°、2400 µs = 180°，與 Arduino Servo 函式庫預設相同），
@@ -20,6 +22,7 @@ const PRESET_DIR = path.join(__dirname, 'benches');
 const DEFAULT_BENCH = 'hold-blink';
 const TYPES = ['button', 'led', 'ldr', 'ultrasonic', 'servo', 'arm'];
 const SERVO_MIN_US = 544, SERVO_MAX_US = 2400;
+const PWM_MAX_PERIOD = 20 * 16000;   // LED：上升緣間隔短於 20 ms（cycle）就當成 PWM
 
 // 可重現的亂數（工作台規格的 seed 一樣，彈跳與雜訊就一樣）
 function rng(seed) { let a = (seed >>> 0) || 1; return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
@@ -80,7 +83,7 @@ class Bench {
 
   init(p) {
     if (p.type === 'button') { p.bounceMs = p.bounceMs ?? 8; p.pressed = false; p.level = true; p.edges = 0; p.gen = 0; this.uno.setInput(p.pin, true); }
-    else if (p.type === 'led') { p.ohm = p.ohm || 220; p.on = false; p.toggles = 0; p.lastChangeMs = null; }
+    else if (p.type === 'led') { p.ohm = p.ohm || 220; p.on = false; p.toggles = 0; p.lastChangeMs = null; p.level = false; p.rise = null; p.highC = null; p.periodC = null; p.lastEdge = null; p.pwm = null; p.traceDuty = null; }
     else if (p.type === 'ldr') { p.light = p.light ?? 60; p.noise = p.noise ?? 0.01; p.volts = null; this.refreshLdr(p); }
     else if (p.type === 'ultrasonic') { p.cm = p.cm === undefined ? 100 : p.cm; p.drop = p.drop || 0; p.pulses = 0; p.echoes = 0; p.dropped = 0; p.short = 0; this.initSonar(p); }
     else if (p.type === 'servo') { p.speed = p.speed || 600; p.cmd = null; p.angle = p.start ?? null; p.lastPulseMs = null; p.lastMoveMs = null; p.pulseUs = null; p.pulses = 0; p.rise = null; this.initServo(p); }
@@ -139,9 +142,30 @@ class Bench {
   sense() {
     for (const p of Object.values(this.parts)) {
       if (p.type !== 'led') continue;
-      const on = !p.unplugged && this.uno.pinState(p.pin) === avr.PinState.High;
-      if (on !== p.on) { p.on = on; p.toggles++; p.lastChangeMs = this.uno.timeMs; this.rec({ devMs: Math.round(this.uno.timeMs * 1000) / 1000, part: p.id, on }); }
+      const lv = !p.unplugged && this.uno.pinState(p.pin) === avr.PinState.High;
+      if (lv === p.level) continue;
+      const c = this.uno.cycle; p.level = lv; p.lastEdge = c;
+      if (lv) { if (p.rise !== null) p.periodC = c - p.rise; p.rise = c; } else if (p.rise !== null) p.highC = c - p.rise;
+      // PWM：上一個週期完整（上升 → 下降 → 上升）而且夠短
+      if (lv && p.periodC !== null && p.periodC < PWM_MAX_PERIOD && p.highC !== null && p.highC < p.periodC) { this.pwmSeen(p, p.highC / p.periodC, 16e6 / p.periodC); continue; }
+      if (p.pwm) continue;   // PWM 進行中：亮度看工作週期，不記每一次亮滅
+      this.ledLevel(p, lv);
     }
+  }
+  ledLevel(p, on) { if (on !== p.on) { p.on = on; p.toggles++; p.lastChangeMs = this.uno.timeMs; this.rec({ devMs: Math.round(this.uno.timeMs * 1000) / 1000, part: p.id, on }); } }
+  pwmSeen(p, duty, hz) {
+    const start = !p.pwm; p.pwm = { duty, hz };
+    if (start || Math.abs(duty - p.traceDuty) >= 0.5 / 255) { p.traceDuty = duty; this.rec({ devMs: Math.round(this.uno.timeMs * 1000) / 1000, part: p.id, duty: Math.round(duty * 10000) / 10000, hz: Math.round(hz) }); }
+    if (!p.on) { p.on = true; p.toggles++; p.lastChangeMs = this.uno.timeMs; }
+    if (start) this.pwmWatch(p);
+  }
+  // 每 10 ms 看一次：3 個週期沒有電位變化 → PWM 結束（工作週期 0／255、改回數位輸出、停止），回到一般的亮／滅
+  pwmWatch(p) {
+    this.at(10, () => {
+      if (!p.pwm) return;
+      if (this.uno.cycle - p.lastEdge > 3 * p.periodC || p.unplugged) { p.pwm = null; p.traceDuty = null; p.periodC = null; p.highC = null; this.rec({ devMs: Math.round(this.uno.timeMs * 1000) / 1000, part: p.id, pwm: 'end' }); this.ledLevel(p, p.level && !p.unplugged); p.on = p.level && !p.unplugged; return; }
+      this.pwmWatch(p);
+    });
   }
   // ---------- 工作台操作 ----------
   // {part, action:'press'|'release'}、{part, action:'set', light}、{part, action:'set', cm（null = 移走物體）}
@@ -207,7 +231,10 @@ class Bench {
   partState0(p) {
     const r1 = x => x === null || x === undefined ? null : Math.round(x * 10) / 10;
     if (p.type === 'button') return { id: p.id, type: p.type, pin: p.pin, pressed: p.pressed, level: p.level ? 'high' : 'low', edges: p.edges, bounceMs: p.bounceMs };
-    if (p.type === 'led') { const mA = p.on ? Math.round((this.vcc - LED_VF) / p.ohm * 1000 * 10) / 10 : 0; return { id: p.id, type: p.type, pin: p.pin, ohm: p.ohm, on: p.on, mA, overCurrent: mA > 20, toggles: p.toggles, lastChangeMs: p.lastChangeMs }; }
+    if (p.type === 'led') {
+      const peak = p.on ? Math.round((this.vcc - LED_VF) / p.ohm * 1000 * 10) / 10 : 0, mA = p.pwm ? Math.round(peak * p.pwm.duty * 10) / 10 : peak;   // PWM：平均電流（峰值 × 工作週期）
+      return { id: p.id, type: p.type, pin: p.pin, ohm: p.ohm, on: p.on, mA, overCurrent: peak > 20, toggles: p.toggles, lastChangeMs: p.lastChangeMs, duty: p.pwm ? Math.round(p.pwm.duty * 10000) / 10000 : null, pwmHz: p.pwm ? Math.round(p.pwm.hz) : null };
+    }
     if (p.type === 'ldr') return { id: p.id, type: p.type, pin: p.pin, light: p.light, volts: Math.round(p.volts * 1000) / 1000, noise: p.noise, inverted: !!p.inverted };
     if (p.type === 'ultrasonic') return { id: p.id, type: p.type, trig: p.trig, echo: p.echo, cm: p.cm, drop: p.drop, pulses: p.pulses, echoes: p.echoes, dropped: p.dropped };
     if (p.type === 'servo') this.moveServo(p);
