@@ -82,3 +82,18 @@ test('觀測頁內建的 DofLabFirmata .hex 與 firmware 原始碼編譯結果�
   const ino = fs.readFileSync(path.join(__dirname, '..', 'tools', 'firmware', 'DofLabFirmata', 'DofLabFirmata.ino'), 'utf8');
   assert.strictEqual(build(ino), FIRMATA, '原始碼改了之後，請重新編譯並更新 tests/fixtures/DofLabFirmata-uno.hex');
 });
+
+// V2.14 發現：連線慢時（經網路的虛擬設備、電腦很忙），同步重試的回應（14 10）會在確認之後才到，讀簽章時整串回應錯開一組 → 「回應不同步」
+test('連線很慢（每個回應晚 250 ms 才到）時仍能上傳：晚到的同步回應在讀簽章時跳過', { timeout: 120000 }, async () => {
+  const u = new VirtualUno(null, { bootloader: OPTI }); const port = u.webSerialPort();
+  // 慢的連線：收到的位元組一律晚 250 ms 才交給上傳程式（順序不變）
+  const slow = Object.create(port); let rs = null;
+  Object.defineProperty(slow, 'readable', { get() { const src = port.readable; if (!src) return null; if (!rs || rs.src !== src) { const t = new TransformStream({ transform: (c, ctl) => { setTimeout(() => { try { ctl.enqueue(c); } catch (e) { } }, 250); } }); rs = { src, s: src.pipeThrough(t) }; } return rs.s; } });
+  // 小程式（2 頁），讓慢連線下的寫入與讀回不會太久
+  const hexLine = (addr, bytes) => { const b = [bytes.length, addr >> 8, addr & 0xff, 0, ...bytes]; const sum = (-b.reduce((a, x) => a + x, 0)) & 0xff; return ':' + b.concat(sum).map(x => x.toString(16).padStart(2, '0')).join('').toUpperCase(); };
+  const lines = []; for (let a = 0; a < 256; a += 16) lines.push(hexLine(a, Array.from({ length: 16 }, (_, i) => (a + i) & 0xff)));
+  const logs = []; const r = await DL.stk500.flash(slow, lines.join('\n') + '\n:00000001FF', { log: m => logs.push(m) });
+  assert.ok(r.ok && r.verified, JSON.stringify(r));
+  assert.ok(logs.some(m => /跳過 \d+ 個晚到的同步回應/.test(m)), '確實有晚到的同步回應（測試有重現問題）：' + logs.join(' | '));
+  for (let i = 0; i < 256; i += 2) assert.strictEqual(u.flash[i >> 1], (i & 0xff) | (((i + 1) & 0xff) << 8));
+});

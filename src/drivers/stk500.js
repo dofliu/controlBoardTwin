@@ -61,7 +61,14 @@
       if (!synced) throw Object.assign(new Error('沒有收到開機程式的回應。請確認：板型是 Uno、選對連接埠、沒有其他程式（例如觀測頁或 Arduino IDE）正在使用這個連接埠；必要時在上傳開始時手動按一下板子上的 RESET。'), { code: 'no_sync' });
       log('已和開機程式同步');
       // 3. 晶片簽章：確認真的是 ATmega328P
-      const sig = await cmd([STK.READ_SIGN, STK.EOP], 3);
+      // 同步重試的回應（14 10）在連線慢時可能在確認之後才到（經網路的虛擬設備、電腦很忙時；V2.14 發現）：讀簽章時跳過。
+      // 簽章的回應是 14 1e 95 0f 10，和同步的回應分得出來；開機程式依序處理命令，晚到的回應一定在簽章之前
+      await send([STK.READ_SIGN, STK.EOP]);
+      let head = await io.read(2, 800), late = 0;
+      while (head[0] === STK.INSYNC && head[1] === STK.OK && late < 16) { late++; head = await io.read(2, 800); }
+      const sr = head.concat(await io.read(3, 800)); if (sr[0] !== STK.INSYNC || sr[4] !== STK.OK) throw new Error('回應不同步');
+      const sig = sr.slice(1, 4);
+      if (late) log(`跳過 ${late} 個晚到的同步回應`);
       if (sig.some((b, i) => b !== dev.sig[i])) throw Object.assign(new Error(`晶片簽章 ${sig.map(b => b.toString(16).padStart(2, '0')).join(' ')} 不是 ${dev.name}（1e 95 0f），已停止，沒有寫入任何資料。`), { code: 'bad_sig' });
       log(`晶片：${dev.name}（簽章 ${sig.map(b => b.toString(16).padStart(2, '0')).join(' ')}）`);
       await cmd([STK.ENTER, STK.EOP]);
