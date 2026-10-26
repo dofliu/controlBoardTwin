@@ -532,6 +532,129 @@ async def vboards_flow(p):
         try: srv.wait(5)
         except Exception: srv.kill()
 
+async def tsig_flow(p):
+    """V2.14 訊號測試與波形比較：每次寫入換一個值（伺服鋸齒、LED 方波、PWM 遞增），每一次寫入有序號；
+    波形可以暫停（背景繼續記錄）、往回看、擷取 A／B 上下並排比較、存檔再開。虛擬工作台可以自動產生輸入。
+    設備端（虛擬 Uno、虛擬 ESP32 協定模型）收到什麼，從虛擬設備主機的 /trace 讀，不從介面讀。"""
+    import urllib.request
+    VPORT = 8770; base = f'http://127.0.0.1:{VPORT}/api/devices/'
+    def start(bench):
+        pr = subprocess.Popen(['node', str(ROOT / 'tools' / 'vdev' / 'server.js'), '--port', str(VPORT), '--bench', bench, '--esp32', 'esp32-hold-blink'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); wait_port(VPORT); return pr
+    def get(d, path=''): return json.loads(urllib.request.urlopen(base + d + path, timeout=5).read())
+    def post(d, q): return json.loads(urllib.request.urlopen(urllib.request.Request(base + d + '/bench', data=json.dumps(q).encode(), method='POST'), timeout=5).read())
+    def part(d, pid): return next(x for x in get(d)['bench']['parts'] if x['id'] == pid)
+    srv = start('dist-gauge')
+    b = await p.chromium.launch(args=ARGS); ctx = await b.new_context(viewport={'width': 1440, 'height': 1100}, accept_downloads=True)
+    try:
+        pg = await ctx.new_page(); errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+        await pg.goto('http://localhost:8766/'); await pg.wait_for_function("window.doflab && doflab.p")
+        async def load(exp, board, name):
+            await ev(pg, "([e,b,n])=>{const r=DL.experiments.solved(e,b); doflab.load(DL.project.clone(r.project,{name:n,origin:{kind:'custom'},lock:{components:false,behavior:false,board:false}})); }", [exp, board, name])
+            await pg.click('#t-behavior'); await pg.wait_for_timeout(400); await pg.click('#btnConfirm')
+            await pg.click('#t-observe'); await pg.wait_for_timeout(300)
+        async def setcfg(comp, k, v):
+            sel = f'#tsigBody [data-comp="{comp}"] [data-k="{k}"]'
+            if k in ('kind', 'pattern'): await pg.select_option(sel, v)
+            else: await pg.fill(sel, str(v)); await pg.dispatch_event(sel, 'change')
+        async def set_iv(ms): await pg.fill('#tsigIv', str(ms)); await pg.dispatch_event('#tsigIv', 'change')
+        # ---------- 模擬預覽：LED 方波、序號、波形暫停與往回看 ----------
+        await load('hold-blink', 'uno', '訊號測試（模擬）')
+        body = await pg.inner_text('#tsigBody')
+        check("訊號測試（模擬）：卡片列出 LED1（D13），說明「不送到設備」；D13 不能 PWM（選項停用並寫出原因）",
+              'LED1' in body and '不送到設備' in body and 'D13 不能 PWM' in body and await pg.locator('#tsigBody [data-comp="LED1"] option[value="pwm"]').is_disabled(), body[:300])
+        await set_iv(100); await pg.click('#tsigStart')
+        await pg.wait_for_function("doflab.tsig && doflab.tsig.seq >= 6", timeout=10000)
+        r = await ev(pg, "({seq: doflab.tsig.seq, marks: doflab.wave.marks.filter(m=>m.comp==='LED1').map(m=>m.seq), sim: doflab.wave.evs.filter(e=>e.k==='LED1|sim').length, log: doflab.events.filter(e=>/^訊號測試 #/.test(e.text)).length, cmd: doflab.twin.view('LED1.state').commanded})")
+        check("訊號測試（模擬）：每 100 ms 寫一次、亮滅交替；每一次寫入都有序號（波形標記 #1…、事件紀錄），模擬層有變化；沒有送出命令",
+              r['marks'][:6] == [1, 2, 3, 4, 5, 6] and r['sim'] >= 5 and r['log'] >= 6 and r['cmd'] is None, json.dumps(r)[:300])
+        await pg.click('#wavePause'); paused = await ev(pg, "doflab.wave.paused"); n0 = await ev(pg, "doflab.wave.evs.length")
+        await pg.wait_for_function(f"doflab.tsig.seq >= {r['seq'] + 8}", timeout=10000)
+        r2 = await ev(pg, "({end: doflab.waveEnd(), evs: doflab.wave.evs.length, title: document.getElementById('waveTitle').textContent, btn: document.getElementById('wavePause').textContent})")
+        check("波形暫停：畫面停在按下暫停的那一刻（時間軸不再前進），背景繼續記錄；按鈕改成「▶ 繼續」",
+              r2['end'] == paused and r2['evs'] > n0 and '已暫停' in r2['title'] and '繼續' in r2['btn'], json.dumps(r2, ensure_ascii=False))
+        await pg.click('#waveCapA')
+        await pg.click('#tsigPause'); s0 = await ev(pg, "doflab.tsig.seq")
+        await pg.click('#tsigStep'); await pg.click('#tsigStep')
+        check("訊號測試：暫停後按「單步」一次只寫一次（序號 +1、+1）", await ev(pg, "doflab.tsig.seq") == s0 + 2 and await ev(pg, "doflab.tsig.paused"))
+        await pg.click('#wavePause'); await pg.wait_for_timeout(1200); await pg.click('#waveCapB')
+        cmp = await pg.inner_text('#waveCmp'); caps = await ev(pg, "Object.fromEntries(Object.entries(doflab.wave.caps).map(([k,c])=>[k,{span:c.span,marks:c.marks.length,seq:c.meta.seq,mode:c.meta.mode}]))")
+        check("波形比較：擷取 A、B 上下並排，各自標出模式、長度與測試寫入的序號範圍",
+              await pg.is_visible('#waveA') and await pg.is_visible('#waveB') and caps['A']['seq'] and caps['B']['seq'] and caps['A']['seq'][0] <= caps['B']['seq'][1] and '#' in cmp and '模擬' in cmp, json.dumps(caps, ensure_ascii=False))
+        async with pg.expect_download() as dl: await pg.click('#waveSave')
+        path = await (await dl.value).path(); saved = json.loads(pathlib.Path(path).read_text())
+        check("波形存檔：doflab-wave 格式，A、B 都在", saved['format'] == 'doflab-wave' and set(saved['captures']) == {'A', 'B'})
+        await pg.click('#waveClear'); await pg.set_input_files('#waveFile', path); await pg.wait_for_timeout(300)
+        check("波形開檔：清除後再開剛才存的檔，A、B 回來", await pg.is_visible('#waveCmp') and await ev(pg, "Object.keys(doflab.wave.caps).sort().join()") == 'A,B')
+        await pg.click('#tsigStop')
+        check("訊號測試停止：事件紀錄寫出共寫入幾次", await ev(pg, "doflab.events.some(e=>/訊號測試停止（使用者停止）：共寫入 \\d+ 次/.test(e.text))"))
+        await pg.screenshot(path=str(SHOTS / "t1_tsig_sim.png"))
+        await pg.click('#simRun'); await pg.wait_for_timeout(200)
+        await pg.click('#tsigStart'); await pg.wait_for_timeout(200)
+        check("訊號測試和行為不同時進行：開始測試時「▶ 執行」停下來", not await ev(pg, "doflab.sim.running") and await ev(pg, "doflab.tsig.active"))
+        await pg.click('#simRun'); await pg.wait_for_timeout(200)
+        check("訊號測試和行為不同時進行：按「▶ 執行」時測試停止", await ev(pg, "doflab.sim.running && !doflab.tsig.active"))
+        await pg.click('#simRun')
+        # ---------- 虛擬 Uno：伺服鋸齒 0→180、每次 30°，設備端的脈寬依序出現 ----------
+        await load('dist-gauge', 'uno', '訊號測試（虛擬 Uno）')
+        await pg.check('input[name="hwSrc"][value="virtual"]'); await pg.wait_for_timeout(100)
+        await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=20000); await pg.wait_for_timeout(300)
+        check("訊號測試（唯讀）：不能開始，提示先授權受控寫入", await pg.locator('#tsigStart').is_disabled() and '授權受控寫入' in await pg.inner_text('#tsigBody'))
+        for cb in await pg.locator('[data-chk]').all(): await cb.check()
+        await pg.click('#hwAuth'); await pg.wait_for_function("doflab.twin.mode==='hw-control'")
+        await setcfg('SERVO1', 'step', 30); await set_iv(250)
+        get('uno-1', '/trace?clear=1')
+        await pg.click('#tsigStart'); await pg.wait_for_function("doflab.tsig.seq >= 9", timeout=20000); await pg.click('#tsigPause')
+        await pg.wait_for_function("(v => v.ack && v.commanded && v.ack.id === v.commanded.id)(doflab.twin.view('SERVO1.angle'))", timeout=5000)
+        n = await ev(pg, "doflab.tsig.seq"); await pg.wait_for_timeout(400)
+        want = await ev(pg, "n => DL.testsig.sequence({kind:'servo',pattern:'ramp',min:0,max:180,step:30}, n)", n)
+        tr = get('uno-1', '/trace')
+        got = [round((e['us'] - 544) * 180 / 1856) for e in tr['trace'] if e.get('part') == 'SERVO1' and 'us' in e]
+        def has_seq(xs, ys): return any(xs[i:i + len(ys)] == ys for i in range(len(xs) - len(ys) + 1))
+        check("訊號測試（虛擬 Uno）：伺服鋸齒 0、30…180、0…，設備端量到的脈寬換成角度依序出現（到頂回起點），最後一筆收到 ACK；SG90 仍是「無回授」",
+              has_seq(got, want) and await ev(pg, "doflab.twin.view('SERVO1.angle').quality") == 'none', json.dumps([want, got]))
+        acks = await ev(pg, "doflab.events.filter(e=>/訊號測試 #/.test(e.text)).length")
+        check("訊號測試（虛擬 Uno）：事件紀錄每一次寫入一筆、標示虛擬", acks >= n and await ev(pg, "doflab.events.filter(e=>/訊號測試 #/.test(e.text)).every(e=>e.virtual)"))
+        # 工作台自動產生輸入：超音波距離三角波 20→60 cm
+        post('uno-1', {'part': 'US1', 'action': 'auto', 'pattern': 'triangle', 'min': 20, 'max': 60, 'step': 10, 'everyMs': 300})
+        seen = set()
+        for i in range(60):
+            await asyncio.sleep(0.1)
+            v = await ev(pg, "(v => v.measured && v.quality === 'ok' ? Math.round(v.measured.v) : null)(doflab.twin.view('US1.distance'))")
+            if v is not None: seen.add(v)
+            if len([x for x in seen if 18 <= x <= 62]) >= 4: break
+        post('uno-1', {'part': 'US1', 'action': 'auto', 'pattern': 'off'})
+        check("工作台自動產生輸入：超音波距離 20→60 cm 三角波，DofLab 的量測層看到至少 4 個不同的距離", len([x for x in seen if 18 <= x <= 62]) >= 4, str(sorted(seen)))
+        await pg.click('#tsigStop'); await pg.screenshot(path=str(SHOTS / "t2_tsig_uno_servo.png"))
+        await pg.click('#hwDisc'); await pg.wait_for_timeout(500)
+        # ---------- 虛擬 ESP32（協定模型）：GPIO23 的 LED 改用 PWM，工作週期 0→255 每次 51 ----------
+        await load('hold-blink', 'esp32', '訊號測試（虛擬 ESP32）')
+        await pg.check('input[name="hwSrc"][value="virtual"]'); await pg.wait_for_timeout(100)
+        await pg.click('#hwConn'); await pg.wait_for_function("doflab.twin.conn.state==='connected'", timeout=20000); await pg.wait_for_timeout(300)
+        for cb in await pg.locator('[data-chk]').all(): await cb.check()
+        await pg.click('#hwAuth'); await pg.wait_for_function("doflab.twin.mode==='hw-control'")
+        check("訊號測試（虛擬 ESP32）：韌體回報 GPIO23 可以 PWM → 選項可選；授權清單包含 LED1.pwm",
+              not await pg.locator('#tsigBody [data-comp="LED1"] option[value="pwm"]').is_disabled() and await ev(pg, "doflab.twin.auth && doflab.twin.auth.outputs.includes('LED1.pwm')"))
+        await setcfg('LED1', 'kind', 'pwm'); await setcfg('LED1', 'step', 51); await set_iv(250)
+        get('esp32-1', '/trace?clear=1')
+        await pg.click('#tsigStart'); await pg.wait_for_function("doflab.tsig.seq >= 7", timeout=20000); await pg.click('#tsigPause')
+        await pg.wait_for_function("(v => v.ack && v.commanded && v.ack.id === v.commanded.id && v.ack.matches)(doflab.twin.view('LED1.pwm'))", timeout=5000)
+        await pg.wait_for_timeout(300)
+        duties = [e['duty'] for e in get('esp32-1', '/trace')['trace'] if e.get('part') == 'LED1' and 'duty' in e]
+        want = [0.2, 0.4, 0.6, 0.8]
+        idx = [next((i for i, d in enumerate(duties) if abs(d - w) < 0.01), None) for w in want]
+        check("訊號測試（虛擬 ESP32 協定模型）：PWM 遞增 51、102、153、204 → 設備端量到的工作週期 0.2、0.4、0.6、0.8 依序出現；最後一次收到回讀 ACK",
+              None not in idx and idx == sorted(idx), json.dumps(duties))
+        await pg.click('#tsigStop'); await pg.wait_for_timeout(600)
+        led = part('esp32-1', 'LED1')
+        check("訊號測試停止：GPIO23 切回數位輸出並寫 LOW（工作台 LED 熄滅、沒有 PWM）", not led['on'] and led['duty'] is None and get('esp32-1')['pins']['23'] == 'low', json.dumps([led, get('esp32-1')['pins']['23']]))
+        await pg.screenshot(path=str(SHOTS / "t3_tsig_esp32_pwm.png"))
+        await pg.click('#hwDisc'); await pg.wait_for_timeout(300)
+        check("訊號測試流程沒有頁面錯誤", not errs, "; ".join(errs[:3]))
+    finally:
+        await b.close(); srv.terminate()
+        try: srv.wait(5)
+        except Exception: srv.kill()
+
 async def bench_flow(p):
     """雲端虛擬硬體第 2 階段：兩個介面同時開著——DofLab（左）與虛擬設備的工作台頁（右，另一個程序提供的網頁）。
     工作台的按鈕、拉桿都在工作台頁上用滑鼠操作；DofLab 那邊只看得到 Firmata 回報的量測與回讀。"""
@@ -1625,6 +1748,7 @@ async def main():
             if on('vupload'): await vupload_flow(p)
             if on('vmulti'): await vmulti_flow(p)
             if on('vboards'): await vboards_flow(p)
+            if on('tsig'): await tsig_flow(p)
             if on('pideploy'): await pi_deploy(p)
             if on('mobile'): await mobile(p)
             if on('dark'): await dark(p)

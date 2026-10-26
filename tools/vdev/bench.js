@@ -12,7 +12,7 @@
 //               再以有限速度（預設 600°/s，約 SG90 規格 0.1 s／60°）轉到該角度。**只在工作台顯示，不回報給介面**（SG90 沒有回授）。
 //   arm         三軸手臂：三顆 servo 的實際角度 →（各自的零位與方向）→ 關節角，並算出關節位置（只用來畫圖與比對）。
 // 自動產生輸入（V2.14）：超音波距離、光敏亮度、按鈕可以自動變化，讓 DofLab 每次讀到的值都不一樣（螢幕與示波器上看得出變化）。
-//   鋸齒（ramp：由 min 每次 +step 到 max，再回到 min）、三角（triangle：來回）、方波（square：min／max 交替；按鈕是按下／放開）。
+//   鋸齒（ramp：由 min 每次 +step 到 max，再回到 min）、三角（triangle：來回）、方波（square：min／max 交替；按鈕是按下／放開）；兩端都會寫到。
 //   每一步間隔 everyMs（設備時間），帶序號記進工作台紀錄與軌跡；手動操作（按、拉桿）會停掉自動。
 // 故障（第 3 階段）：每個元件都可以「拔線／接回」（unplug／plug）；超音波可以「卡住」（stuck：ECHO 一直是高電位，韌體就不再量測、不再回報）。
 // 板型（第 6 階段）：規格的 board 是 uno（預設，接虛擬 Uno）或 esp32（接 ESP32 協定模型 esp32model.js）；腳位檢查、電源電壓（5 V／3.3 V）依板型。
@@ -227,10 +227,10 @@ class Bench {
       const A = AUTO[p.type], v = a.v;
       if (p.type === 'ultrasonic') p.cm = v; else { p.light = v; this.refreshLdr(p); }
       this.note(p.id, 'auto', { seq: a.seq, [A.key]: v });
-      // 下一個值
-      if (a.pattern === 'ramp') a.v = v + a.step > a.max ? a.min : v + a.step;
+      // 下一個值（和 DofLab 訊號測試的 src/core/testsig.js 相同的規則：兩端都會寫到）
+      if (a.pattern === 'ramp') a.v = v >= a.max ? a.min : Math.min(a.max, v + a.step);
       else if (a.pattern === 'square') a.v = v === a.min ? a.max : a.min;
-      else { if (v + a.dir * a.step > a.max || v + a.dir * a.step < a.min) a.dir = -a.dir; a.v = Math.max(a.min, Math.min(a.max, v + a.dir * a.step)); }
+      else { if ((a.dir > 0 && v >= a.max) || (a.dir < 0 && v <= a.min)) a.dir = -a.dir; a.v = Math.max(a.min, Math.min(a.max, v + a.dir * a.step)); }
     }
     this.at(a.everyMs, () => this.autoStep(p, gen));
   }

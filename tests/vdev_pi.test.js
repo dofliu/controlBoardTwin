@@ -76,3 +76,29 @@ test('虛擬 ESP32 不能上傳、不能開序列埠監看（只有虛擬 Uno �
     const e = msgs.find(m => m.op === 'error'); assert.strictEqual(e.code, 'unsupported'); assert.match(e.message, /只有虛擬 Uno 有開機程式/); assert.strictEqual(closed, 4003);
   } finally { await s.close(); }
 });
+
+// V2.14：工作台頁的「自動變化」經主機的 HTTP API 送到三種虛擬設備（參數 pattern、min、max、step、everyMs 要轉給工作台）
+test('工作台自動產生輸入經主機 HTTP API：虛擬 Uno、虛擬 ESP32、虛擬樹莓派的超音波距離都依序變化，停止後不再變', { timeout: 60000 }, async () => {
+  const devs = [{ id: 'uno-1', bench: 'dist-gauge' }, { id: 'esp32-1', board: 'esp32', bench: 'esp32-dist-gauge' }].concat(hasPi ? [{ id: 'pi-1', board: 'pi4b', bench: 'pi-dist-gauge' }] : []);
+  const s = await startServer({ port: 0, devices: devs });
+  const base = `http://127.0.0.1:${s.port}/api/devices/`;
+  try {
+    for (const d of devs) {
+      const api = base + d.id;
+      if (d.id === 'pi-1') assert.ok(await until(async () => !(await json(api)).error, 15000), '虛擬樹莓派就緒');
+      const bad = await json(api + '/bench', { part: 'US1', action: 'auto', pattern: 'ramp', min: 50, max: 10 });
+      assert.match(bad.error || '', /最小值小於最大值|min/, `${d.id}：範圍錯誤要拒絕：${JSON.stringify(bad).slice(0, 200)}`);
+      const r = await json(api + '/bench', { part: 'US1', action: 'auto', pattern: 'triangle', min: 20, max: 40, step: 10, everyMs: 100 });
+      assert.ok(!r.error, `${d.id}：${r.error}`);
+      const us = async () => (await json(api)).bench.parts.find(p => p.id === 'US1');
+      const seen = [];
+      assert.ok(await until(async () => { const p = await us(); if (seen[seen.length - 1] !== p.cm) seen.push(p.cm); return seen.length >= 6; }, 6000), `${d.id}：距離沒有變化 ${seen}`);
+      const str = seen.join(',');
+      assert.ok(['20,30,40,30,20', '30,40,30,20,30', '40,30,20,30,40'].some(x => str.includes(x)), `${d.id}：三角波 20→40→20：${str}`);
+      assert.strictEqual((await us()).auto.pattern, 'triangle');
+      await json(api + '/bench', { part: 'US1', action: 'auto', pattern: 'off' });
+      const p0 = await us(); await wait(350); const p1 = await us();
+      assert.ok(p0.auto === null && p1.cm === p0.cm, `${d.id}：停止後不再變：${JSON.stringify([p0, p1])}`);
+    }
+  } finally { await s.close(); }
+});

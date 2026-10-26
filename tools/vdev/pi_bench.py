@@ -204,12 +204,12 @@ class PiBench:
             v = a["v"]
             p["cm"] = int(v); self.apply_cm(p)
             self.note(p["id"], "auto", seq=a["seq"], cm=p["cm"])
-            if a["pattern"] == "ramp":
-                a["v"] = a["min"] if v + a["step"] > a["max"] else v + a["step"]
+            if a["pattern"] == "ramp":                    # 兩端都會寫到（和 bench.js、DofLab 的訊號測試相同）
+                a["v"] = a["min"] if v >= a["max"] else min(a["max"], v + a["step"])
             elif a["pattern"] == "square":
                 a["v"] = a["max"] if v == a["min"] else a["min"]
             else:
-                if not (a["min"] <= v + a["dir"] * a["step"] <= a["max"]):
+                if (a["dir"] > 0 and v >= a["max"]) or (a["dir"] < 0 and v <= a["min"]):
                     a["dir"] = -a["dir"]
                 a["v"] = max(a["min"], min(a["max"], v + a["dir"] * a["step"]))
         self.hub.loop.call_later(a["everyMs"] / 1000, self.auto_step, p, gen)

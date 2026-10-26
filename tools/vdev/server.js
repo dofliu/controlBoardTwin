@@ -57,7 +57,7 @@ class DeviceHost extends NetHost {
   stop() { this.hub.stop(); return this.worker.terminate(); }
   // HTTP API（工作台頁與測試）
   async apiState() { return Object.assign(await this.request({ op: 'state' }), { faults: this.netState(), hub: this.hub.state() }); }
-  apiBench(q) { return this.request({ op: 'bench', part: q.part, action: q.action, light: q.light, cm: q.cm, atDevMs: q.atDevMs }); }
+  apiBench(q) { return this.request({ op: 'bench', part: q.part, action: q.action, light: q.light, cm: q.cm, atDevMs: q.atDevMs, pattern: q.pattern, min: q.min, max: q.max, step: q.step, everyMs: q.everyMs }); }   // pattern…everyMs：自動產生輸入（V2.14）
   apiTrace(clear) { return this.request({ op: 'trace', clear }); }
   async apiFault(q) {
     if (q.fault === 'disconnect') this.cutAll();

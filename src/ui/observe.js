@@ -19,6 +19,8 @@
     return String(v);
   };
 
+  DL.ui.obs = { sigOf, fmt, isLed, isBtn, INPUTS };   // 訊號測試與波形（testsig.js、wave.js）共用
+
   P.bindObserve = function () {
     $('simRun').onclick = () => this.toggleRun();
     $('simStep').onclick = () => { if (this.sim.running) this.toggleRun(); this.advance(10); this.renderObserve(); };
@@ -26,12 +28,14 @@
     $('simSpeed').onchange = e => { this.sim.speed = +e.target.value; };
     $('clearEvents').onclick = () => { this.events = []; this._evDirty = true; };
     if (this.bindRec) this.bindRec();
+    if (this.bindWave) this.bindWave();
   };
 
   P.defineSignals = function () {
     for (const c of this.p.components) {
       const s = sigOf(c); if (!s) continue;
       this.twin.define(s, { kind: INPUTS.includes(c.type) ? 'input' : 'output', comp: c.id, ctype: c.type, feedback: INPUTS.includes(c.type), periodic: c.type === 'LDR' || c.type === 'US' });   // 光敏、超音波每 50／60 ms 回報一次：停了就是卡住
+      if (isLed(c)) this.twin.define(c.id + '.pwm', { kind: 'output', comp: c.id, ctype: 'PWM', feedback: false });   // 訊號測試的 PWM 工作週期（0–255，V2.14）
     }
   };
   P.resetSim = function () {
@@ -51,6 +55,7 @@
   P.toggleRun = function () {
     const v = DL.behavior.validate(this.p, null);
     if (!this.sim.running && v.issues.some(i => i.level === 'error')) { this.toast('行為有錯誤，無法執行：' + v.issues.find(i => i.level === 'error').msg, 'e'); return; }
+    if (!this.sim.running && this.tsig && this.tsig.active) this.tsigStop('開始執行行為');   // 執行行為和訊號測試不同時進行
     this.sim.running = !this.sim.running; this.sim.last = null;
     if (this.sim.running && this.p.arm && this.armOnRun) this.armOnRun();
     $('simRun').textContent = this.sim.running ? '❚❚ 暫停' : '▶ 執行'; $('simRun').classList.toggle('primary', !this.sim.running);
@@ -185,6 +190,7 @@
     if (this.scene.ok) { this.scene.setVis(this.visState()); this.scene.frame(); }
     if (this.ui.tab === 'observe') {
       this.drawTrace(now);
+      if (!this._lastCmp || now - this._lastCmp > 500) { this._lastCmp = now; if (this.drawWaveCmp) this.drawWaveCmp(); if (this.renderTsigLive) this.renderTsigLive(); }   // 擷取比較（大小可能變了）、訊號測試的計數
       if (!this._lastObs || now - this._lastObs > 120) { this._lastObs = now; this.renderTwin(); this.renderEventsIfDirty(); if (this._serialDirty) this.renderSerial(); $('simTime').textContent = `t = ${(this.sim.time / 1000).toFixed(3)} s`; this.renderHwLive(); }
     }
     if (!this._lastTask || now - this._lastTask > 500) { this._lastTask = now; if (this.p.origin.kind === 'guided') this.renderTasks(); }
@@ -253,7 +259,7 @@
     const dev = this.twin.conn.virtual ? '虛擬設備' : '真機';
     $('simNote').textContent = this.twin.mode === 'sim' ? '' : this.twin.mode === 'hw-read' ? `唯讀：輸入來自${dev}量測，行為只推算、不送命令。` : `受控寫入：行為的輸出會送往${dev}。`;
     $('hintObserve').textContent = p.arm ? '手臂的姿態由「手臂」頁控制；這裡是同一隻手臂的命令姿態（SG90 沒有回授，不是實測）' : this.twin.mode === 'sim' && p.components.some(c => c.type === 'BOOT' || c.type === 'TOUCH') ? '模擬時，按住 3D 板子上的 BOOT 鍵，或按住觸控腳的排針（青色圓圈）' : this.twin.mode === 'sim' ? (p.components.some(c => c.type === 'US') ? '模擬時，用下方的拉桿移動超音波前方的物體（橘色板；畫面上的距離是壓縮過的示意，實際數值看標籤）' : '模擬時，按住場景中的按鈕即可按下') : this.twin.conn.virtual ? '虛擬設備模式：請在虛擬設備的工作台（另開的網頁）按按鈕；畫面顯示經網路量測到的狀態' : '真機模式：請操作實體按鈕或移動實體物體；畫面顯示量測到的狀態';
-    this.renderTwin(); this.renderHw(); this.renderEventsIfDirty(true); this.renderSerial();
+    this.renderTwin(); this.renderHw(); this.renderEventsIfDirty(true); this.renderSerial(); if (this.renderTsig) this.renderTsig();
   };
 
   // 觀測頁主畫面右上角：每個元件目前的值（模擬或量測，依模式），點一下跳到右側的孿生狀態表
@@ -293,42 +299,6 @@
     $('twinRows').innerHTML = rows.join('') || '<tr><td colspan="6" class="na">沒有訊號</td></tr>';
   };
 
-  P.sample = function (now) {
-    const row = { t: now };
-    for (const c of this.p.components) {
-      const s = sigOf(c); if (!s) continue; const v = this.twin.view(s);
-      const norm = x => x === null || x === undefined ? null : c.type === 'SERVO' ? x / 180 : c.type === 'LDR' ? x / 100 : c.type === 'US' ? Math.min(1, x / 200) : x ? 1 : 0;
-      row[c.id] = { sim: norm(v.simulated && v.simulated.v), meas: v.quality === 'ok' ? norm(v.measured && v.measured.v) : null, cmd: norm((v.ack || v.commanded || {}).v) };
-    }
-    this.trace.push(row); while (this.trace.length && now - this.trace[0].t > 6500) this.trace.shift();
-  };
-  P.drawTrace = function (now) {
-    const cv = $('trace'); if (!cv || !cv.offsetParent) return;
-    const dpr = Math.min(2, root.devicePixelRatio || 1); const W = cv.clientWidth, H = cv.clientHeight;
-    if (cv.width !== Math.round(W * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
-    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
-    const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-    const comps = this.p.components.filter(sigOf);
-    if (!comps.length) return;
-    const L = 64, R = 8, rowH = Math.min(46, (H - 18) / comps.length), span = 6000;
-    const x = t => L + (W - L - R) * (1 - (now - t) / span);
-    g.font = '600 11px "IBM Plex Mono", monospace'; g.textBaseline = 'middle';
-    // 時間格線
-    g.strokeStyle = css('--line'); g.lineWidth = 1; g.fillStyle = css('--muted');
-    for (let s = 0; s <= 6; s++) { const xx = L + (W - L - R) * (s / 6); g.beginPath(); g.moveTo(xx, 4); g.lineTo(xx, H - 14); g.stroke(); g.fillText(`${s - 6}s`, xx - 9, H - 6); }
-    comps.forEach((c, i) => {
-      const y0 = 6 + i * rowH, y1 = y0 + rowH - 8;
-      g.fillStyle = css('--ink'); g.fillText(c.id, 6, (y0 + y1) / 2);
-      for (const [layer, color, w] of [['sim', css('--sim'), 2], ['cmd', css('--cmd'), 2], ['meas', css('--meas'), 2.5]]) {
-        g.strokeStyle = color; g.lineWidth = w; g.beginPath(); let pen = false;
-        for (const r of this.trace) { const v = r[c.id] && r[c.id][layer]; if (v === null || v === undefined) { pen = false; continue; } const yy = y1 - v * (y1 - y0); const xx = x(r.t); if (!pen) { g.moveTo(xx, yy); pen = true; } else g.lineTo(xx, yy); }
-        g.stroke();
-      }
-    });
-    g.fillStyle = css('--muted'); g.font = '500 10px "Noto Sans TC", sans-serif';
-    const lg = [['模擬', css('--sim')], ['命令／ACK', css('--cmd')], ['量測', css('--meas')]]; let lx = W - R - 190;
-    for (const [t, c] of lg) { g.fillStyle = c; g.fillRect(lx, H - 9, 10, 3); g.fillStyle = css('--muted'); g.fillText(t, lx + 14, H - 7); lx += 64; }
-  };
   P.renderEventsIfDirty = function (force) {
     if (!this._evDirty && !force) return; this._evDirty = false;
     const el = $('eventList'); if (!el) return;
@@ -342,8 +312,10 @@
     else if (e.type === 'authorized') this.log('s', `已授權受控寫入：${e.outputs.join('、')}`);
     else if (e.type === 'warn') this.log('w', e.msg);
     else if (e.type === 'measure') { this.noteMeasure(e); this.noteButtonEvent(e); }
-    if (this.recTwin) this.recTwin(e);
     else if (e.type === 'reboot') this.log('e', `設備重新開機（${e.reason}）：已撤銷寫入授權、回到唯讀${e.dropped.length ? `；${e.dropped.length} 個未確認命令作廢，不會重送` : ''}。開機前的量測已標為過期。`);
+    if (this.recTwin) this.recTwin(e);
+    if (this.waveTwin) this.waveTwin(e);   // 波形：命令與量測依收到的時刻記下來（V2.14）
+    if (e.type === 'mode' && this.tsigOnMode) this.tsigOnMode(e);   // 訊號測試：不能再寫入時停止
   };
   // 核對接線用：每一筆量測都比對上一筆（不靠畫面取樣，快速按放也不會漏掉）
   P.noteMeasure = function (e) {
@@ -513,7 +485,8 @@
       const g = await this.hw.driver.acquire();
       if (!g.ok) { this.log('e', '沒有取得控制權：' + g.message); this.toast(g.message, 'e'); this.renderHw(); return; }
     }
-    const r = this.twin.authorize(outs.map(o => o.signal), { ok: true });
+    const pwmSigs = this.tsigPwmSignals ? this.tsigPwmSignals(outs) : [];   // 訊號測試（V2.14）：可以 PWM 的 LED 也授權 LED.pwm（同一個腳位，測試時才切換）
+    const r = this.twin.authorize(outs.map(o => o.signal).concat(pwmSigs), { ok: true });
     if (!r.ok) { if (this.hw.driver.release) await this.hw.driver.release(); this.toast(r.msg, 'e'); return; }
     this._cmdWarned = false;
     // 伺服：授權時先送畫面上目前的角度（模擬層），經 Twin Core 成為一般命令（有回讀確認）。否則韌體在第一個命令到達前會輸出預設的 1500 µs，伺服先轉到約 93°（V2.13）

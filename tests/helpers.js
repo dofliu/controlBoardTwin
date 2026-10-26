@@ -1,6 +1,6 @@
 // 載入核心模組（與瀏覽器相同的原始檔）
 const path = require('path');
-for (const f of ['boards', 'breadboard', 'components', 'project', 'netlist', 'behavior', 'engine', 'codegen', 'experiments', 'twin', 'session', 'arm', 'routing', 'autowire'])
+for (const f of ['boards', 'breadboard', 'components', 'project', 'netlist', 'behavior', 'engine', 'codegen', 'experiments', 'twin', 'session', 'testsig', 'arm', 'routing', 'autowire'])
   try { require(path.join(__dirname, '..', 'src', 'core', f + '.js')); } catch (e) { if (!/Cannot find module/.test(e.message)) throw e; }
 const DL = globalThis.DL;
 function confirm(p) { p.behavior.confirmed = { inputs: DL.project.inputsHash(p, DL.codegen.GENERATOR_VERSION), at: 'test' }; return p; }

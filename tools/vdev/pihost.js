@@ -42,7 +42,7 @@ class PiHost extends NetHost {
   async post(p, q) { const r = await fetch(`http://127.0.0.1:${this.port}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(q) }); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j; }
   hubState() { return { holder: null, links: [...this.links].map((l, i) => ({ id: 'P' + (i + 1), name: `連線 ${i + 1}`, mode: 'pibridge', control: false })), note: '樹莓派閘道依腳位分配：同一個腳位同時只有一個連線能用' }; }
   async apiState() { return Object.assign(await this.get('/api/bench'), { faults: this.netState(), hub: this.hubState() }); }
-  async apiBench(q) { return Object.assign(await this.post('/api/bench', { part: q.part, action: q.action, cm: q.cm }), { faults: this.netState(), hub: this.hubState() }); }
+  async apiBench(q) { return Object.assign(await this.post('/api/bench', { part: q.part, action: q.action, cm: q.cm, pattern: q.pattern, min: q.min, max: q.max, step: q.step, everyMs: q.everyMs }), { faults: this.netState(), hub: this.hubState() }); }
   apiTrace(clear) { return this.get('/api/trace' + (clear ? '?clear=1' : '')); }
   async apiFault(q) {
     if (q.fault === 'disconnect') this.cutAll();
