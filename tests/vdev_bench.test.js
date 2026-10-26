@@ -262,3 +262,34 @@ test('PWM：連到 DofLabFirmata 1.2 時說明要更新（1.3 起才有 PWM）',
     const r = drv.pwmSupport(6); assert.ok(!r.ok && /1\.3 起才有/.test(r.msg) && /上傳 DofLabFirmata/.test(r.msg), r.msg);
   } finally { await drv.disconnect(true); port.stop(); }
 });
+
+test('工作台自動產生輸入（V2.14）：超音波三角波、按鈕定時按放 → DofLab 經 Firmata 讀到依序變化的值；設定錯誤明確拒絕；手動操作停掉自動', { timeout: 60000 }, async () => {
+  const R = await rig({ id: 'auto', name: '自動輸入', parts: [{ id: 'US1', type: 'ultrasonic', trig: 7, echo: 8 }, { id: 'BTN1', type: 'button', pin: 2, bounceMs: 0 }] });
+  try {
+    R.twin.define('US1.distance', {}); R.twin.define('BTN1.pressed', {});
+    await R.drv.watch([{ signal: 'US1.distance', num: 7, echo: 8, kind: 'sonar' }, { signal: 'BTN1.pressed', num: 2, kind: 'button' }]);
+    const bench = R.dev.bench;
+    assert.throws(() => bench.act({ part: 'BTN1', action: 'auto', pattern: 'ramp' }), /只能是 square/);
+    assert.throws(() => bench.act({ part: 'US1', action: 'auto', pattern: 'ramp', min: 50, max: 10 }), /最小值小於最大值/);
+    assert.throws(() => bench.act({ part: 'US1', action: 'auto', pattern: 'ramp', everyMs: 5 }), /間隔至少 20 ms/);
+    // 超音波：10 → 30 → 10，每 300 ms 變化 10 cm（韌體每 60 ms 量一次，所以每一步都量得到好幾次）
+    const cms = []; R.twin.on(e => { if (e.type === 'measure' && e.name === 'US1.distance') cms.push(e.v); });
+    const st = bench.act({ part: 'US1', action: 'auto', pattern: 'triangle', min: 10, max: 30, step: 10, everyMs: 300 });
+    assert.deepStrictEqual(st.auto && [st.auto.pattern, st.auto.seq], ['triangle', 1]);
+    await until(() => bench.parts.US1.auto.seq >= 7, 8000);
+    const seen = cms.filter((v, i) => i === 0 || v !== cms[i - 1]).filter(v => Math.abs(v - Math.round(v / 10) * 10) <= 1).map(v => Math.round(v / 10) * 10);
+    const dedup = seen.filter((v, i) => i === 0 || v !== seen[i - 1]);
+    assert.ok(dedup.join(',').includes('10,20,30,20,10,20'), `DofLab 讀到的距離依序變化：${dedup.join(',')}`);
+    assert.ok(bench.log.some(e => e.part === 'US1' && e.action === 'auto' && e.seq >= 5), '工作台紀錄每一步都有序號');
+    // 按鈕：每 200 ms 按下／放開
+    const btn = []; R.twin.on(e => { if (e.type === 'measure' && e.name === 'BTN1.pressed') btn.push(e.v); });
+    bench.act({ part: 'BTN1', action: 'auto', pattern: 'square', everyMs: 200 });
+    await until(() => bench.parts.BTN1.auto.seq >= 6, 6000);
+    const flips = btn.filter((v, i) => i === 0 || v !== btn[i - 1]);
+    assert.ok(flips.length >= 5 && flips.every((v, i) => i === 0 || v !== flips[i - 1]), `DofLab 讀到按下／放開交替：${flips.join(',')}`);
+    // 手動操作停掉自動
+    bench.act({ part: 'US1', action: 'set', cm: 55 }); bench.act({ part: 'BTN1', action: 'release' });
+    assert.ok(bench.parts.US1.auto === null && bench.parts.BTN1.auto === null && bench.log.some(e => e.action === 'auto-off' && e.why === '手動操作'));
+    const n = bench.log.length; await wait(700); assert.ok(!bench.log.slice(n).some(e => e.action === 'auto'), '停掉之後不再自動變化');
+  } finally { await R.close(); }
+});

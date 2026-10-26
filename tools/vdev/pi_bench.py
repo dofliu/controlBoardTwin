@@ -18,6 +18,10 @@ import time
 
 SERVO_MIN_US, SERVO_MAX_US = 544, 2400       # 與 tools/vdev/bench.js 相同的 SG90 教學假設
 VCC, LED_VF = 3.3, 2.0                        # 樹莓派的 GPIO 是 3.3 V
+# 自動產生輸入（V2.14，和 tools/vdev/bench.js 相同的規則）：鋸齒、三角、方波；每一步帶序號記進工作台紀錄
+AUTO = {"ultrasonic": {"key": "cm", "lo": 2, "hi": 400, "patterns": ("ramp", "triangle", "square"), "def": {"min": 5, "max": 100, "step": 5, "everyMs": 200}},
+        "button": {"patterns": ("square",), "def": {"everyMs": 500}}}
+AUTO_MIN_MS = 20
 SERVO_HZ = 50                                 # pi_bridge 的伺服（AngularServo）是 50 Hz；其他頻率的腳位是 PWM（V2.14 的訊號測試）
 TYPES = ("button", "led", "ultrasonic", "servo", "arm")
 PRESET_DIR = pathlib.Path(__file__).resolve().parent / "benches"
@@ -105,12 +109,13 @@ class PiBench:
         cm = 400 if (p["unplugged"] or p["stuck"] or p["cm"] is None) else int(p["cm"])
         self.hub.mock_cm[p["trig"]] = cm
 
-    def press(self, p, down):
+    def press(self, p, down, seq=None):
         if p["pressed"] == down:
             return
         p["pressed"] = down
+        auto = {} if seq is None else {"auto": True, "seq": seq}
         if p["unplugged"]:
-            self.note(p["id"], "press" if down else "release", unplugged=True); return
+            self.note(p["id"], "press" if down else "release", unplugged=True, **auto); return
         p["gen"] += 1; gen = p["gen"]; target = not down
         n = 1 + self.rand.randrange(3) if p["bounceMs"] > 0 else 0      # 1–3 次來回
         times = sorted(self.rand.random() * p["bounceMs"] for _ in range(n * 2))
@@ -127,13 +132,17 @@ class PiBench:
         for i, t in enumerate(times):
             loop.call_later(t / 1000, set_level, (not target) if i % 2 == 0 else target)
         loop.call_later((p["bounceMs"] + 0.01) / 1000, set_level, target)
-        self.note(p["id"], "press" if down else "release", bounces=n)
+        self.note(p["id"], "press" if down else "release", bounces=n, **auto)
 
     def act(self, q):
         p = self.parts.get(q.get("part"))
         if not p:
             raise ValueError(f"工作台上沒有元件 {q.get('part')}")
         a = q.get("action")
+        if a == "auto":
+            return self.auto_start(p, q)
+        if p.get("auto") and a in ("press", "release", "set"):
+            self.auto_stop(p, "手動操作")                 # 手動操作優先：停掉自動
         if p["type"] == "button" and a in ("press", "release"):
             self.press(p, a == "press")
         elif p["type"] == "ultrasonic" and a == "set":
@@ -156,6 +165,58 @@ class PiBench:
         else:
             raise ValueError(f"{p['id']}（{p['type']}）不能做「{a}」")
         return self.part_state(p)
+
+    # ---------- 自動產生輸入（V2.14） ----------
+    def auto_start(self, p, q):
+        A = AUTO.get(p["type"])
+        if not A:
+            raise ValueError(f"{p['id']}（{p['type']}）不能自動產生輸入")
+        if q.get("pattern") == "off":
+            self.auto_stop(p, "停止"); return self.part_state(p)
+        if q.get("pattern") not in A["patterns"]:
+            raise ValueError(f"{p['id']} 的自動變化只能是 {'、'.join(A['patterns'])}")
+        num = lambda k: float(A["def"][k]) if q.get(k) in (None, "") else float(q[k])
+        a = {"pattern": q["pattern"], "everyMs": num("everyMs"), "seq": 0, "dir": 1, "gen": (p.get("auto") or {}).get("gen", 0) + 1}
+        if a["everyMs"] < AUTO_MIN_MS:
+            raise ValueError(f"間隔至少 {AUTO_MIN_MS} ms")
+        if "key" in A:
+            a.update(min=num("min"), max=num("max"), step=num("step"))
+            if a["min"] < A["lo"] or a["max"] > A["hi"] or a["min"] >= a["max"] or a["step"] <= 0:
+                raise ValueError(f"範圍要在 {A['lo']}–{A['hi']}、最小值小於最大值、每次的變化大於 0")
+            a["v"] = a["min"]
+        p["auto"] = a
+        self.note(p["id"], "auto", pattern=a["pattern"], min=a.get("min"), max=a.get("max"), step=a.get("step"), everyMs=a["everyMs"])
+        self.auto_step(p, a["gen"])
+        return self.part_state(p)
+
+    def auto_stop(self, p, why):
+        if p.get("auto"):
+            p["auto"] = None; self.note(p["id"], "auto-off", why=why)
+
+    def auto_step(self, p, gen):
+        a = p.get("auto")
+        if not a or a["gen"] != gen:
+            return
+        a["seq"] += 1
+        if p["type"] == "button":
+            self.press(p, a["seq"] % 2 == 1, a["seq"])
+        else:
+            v = a["v"]
+            p["cm"] = int(v); self.apply_cm(p)
+            self.note(p["id"], "auto", seq=a["seq"], cm=p["cm"])
+            if a["pattern"] == "ramp":
+                a["v"] = a["min"] if v + a["step"] > a["max"] else v + a["step"]
+            elif a["pattern"] == "square":
+                a["v"] = a["max"] if v == a["min"] else a["min"]
+            else:
+                if not (a["min"] <= v + a["dir"] * a["step"] <= a["max"]):
+                    a["dir"] = -a["dir"]
+                a["v"] = max(a["min"], min(a["max"], v + a["dir"] * a["step"]))
+        self.hub.loop.call_later(a["everyMs"] / 1000, self.auto_step, p, gen)
+
+    def auto_state(self, p):
+        a = p.get("auto")
+        return None if not a else {k: a.get(k) for k in ("pattern", "min", "max", "step", "everyMs", "seq")}
 
     # gpiozero 的模擬腳位在設定上拉時會把電位拉回上拉的電位；實體按鈕按住時腳位仍是低電位，所以這裡把工作台的電位再加回去
     def reassert(self, n=None):
@@ -239,14 +300,14 @@ class PiBench:
         r1 = lambda x: None if x is None else round(x, 1)
         t = p["type"]
         if t == "button":
-            return {"id": p["id"], "type": t, "pin": p["pin"], "pressed": p["pressed"], "level": "high" if p["level"] else "low", "edges": p["edges"], "bounceMs": p["bounceMs"], "unplugged": p["unplugged"]}
+            return {"id": p["id"], "type": t, "pin": p["pin"], "pressed": p["pressed"], "level": "high" if p["level"] else "low", "edges": p["edges"], "bounceMs": p["bounceMs"], "unplugged": p["unplugged"], "auto": self.auto_state(p)}
         if t == "led":
             peak = round((VCC - LED_VF) / p["ohm"] * 1000, 1) if p["on"] else 0
             mA = round(peak * p["duty"], 1) if p["duty"] is not None else peak   # PWM：平均電流（峰值 × 工作週期）
             return {"id": p["id"], "type": t, "pin": p["pin"], "ohm": p["ohm"], "on": p["on"], "mA": mA, "overCurrent": peak > 20, "toggles": p["toggles"], "lastChangeMs": p["lastChangeMs"], "unplugged": p["unplugged"],
                     "duty": None if p["duty"] is None else round(p["duty"], 4), "pwmHz": p["pwmHz"]}
         if t == "ultrasonic":
-            return {"id": p["id"], "type": t, "trig": p["trig"], "echo": p["echo"], "cm": p["cm"], "drop": 0, "pulses": None, "echoes": None, "dropped": 0, "unplugged": p["unplugged"], "stuck": p["stuck"], "model": "distance"}
+            return {"id": p["id"], "type": t, "trig": p["trig"], "echo": p["echo"], "cm": p["cm"], "drop": 0, "pulses": None, "echoes": None, "dropped": 0, "unplugged": p["unplugged"], "stuck": p["stuck"], "model": "distance", "auto": self.auto_state(p)}
         if t == "servo":
             self.move_servo(p)
             moving = p["cmd"] is not None and p["angle"] is not None and abs(p["cmd"] - p["angle"]) > 0.5 and self.powered(p)

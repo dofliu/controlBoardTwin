@@ -11,6 +11,9 @@
 //   servo       SG90：從腳位高電位寬度算命令角（544 µs = 0°、2400 µs = 180°，與 Arduino Servo 函式庫預設相同），
 //               再以有限速度（預設 600°/s，約 SG90 規格 0.1 s／60°）轉到該角度。**只在工作台顯示，不回報給介面**（SG90 沒有回授）。
 //   arm         三軸手臂：三顆 servo 的實際角度 →（各自的零位與方向）→ 關節角，並算出關節位置（只用來畫圖與比對）。
+// 自動產生輸入（V2.14）：超音波距離、光敏亮度、按鈕可以自動變化，讓 DofLab 每次讀到的值都不一樣（螢幕與示波器上看得出變化）。
+//   鋸齒（ramp：由 min 每次 +step 到 max，再回到 min）、三角（triangle：來回）、方波（square：min／max 交替；按鈕是按下／放開）。
+//   每一步間隔 everyMs（設備時間），帶序號記進工作台紀錄與軌跡；手動操作（按、拉桿）會停掉自動。
 // 故障（第 3 階段）：每個元件都可以「拔線／接回」（unplug／plug）；超音波可以「卡住」（stuck：ECHO 一直是高電位，韌體就不再量測、不再回報）。
 // 板型（第 6 階段）：規格的 board 是 uno（預設，接虛擬 Uno）或 esp32（接 ESP32 協定模型 esp32model.js）；腳位檢查、電源電壓（5 V／3.3 V）依板型。
 //   樹莓派的工作台是 Python 寫的（tools/vdev/pi_bench.py，接 pi_bridge 的 gpiozero 模擬腳位），規格格式相同。
@@ -23,6 +26,13 @@ const DEFAULT_BENCH = 'hold-blink';
 const TYPES = ['button', 'led', 'ldr', 'ultrasonic', 'servo', 'arm'];
 const SERVO_MIN_US = 544, SERVO_MAX_US = 2400;
 const PWM_MAX_PERIOD = 20 * 16000;   // LED：上升緣間隔短於 20 ms（cycle）就當成 PWM
+// 自動產生輸入：各元件的數值、範圍與預設
+const AUTO = {
+  ultrasonic: { key: 'cm', unit: 'cm', lo: 2, hi: 400, patterns: ['ramp', 'triangle', 'square'], def: { min: 5, max: 100, step: 5, everyMs: 200 } },
+  ldr: { key: 'light', unit: '%', lo: 0, hi: 100, patterns: ['ramp', 'triangle', 'square'], def: { min: 0, max: 100, step: 10, everyMs: 200 } },
+  button: { patterns: ['square'], def: { everyMs: 500 } }
+};
+const AUTO_MIN_MS = 20;
 
 // 可重現的亂數（工作台規格的 seed 一樣，彈跳與雜訊就一樣）
 function rng(seed) { let a = (seed >>> 0) || 1; return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
@@ -180,6 +190,8 @@ class Bench {
       this.uno.at(at, () => { try { this.act(once); } catch (e) { this.note(p.id, 'error', { error: e.message }); } });
       return Object.assign(this.partState(p), { scheduled: +q.atDevMs });
     }
+    if (q.action === 'auto') return this.autoStart(p, q);
+    if (p.auto && ['press', 'release', 'set'].includes(q.action)) this.autoStop(p, '手動操作');   // 手動操作優先：停掉自動
     if (p.type === 'button' && ['press', 'release'].includes(q.action)) this.press(p, q.action === 'press');
     else if (p.type === 'ldr' && q.action === 'set' && Number.isFinite(+q.light)) { p.light = Math.max(0, Math.min(100, +q.light)); this.refreshLdr(p); this.note(p.id, 'set', { light: p.light }); }
     else if (p.type === 'ultrasonic' && q.action === 'set' && (q.cm === null || Number.isFinite(+q.cm))) { p.cm = q.cm === null ? null : Math.max(2, Math.min(400, +q.cm)); this.note(p.id, 'set', { cm: p.cm }); }
@@ -187,6 +199,40 @@ class Bench {
     else if (p.type === 'ultrasonic' && (q.action === 'stuck' || q.action === 'unstuck')) { p.stuck = q.action === 'stuck'; if (p.stuck) this.uno.setInput(p.echo, true); else if (!p.unplugged) this.uno.setInput(p.echo, false); this.note(p.id, q.action); }
     else throw new Error(`${p.id}（${p.type}）不能做「${q.action}」`);
     return this.partState(p);
+  }
+  // ---------- 自動產生輸入（V2.14） ----------
+  // q：{ part, action:'auto', pattern:'ramp'|'triangle'|'square'|'off', min, max, step, everyMs }
+  autoStart(p, q) {
+    const A = AUTO[p.type]; if (!A) throw new Error(`${p.id}（${p.type}）不能自動產生輸入`);
+    if (q.pattern === 'off') { this.autoStop(p, '停止'); return this.partState(p); }
+    if (!A.patterns.includes(q.pattern)) throw new Error(`${p.id} 的自動變化只能是 ${A.patterns.join('、')}`);
+    const num = (k, d) => q[k] === undefined || q[k] === null || q[k] === '' ? d : +q[k];
+    const a = { pattern: q.pattern, everyMs: num('everyMs', A.def.everyMs), seq: 0, dir: 1, gen: (p.auto ? p.auto.gen : 0) + 1 };
+    if (!Number.isFinite(a.everyMs) || a.everyMs < AUTO_MIN_MS) throw new Error(`間隔至少 ${AUTO_MIN_MS} ms`);
+    if (A.key) {
+      Object.assign(a, { min: num('min', A.def.min), max: num('max', A.def.max), step: num('step', A.def.step) });
+      if (![a.min, a.max, a.step].every(Number.isFinite) || a.min < A.lo || a.max > A.hi || a.min >= a.max || a.step <= 0) throw new Error(`範圍要在 ${A.lo}–${A.hi} ${A.unit}、最小值小於最大值、每次的變化大於 0`);
+      a.v = a.min;
+    }
+    p.auto = a; this.note(p.id, 'auto', { pattern: a.pattern, min: a.min, max: a.max, step: a.step, everyMs: a.everyMs });
+    this.autoStep(p, a.gen);
+    return this.partState(p);
+  }
+  autoStop(p, why) { if (!p.auto) return; p.auto = null; this.note(p.id, 'auto-off', { why }); }
+  autoStep(p, gen) {
+    const a = p.auto; if (!a || a.gen !== gen) return;
+    a.seq++;
+    if (p.type === 'button') this.press(p, a.seq % 2 === 1, a.seq);
+    else {
+      const A = AUTO[p.type], v = a.v;
+      if (p.type === 'ultrasonic') p.cm = v; else { p.light = v; this.refreshLdr(p); }
+      this.note(p.id, 'auto', { seq: a.seq, [A.key]: v });
+      // 下一個值
+      if (a.pattern === 'ramp') a.v = v + a.step > a.max ? a.min : v + a.step;
+      else if (a.pattern === 'square') a.v = v === a.min ? a.max : a.min;
+      else { if (v + a.dir * a.step > a.max || v + a.dir * a.step < a.min) a.dir = -a.dir; a.v = Math.max(a.min, Math.min(a.max, v + a.dir * a.step)); }
+    }
+    this.at(a.everyMs, () => this.autoStep(p, gen));
   }
   // 拔線／接回：元件和晶片之間的線斷了，元件怎麼動都影響不到腳位（腳位也驅動不了元件）
   wire(p, on) {
@@ -199,9 +245,10 @@ class Bench {
     this.sense();
   }
   // 按鈕：電位先在高低之間彈跳幾次，最後停在新的狀態（拔線時只記住按住與否，不影響腳位）
-  press(p, down) {
+  press(p, down, seq) {
     if (p.pressed === down) return;
-    if (p.unplugged) { p.pressed = down; this.note(p.id, down ? 'press' : 'release', { unplugged: true }); return; }
+    const auto = seq !== undefined ? { auto: true, seq } : {};
+    if (p.unplugged) { p.pressed = down; this.note(p.id, down ? 'press' : 'release', Object.assign({ unplugged: true }, auto)); return; }
     p.pressed = down; const gen = ++p.gen; const target = !down;
     const n = p.bounceMs > 0 ? 1 + Math.floor(this.rand() * 3) : 0;   // 1–3 次來回
     const times = Array.from({ length: n * 2 }, () => this.rand() * p.bounceMs).sort((a, b) => a - b);
@@ -209,7 +256,7 @@ class Bench {
     set(target);
     times.forEach((t, i) => this.at(t, () => set(i % 2 === 0 ? !target : target)));
     this.at(p.bounceMs + 0.01, () => set(target));
-    this.note(p.id, down ? 'press' : 'release', { bounces: n });
+    this.note(p.id, down ? 'press' : 'release', Object.assign({ bounces: n }, auto));
   }
   armState(p) {
     for (const j of p.joints) this.moveServo(this.parts[j.servo]);
@@ -226,6 +273,7 @@ class Bench {
   partState(p) {
     const st = this.partState0(p);
     if (p.type !== 'arm') { st.unplugged = !!p.unplugged; if (p.type === 'ultrasonic') st.stuck = !!p.stuck; }
+    if (AUTO[p.type]) st.auto = p.auto ? { pattern: p.auto.pattern, min: p.auto.min, max: p.auto.max, step: p.auto.step, everyMs: p.auto.everyMs, seq: p.auto.seq } : null;
     return st;
   }
   partState0(p) {
@@ -244,4 +292,4 @@ class Bench {
   state() { return { id: this.spec.id, name: this.spec.name, board: this.spec.board || 'uno', vcc: this.vcc, note: this.spec.note || null, parts: Object.values(this.parts).map(p => this.partState(p)), log: this.log.slice(-20) }; }
 }
 
-module.exports = { Bench, DEFAULT_BENCH, loadSpec, presets, BOARDS, SERVO_MIN_US, SERVO_MAX_US };
+module.exports = { Bench, DEFAULT_BENCH, loadSpec, presets, BOARDS, SERVO_MIN_US, SERVO_MAX_US, AUTO };

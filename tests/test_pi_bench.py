@@ -195,6 +195,39 @@ class VirtualPi(unittest.TestCase):
                     await ws.send_json({"op": "pwm", "id": "p2", "pin": 22, "value": 10}); e = await rx("error"); self.assertIn("不是 PWM 輸出", e["message"])
         asyncio.run(go())
 
+    def test_auto(self):
+        """工作台自動產生輸入（V2.14）：超音波鋸齒、按鈕定時按放 → pi_bridge 送出的距離與按鈕依序變化；設定錯誤回 400；手動操作停掉自動"""
+        port = self.port
+        def cleanup():   # 不管成功與否都停掉自動，不影響同一台虛擬樹莓派的其他測試
+            for part, q in (("US1", {"action": "set", "cm": 100}), ("BTN1", {"action": "release"})):
+                asyncio.run(post(port, "/api/bench", dict(q, part=part)))
+        self.addCleanup(cleanup)
+        async def go():
+            async with aiohttp.ClientSession() as s:
+                async with s.ws_connect(f"http://127.0.0.1:{port}/ws") as ws:
+                    await ws.send_json({"op": "hello", "client": "test", "proto": 2})
+                    await ws.send_json({"op": "watch", "pins": [{"pin": 27, "pull": "up"}]})
+                    await ws.send_json({"op": "sonar", "sensors": [{"trig": 5, "echo": 6}]})
+                    code, r = await post(port, "/api/bench", {"part": "BTN1", "action": "auto", "pattern": "ramp"})
+                    self.assertEqual(code, 400); self.assertIn("只能是 square", r["error"])
+                    code, r = await post(port, "/api/bench", {"part": "US1", "action": "auto", "pattern": "ramp", "min": 10, "max": 40, "step": 10, "everyMs": 400})
+                    self.assertEqual(code, 200); self.assertEqual(next(p for p in r["bench"]["parts"] if p["id"] == "US1")["auto"]["pattern"], "ramp")
+                    code, r = await post(port, "/api/bench", {"part": "BTN1", "action": "auto", "pattern": "square", "everyMs": 300})
+                    cms, btn = [], []
+                    t0 = time.monotonic()
+                    while time.monotonic() - t0 < 3.6:
+                        m = await asyncio.wait_for(ws.receive_json(), 3)
+                        if m["op"] == "distance" and (not cms or cms[-1] != m["cm"]): cms.append(m["cm"])
+                        if m["op"] == "input" and m["pin"] == 27 and (not btn or btn[-1] != m["value"]): btn.append(m["value"])
+                    self.assertIn("10,20,30,40,10,20", ",".join(map(str, cms)), f"距離依序遞增、到頂回到起點：{cms}")
+                    self.assertGreaterEqual(len(btn), 6, f"按鈕按下／放開交替：{btn}")
+                    await post(port, "/api/bench", {"part": "US1", "action": "set", "cm": 77})
+                    st = await get(port, "/api/bench"); us = next(p for p in st["bench"]["parts"] if p["id"] == "US1")
+                    self.assertIsNone(us["auto"], "手動操作停掉自動"); self.assertEqual(us["cm"], 77)
+                    await post(port, "/api/bench", {"part": "BTN1", "action": "auto", "pattern": "off"})
+                    st = await get(port, "/api/bench"); self.assertIsNone(next(p for p in st["bench"]["parts"] if p["id"] == "BTN1")["auto"])
+        asyncio.run(go())
+
     def test_bad_bench_action(self):
         """工作台操作錯誤回 400（不是讓 pi_bridge 當掉）"""
         code, r = asyncio.run(post(self.port, "/api/bench", {"part": "NOPE", "action": "press"}))
