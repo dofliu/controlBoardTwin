@@ -72,7 +72,7 @@ DofLab 是多板教學平台（Arduino Uno R3、ESP32 DevKitC／DevKit V1、Rasp
 npm ci                 # 安裝 three、blockly、avr8js、esbuild
 npm run check          # 所有 src/*.js 語法檢查（改完一定要跑）
 npm run build          # 產生 dist/
-npm run test:node      # Node 測試（目前 216 項，含第 4 階段驗收的 15 個子測試、第 6 階段驗收的 27 個子測試；沒有 arduino-cli 時會略過 11 項；沒有 Python 的 gpiozero／aiohttp 時略過虛擬樹莓派）
+npm run test:node      # Node 測試（目前 217 項，含第 4 階段驗收的 15 個子測試、第 6 階段驗收的 27 個子測試；沒有 arduino-cli 時會略過 11 項；沒有 Python 的 gpiozero／aiohttp 時略過虛擬樹莓派）
 npm run test:py        # Python 測試（23 項；沒有 arduino-cli、avrdude、socat 時會略過）
 npm run test:e2e       # 建置＋打包＋瀏覽器測試（286 項，約 27 分鐘）
 python3 e2e/e2e.py onboard v27   # 只跑部分段落：desktop breadboard teacher experiments pi ultrasonic onboard arm v27 uno vdev bench faults upload vupload vmulti vboards tsig pideploy mobile dark
@@ -104,7 +104,7 @@ CI（`.github/workflows/ci.yml`）只跑不需要 Arduino 工具鏈的部分。2
 - 協定模型（`esp32model.js`）的排程要**進位**到下一個時間單位：四捨五入會讓喚醒比預定時間早一點點，等待中的超音波量測就停了（V2.13 發現）。
 - 協定模型比較時間要用時間單位（`cycle`），不要用毫秒相減：浮點數會讓「剛好 3000 ms」變成 2999.9999…（斷線保護約五分之一不觸發，V2.13 發現）。
 - 停止伺服（`detachServo`）不能停在脈衝中間，否則會送出被截短的脈衝；Uno 的韌體先等腳位變 LOW；ESP32 先把 LEDC 工作週期寫 0、等一個週期再拆腳位（未以實體 ESP32 驗證）。協定模型的 `detachServo` 讓正在送的脈衝送完。
-- STK500 上傳（`stk500.js`）：同步重試的回應在慢的連線上會晚到，讀簽章時要跳過多出來的 `14 10`（V2.14）。要重現時序問題，可以讓 3 顆 CPU 跑忙碌迴圈（`node -e "for(;;){}"`，記下 PID 再結束）或把收到的位元組延後（`upload_avr.test.js` 的慢連線）。
+- STK500 上傳（`stk500.js`）：同步重試的回應在慢的連線上會晚到，讀簽章時要跳過多出來的 `14 10`；確認同步沒回應時清掉再試（V2.14）。測試用照劇本回應的假開機程式（`upload_avr.test.js` 的 `scriptedOptiboot`），不要用「虛擬晶片＋固定延遲」，那樣在 GitHub CI 上會時好時壞。要重現真實的時序問題，可以讓 3 顆 CPU 跑忙碌迴圈（`node -e "for(;;){}"`，記下 PID 再結束），但不要和其他測試同時跑。
 - Web Serial 的連接埠要先等讀取迴圈結束才能關閉（`FirmataDriver._disconnect`）；虛擬連接埠（`avrsim.webSerialPort()`）已經和 Chrome 一樣嚴格，可以拿來重現占用問題。
 - 介面文字與註解都是繁體中文；元件 ID（LED1、BTN1、SERVO1…）與程式碼保留英文。
 

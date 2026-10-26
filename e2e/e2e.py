@@ -610,8 +610,9 @@ async def tsig_flow(p):
         tr = get('uno-1', '/trace')
         got = [round((e['us'] - 544) * 180 / 1856) for e in tr['trace'] if e.get('part') == 'SERVO1' and 'us' in e]
         def has_seq(xs, ys): return any(xs[i:i + len(ys)] == ys for i in range(len(xs) - len(ys) + 1))
+        # 設備端的軌跡只記脈寬的變化：測試前伺服若已經在 0°，第一次寫入（0°）不會出現，所以從第二次寫入開始比對
         check("訊號測試（虛擬 Uno）：伺服鋸齒 0、30…180、0…，設備端量到的脈寬換成角度依序出現（到頂回起點），最後一筆收到 ACK；SG90 仍是「無回授」",
-              has_seq(got, want) and await ev(pg, "doflab.twin.view('SERVO1.angle').quality") == 'none', json.dumps([want, got]))
+              has_seq(got, want[1:]) and await ev(pg, "doflab.twin.view('SERVO1.angle').quality") == 'none', json.dumps([want, got]))
         acks = await ev(pg, "doflab.events.filter(e=>/訊號測試 #/.test(e.text)).length")
         check("訊號測試（虛擬 Uno）：事件紀錄每一次寫入一筆、標示虛擬", acks >= n and await ev(pg, "doflab.events.filter(e=>/訊號測試 #/.test(e.text)).every(e=>e.virtual)"))
         # 工作台自動產生輸入：超音波距離三角波 20→60 cm

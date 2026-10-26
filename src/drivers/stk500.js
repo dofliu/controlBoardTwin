@@ -57,7 +57,9 @@
       // 2. 同步（開機程式只會等大約 1 秒）
       let synced = false;
       for (let i = 0; i < 12 && !synced; i++) { io.drain(); try { await cmd([STK.GET_SYNC, STK.EOP], 0, 150); synced = true; } catch (e) { await sleep(40); } }
-      if (synced) { await sleep(60); io.drain(); try { await cmd([STK.GET_SYNC, STK.EOP], 0, 400); } catch (e) { synced = false; } }   // 前幾次重試的回應可能晚到：清掉後再確認一次，避免錯位
+      // 前幾次重試的回應可能晚到：清掉後再確認一次，避免錯位。連線慢時（經網路的虛擬設備、電腦很忙）確認的回應可能超過 400 ms 才到：
+      // 清掉再試，最多 3 次（每次送出的命令都讓開機程式的看門狗重新計時；V2.14 在 GitHub CI 發現）
+      if (synced) { synced = false; for (let k = 0; k < 3 && !synced; k++) { await sleep(60); io.drain(); try { await cmd([STK.GET_SYNC, STK.EOP], 0, 400); synced = true; } catch (e) { } } }
       if (!synced) throw Object.assign(new Error('沒有收到開機程式的回應。請確認：板型是 Uno、選對連接埠、沒有其他程式（例如觀測頁或 Arduino IDE）正在使用這個連接埠；必要時在上傳開始時手動按一下板子上的 RESET。'), { code: 'no_sync' });
       log('已和開機程式同步');
       // 3. 晶片簽章：確認真的是 ATmega328P
